@@ -1,53 +1,38 @@
-# SeveralUDO / Decades Tracker v2.0
+# Decades Tracker v2.0 — Neon Edition
 
-A Windows-first local Streamlit tracker for Sims historical / Decades-style challenges, with Neon PostgreSQL cloud save storage.
+This is the recovered Decades Tracker application with Neon PostgreSQL as its live storage backend.
 
-## Features
+## Current cloud save
 
-- Multiple completely independent cloud saves
-- Different historical starting years per save
-- Sims, portraits, households, pregnancies, relationships, rolls, and events
-- Family Tree 2.0 with ancestor / descendant views and portrait nodes
-- Historical event library and event rolling workflow
-- Automatic roll scheduling with configurable era/species roll tables
-- Timeline and detailed statistics
-- Offline name randomizer sourced from the bundled Decades Names library
-- Portable `.decades-save` export/import
-- Migration from existing v1.x SQLite saves into Neon
+The latest intact populated SQLite database was migrated to an isolated Neon schema. The migration preserved and verified 78,264 rows across 13 tables, including 1,023 Sims.
+
+Local SQLite databases are not modified or deleted during migration and remain useful as offline safety copies.
 
 ## Windows quick start
 
 1. Download or clone this repository.
 2. Double-click `Launch Decades Tracker.bat`.
-3. The first launch installs a private Python runtime and dependencies into `.runtime/`.
-4. Paste your Neon PostgreSQL connection string into the setup screen.
-5. Create a new cloud save or migrate an existing local save.
+3. The first launch installs a private Python runtime and required packages.
+4. Paste a Neon pooled connection string when prompted, or create a local `.env` file from `.env.example`.
 
-## Neon configuration
+## Configuration
 
-Copy `.env.example` to `.env` and fill in your own credentials, or enter the connection string in the app.
+Copy `.env.example` to `.env` and replace the placeholder with your Neon pooled connection string:
 
 ```env
 NEON_DATABASE_URL=postgresql://USER:PASSWORD@YOUR-POOLER-HOST/neondb?sslmode=require
-NEON_DIRECT_URL=postgresql://USER:PASSWORD@YOUR-DIRECT-HOST/neondb?sslmode=require
 ```
 
-Never commit `.env` or `.neon_storage.json`. Both are ignored by `.gitignore`.
+The `.env` file, local Neon state, databases, saves, exports, and private runtime are ignored by Git. Never commit a real connection string.
 
-## Existing v1.x users
+## Storage behavior
 
-Keep your old `decades.db`, `saves/`, and `saves.json` files while upgrading. v2 can discover those SQLite saves and copy them into Neon without deleting the originals.
-
-## Save sharing
-
-Use **Saves → Manage → Export portable `.decades-save`**. The exported world includes its Sims, portraits, relationships, rules, events, and calendar state, but never includes your Neon credentials.
-
-## Data and secrets excluded from Git
-
-The repository intentionally ignores local databases, local saves, `.decades-save` exports, `.env`, `.neon_storage.json`, and the private Python runtime. Fresh installs use `starter_seed.json.gz` for the bundled rules/event library instead of committing a template database.
+- Each tracker save uses a separate PostgreSQL schema.
+- Save creation, duplication, renaming, deletion, import, and export operate against Neon.
+- Shareable `.decades-save` exports remain SQLite-compatible for portability.
+- The app uses pooled connections for responsive cloud-backed pages.
+- Automatic roll scheduling runs when relevant tracker data changes or when requested, rather than on every page rerun.
 
 ## Version
 
 Current source version: **2.0.0**
-
-See `README_FIRST.txt` and `USER_GUIDE.txt` for more detailed usage instructions.

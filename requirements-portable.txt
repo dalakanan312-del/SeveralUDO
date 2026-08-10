@@ -4,3 +4,4 @@ plotly==5.22.0
 networkx==3.3
 pyvis==0.3.2
 psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4

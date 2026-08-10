@@ -84,6 +84,7 @@ def preview(con, current_gd):
     start_year=_setting_int(con,"start_year",1200)
     days_per_year=_setting_int(con,"days_per_year",4)
     obligations=[]
+
     sims=con.execute("""SELECT sim_id,title,first_name,last_name,suffix,birth_global_day,death_global_day,species_occult
                         FROM sims WHERE birth_global_day IS NOT NULL AND birth_global_day<=?""",(current_gd,)).fetchall()
     for s in sims:
@@ -95,10 +96,13 @@ def preview(con, current_gd):
             if s["death_global_day"] is not None and due>int(s["death_global_day"]): continue
             rt=rule["roll_type"]
             spec=_spec_for(con,due,rt,species,start_year,days_per_year)
-            obligations.append({"source_id":s["sim_id"],"sim_id":s["sim_id"],"sim_name":nm,"species":species,
+            obligations.append({
+                "source_id":s["sim_id"],"sim_id":s["sim_id"],"sim_name":nm,"species":species,
                 "due_global_day":due,"roll_type":rt,"die":spec["die"],"bad_results":spec["bad_results"],
                 "quantity":rule["qty"],"kind":"Life stage","year":spec["year"],"era_id":spec["era_id"],
-                "era_name":spec["era_name"],"rule_status":spec["rule_status"]})
+                "era_name":spec["era_name"],"rule_status":spec["rule_status"]
+            })
+
     pregnancies=con.execute("""SELECT p.*,s.title,s.first_name,s.last_name,s.suffix,
                                       s.birth_global_day AS mother_birth,s.species_occult AS mother_species
                                FROM pregnancies p LEFT JOIN sims s ON s.sim_id=p.mother_id
@@ -113,11 +117,13 @@ def preview(con, current_gd):
         spec=_spec_for(con,due,rt,species,start_year,days_per_year)
         qty=_ival(p["babies_delivered"],None)
         if qty is None or qty<=0: qty=_ival(p["babies_expected"],1) or 1
-        obligations.append({"source_id":p["pregnancy_id"],"sim_id":p["mother_id"],
+        obligations.append({
+            "source_id":p["pregnancy_id"],"sim_id":p["mother_id"],
             "sim_name":p["mother_name"] or _name(p),"species":species,
             "due_global_day":due,"roll_type":rt,"die":spec["die"],"bad_results":spec["bad_results"],
             "quantity":qty,"kind":"Maternal","year":spec["year"],"era_id":spec["era_id"],
-            "era_name":spec["era_name"],"rule_status":spec["rule_status"]})
+            "era_name":spec["era_name"],"rule_status":spec["rule_status"]
+        })
     return obligations
 
 def sync_rolls(con,current_gd):
@@ -125,14 +131,21 @@ def sync_rolls(con,current_gd):
     added=0; by_kind=Counter(); skipped_missing_rules=0
     for o in obligations:
         if o["due_global_day"]>current_gd: continue
-        note = f"Auto-generated from {o['era_name']}" if o["rule_status"]=="Ready" else f"Auto-generated obligation; {o['rule_status']} for {o['species']} in year {o['year']}"
-        n=_insert_missing(con,source_id=o["source_id"],sim_id=o["sim_id"],sim_name=o["sim_name"],
-            due_gd=o["due_global_day"],roll_type=o["roll_type"],die=o["die"],bad_results=o["bad_results"],qty=o["quantity"],note=note)
+        # A due obligation with no era table is still created so the user never misses the roll;
+        # die/results remain blank and the note tells them to configure that era.
+        note = f"Auto-generated from {o['era_name']}" if o["rule_status"]=="Ready" \
+               else f"Auto-generated obligation; {o['rule_status']} for {o['species']} in year {o['year']}"
+        n=_insert_missing(
+            con,source_id=o["source_id"],sim_id=o["sim_id"],sim_name=o["sim_name"],
+            due_gd=o["due_global_day"],roll_type=o["roll_type"],die=o["die"],bad_results=o["bad_results"],
+            qty=o["quantity"],note=note
+        )
         if n:
             added+=n; by_kind[o["kind"]]+=n
             if o["rule_status"]!="Ready": skipped_missing_rules+=n
     con.commit()
-    return {"added":added,"by_kind":dict(by_kind),"considered":len(obligations),"missing_rule_rows":skipped_missing_rules}
+    return {"added":added,"by_kind":dict(by_kind),"considered":len(obligations),
+            "missing_rule_rows":skipped_missing_rules}
 
 def upcoming(con,current_gd,days_ahead=20):
     obligations=preview(con,current_gd)

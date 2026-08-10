@@ -1,106 +1,94 @@
-DECADES TRACKER v2.0 — NEON CLOUD STORAGE
-==========================================
+DECADES TRACKER v1.0
+====================
 
-Decades Tracker v2.0 moves live save storage from local SQLite databases to
-Neon PostgreSQL.
+A local Sims historical/Decades Challenge tracker for Windows.
 
-WHAT CHANGED
-------------
-- Neon is the live database.
-- Each challenge save is stored in its own PostgreSQL schema.
-- Multiple saves remain completely isolated.
-- The same Neon project can be opened from another computer by using the same
-  connection string.
-- Sim portraits are stored in PostgreSQL BYTEA data inside the selected save.
-- .decades-save export/import is still supported for portable backups/sharing.
-- Existing v1.x SQLite saves can be copied into Neon from the app.
-- Original SQLite files are not deleted or edited by migration.
+QUICK START
+-----------
+1. Extract the entire Decades_Tracker_v1.0_Windows folder.
+2. Put it somewhere writable, such as Desktop or Documents.
+3. Double-click:
+      Launch Decades Tracker.bat
+4. The FIRST launch downloads a private Python runtime and the packages the app
+   needs. You do not need to install Python yourself.
+5. Your browser opens the tracker automatically.
+6. Keep the launcher window open while using the app.
 
-FIRST LAUNCH
-------------
-1. Extract the entire app folder.
-2. Double-click Launch Decades Tracker.bat.
-3. The first v2 launch installs the Psycopg PostgreSQL driver into the app's
-   private Python runtime.
-4. The app opens a Neon connection setup page.
-5. In the Neon dashboard, copy your connection string and paste it into the app.
-6. A pooled Neon connection string is recommended for normal app traffic.
-7. A direct/non-pooler connection string can optionally be provided for schema
-   setup and migrations.
-8. Click Test connection & use Neon.
+First launch requires internet access. Later launches reuse the private runtime.
 
-The connection string contains your Neon database password. It is stored only
-in this local app folder in:
-  .neon_storage.json
+YOUR DATA
+---------
+Your saves are local to your computer.
 
-Do NOT publish or share that file.
-
-MIGRATING AN EXISTING TRACKER
------------------------------
-After Neon connects, v2 looks for populated v1.x databases in the local saves/
-folder.
-
-If found:
-1. Select the saves you want.
-2. Click Migrate selected saves to Neon.
-3. Wait for the copy to finish.
-4. The original .db files remain untouched as local safety backups.
-
-For a v1.x multi-save installation, v2 prefers the databases inside saves/ and
-does not also offer the old root decades.db safety copy.
-
-CLOUD SAVE DESIGN
------------------
-One Neon database can contain many Decades Tracker saves.
-
-Neon:
-  public.decades_saves
-  save_abcd1234... schema
-  save_efgh5678... schema
-  ...
-
-Every save schema contains its own:
-- settings/calendar
+Each save can have completely different:
+- historical years
 - Sims
 - portraits
-- households
+- families
 - pregnancies
 - rolls
+- households
 - relationships
-- historical events/results
-- challenge rules
+- events
+- timelines
+- statistics
 - era/species roll tables
-- imported supporting data
 
-This allows SIM-0001, HH-0001, etc. to exist independently in different saves.
+The app does not mix data between saves.
 
-PORTABLE SAVE SHARING
----------------------
-Saves -> Manage -> Export portable .decades-save
+SHARING A SAVE
+--------------
+Open:
+  Saves -> Manage saves -> Export shareable save
 
-A cloud save is converted into one portable .decades-save file. It can be:
-- archived as a backup
-- sent to another player
-- imported into another Neon-backed Decades Tracker
+This creates one .decades-save file.
 
-Import:
-  Saves -> Import .decades-save
+Another Decades Tracker user can import it from:
+  Saves -> Import a shared save
 
-The recipient uses their own Neon credentials. Your Neon password is never
-included in the save package.
+The shared file contains that selected world, including its portraits and
+save-specific rules. It does not contain the sender's other saves.
 
-INTERNET
---------
-Unlike the old local-database version, v2 needs an internet connection while
-you are actively using the tracker because Neon is the live database.
+MAIN FEATURES
+-------------
+- Global Day based time tracking
+- 4 challenge days = 1 historical year by default
+- Sim weekday display, with Global Day 1 = Sunday
+- multiple fully independent saves
+- different starting years per save
+- Sim portraits stored inside save backups
+- profile-oriented Sim editing
+- parent/child linking by name
+- marriage and partnership management
+- Family Tree 2.0:
+    Family / Ancestors / Descendants views
+    up to 8 generations
+    spouse/partner lines
+    portrait nodes
+    generation-based layout
+    pan and zoom controls
+- pregnancies and outcomes
+- automatic roll scheduling
+- configurable roll tables by year range and species/occult
+- historical event database
+- household tracking
+- unified timeline
+- detailed statistics and records
+- portable .decades-save sharing
 
-The name library and application code remain bundled locally.
+BACKUPS
+-------
+Use the app's database/save export tools regularly, especially before making
+large edits.
 
-SECURITY
---------
-Never publish:
-- .neon_storage.json
-- a Neon connection string
-- a database password
+Do not manually edit the files inside the saves folder while the tracker is
+running.
 
-The clean public release does not contain any Neon credentials.
+SYSTEM REQUIREMENTS
+-------------------
+- Windows 10 or Windows 11
+- 64-bit Windows
+- internet connection for first launch/setup
+- a modern web browser
+
+No separate Python installation or administrator rights are required.
