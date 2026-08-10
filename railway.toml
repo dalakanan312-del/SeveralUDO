@@ -1,6 +1,6 @@
 [build]
-builder = "RAILPACK"
-buildCommand = "pip install -r requirements.txt"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --browser.gatherUsageStats false"
