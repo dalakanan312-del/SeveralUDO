@@ -1,4 +1,4 @@
-import sqlite3, tempfile
+import tempfile
 import base64
 from pathlib import Path
 import pandas as pd
@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.express as px
 import networkx as nx
 from pyvis.network import Network
-from db import connect,setting,set_setting,next_id,active_db_path
+from db import connect,setting,set_setting,next_id
 from calendar_utils import global_day_to_year_day,global_day_label,date_to_global_day
 import stats_engine as se
 import autorolls
@@ -15,9 +15,19 @@ import timeline_engine
 import plotly.graph_objects as go
 import profiles
 import save_manager
+import storage
+import neon_ui
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
+if not storage.configured():
+    neon_ui.render_connection_setup(st)
+    st.stop()
+
+save_manager.ensure_setup()
+if neon_ui.render_first_save_setup(st):
+    st.stop()
+
 st.markdown("""
 <style>
 .block-container{padding-top:1.1rem;max-width:1450px;padding-bottom:3rem}
@@ -167,9 +177,6 @@ with st.sidebar:
     st.caption(f"Year {cy_sidebar} • Challenge Day {cd_sidebar} • {sim_weekday(cg_sidebar)}")
     st.caption("✓ Automatic roll scheduling on")
     st.caption(f"Decades Tracker v{APP_VERSION}")
-
-# Safe to run on every Streamlit rerun: sync_rolls only inserts missing obligations.
-_auto_sync=sync_auto_rolls(show_notice=False)
 
 if page=="Today":
     page_header("Today","Your play-session dashboard: advance time, handle what is due, and see what comes next.")
@@ -2106,10 +2113,10 @@ elif page=="Saves":
     st.subheader("Your saves")
     summary_rows=[]
     for s in saves:
-        path=Path(s["db_path"])
         sims_count=0; year="—"; gd="—"
         try:
-            con=sqlite3.connect(path)
+            save_manager.set_active(s["save_id"])
+            con=connect()
             sims_count=con.execute("SELECT COUNT(*) FROM sims").fetchone()[0]
             vals=dict(con.execute("SELECT key,value FROM settings WHERE key IN ('start_year','days_per_year','current_global_day')").fetchall())
             ssy=int(float(vals.get("start_year",1200))); sdpy=int(float(vals.get("days_per_year",4))); sgd=int(float(vals.get("current_global_day",1)))
@@ -2121,6 +2128,7 @@ elif page=="Saves":
             "Active":"✓" if s["save_id"]==active["save_id"] else "",
             "Save":s["name"],"Historical year":year,"Global Day":gd,"Sims":sims_count,"Save ID":s["save_id"]
         })
+    save_manager.set_active(active["save_id"])
     st.dataframe(pd.DataFrame(summary_rows),use_container_width=True,hide_index=True)
 
     create_tab,duplicate_tab,manage_tab,import_tab=st.tabs([
@@ -2346,4 +2354,4 @@ elif page=="Rules & Data":
         counts={t:scalar(f"SELECT COUNT(*) FROM {t}") for t in ['sims','households','pregnancies','rolls','relationships','events','event_results','raw_import_rows']}
         st.json(counts)
         st.success("Every non-empty row from the source workbooks is also retained in raw_import_rows as a lossless archive.")
-        st.download_button("Download database backup",active_db_path().read_bytes(),file_name=f"{save_manager.active_save()['name'].replace(' ','_')}.db",mime='application/octet-stream')
+        st.download_button("Download database backup",save_manager.export_database_bytes(save_manager.active_save_id()),file_name=f"{save_manager.active_save()['name'].replace(' ','_')}.db",mime='application/octet-stream')

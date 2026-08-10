@@ -4,7 +4,7 @@ Set-Location $AppDir
 
 $RuntimeDir = Join-Path $AppDir ".runtime"
 $PythonExe = Join-Path $RuntimeDir "python.exe"
-$BootstrapMarker = Join-Path $RuntimeDir ".decades-ready"
+$BootstrapMarker = Join-Path $RuntimeDir ".decades-ready-v2"
 $PythonVersion = "3.12.10"
 $PythonZip = "python-$PythonVersion-embed-amd64.zip"
 $PythonUrl = "https://www.python.org/ftp/python/$PythonVersion/$PythonZip"
