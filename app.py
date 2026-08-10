@@ -17,6 +17,7 @@ import profiles
 import save_manager
 import storage
 import neon_ui
+import admin_ops
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -590,6 +591,35 @@ elif page=="Sims":
                 sync_auto_rolls(show_notice=False)
                 st.success("Sim profile saved. Related names were updated automatically.")
                 st.rerun()
+
+            with st.expander("Delete this Sim",expanded=False):
+                st.warning("This permanently deletes the Sim and cleans up linked records. Export a backup first if you may need to restore them.")
+                con=connect()
+                dependencies=admin_ops.sim_dependency_summary(con,selected)
+                con.close()
+                affected=[{"Linked data":label,"Count":count} for label,count in dependencies.items() if count]
+                if affected:
+                    st.dataframe(pd.DataFrame(affected),use_container_width=True,hide_index=True)
+                else:
+                    st.caption("No linked records were found.")
+                confirmation=st.text_input(f"Type {selected} to confirm deletion",key=f"sim_delete_confirm_{selected}")
+                if st.button(
+                    "Permanently delete Sim",
+                    type="secondary",
+                    use_container_width=True,
+                    disabled=confirmation.strip()!=selected,
+                    key=f"sim_delete_btn_{selected}",
+                ):
+                    con=connect()
+                    try:
+                        admin_ops.delete_sim(con,selected)
+                    except Exception as error:
+                        con.rollback(); con.close()
+                        st.error(f"Could not delete this Sim: {error}")
+                    else:
+                        con.close()
+                        st.success(f"Deleted {selected} and cleaned up linked records.")
+                        st.rerun()
 
     with tab_family:
         st.subheader("Family & relationships")
@@ -1325,8 +1355,8 @@ elif page=="Relationships":
                 st.rerun()
 
 elif page=="Households":
-    page_header("Households","View households, move Sims, and edit household details.")
-    tab_browse,tab_assign,tab_edit=st.tabs(["Households","🚚 Move a Sim","✏️ Edit household"])
+    page_header("Households","Create households, view members, move Sims, and edit household details.")
+    tab_browse,tab_create,tab_assign,tab_edit=st.tabs(["Households","Create household","🚚 Move a Sim","✏️ Edit household"])
 
     with tab_browse:
         hdf=q("SELECT * FROM households ORDER BY household_name,household_id")
@@ -1354,6 +1384,59 @@ elif page=="Households":
                                          cols=["sim_id","Name","Status","birth_global_day","death_global_day"]),
                              use_container_width=True,hide_index=True)
 
+    with tab_create:
+        st.subheader("Create a household")
+        con=connect(); proposed=next_id(con,'households','household_id','HH'); con.close()
+        sim_choices=sim_options()
+        with st.form("create_household_form",clear_on_submit=False):
+            a,b=st.columns([1,2])
+            household_id=a.text_input("Household ID",value=proposed)
+            household_name=b.text_input("Household name")
+            a,b,c=st.columns(3)
+            branch_type=a.text_input("Branch type",placeholder="Main, cadet, abbey…")
+            location=b.text_input("Location")
+            social_class=c.text_input("Social class")
+            a,b=st.columns(2)
+            head=a.selectbox("Household head (optional)",sim_choices,key="hh_create_head")
+            start_day=b.text_input("Start Global Day",value=str(current_gd()))
+            active=st.checkbox("Active household",value=True,key="hh_create_active")
+            assign_head=st.checkbox(
+                "Move the selected household head into this household",
+                value=True,
+                disabled=not bool(head),
+                key="hh_create_assign_head",
+            )
+            notes=st.text_area("Notes",key="hh_create_notes")
+            submitted=st.form_submit_button("Create household",type="primary",use_container_width=True)
+        if submitted:
+            identifier=household_id.strip()
+            name=household_name.strip()
+            if not identifier:
+                st.error("A Household ID is required.")
+            elif not name:
+                st.error("Enter a household name.")
+            else:
+                con=connect()
+                try:
+                    exists=con.execute("SELECT 1 FROM households WHERE household_id=?",(identifier,)).fetchone()
+                    if exists:
+                        raise ValueError(f"{identifier} already exists.")
+                    head_id=sid(head)
+                    con.execute("""INSERT INTO households(
+                        household_id,household_name,branch_type,location,social_class,head_sim_id,active,
+                        start_global_day,end_global_day,living_members,total_assigned_members,notes,data_source
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (identifier,name,branch_type or None,location or None,social_class or None,head_id,
+                     1 if active else 0,int_or_none(start_day),None,0,0,notes or None,"Created in tracker"))
+                    if head_id and assign_head:
+                        con.execute("UPDATE sims SET current_household_id=? WHERE sim_id=?",(identifier,head_id))
+                    admin_ops.refresh_household_counts(con,identifier,commit=False)
+                    con.commit()
+                except Exception as error:
+                    con.rollback(); con.close(); st.error(f"Could not create household: {error}")
+                else:
+                    con.close(); st.success(f"Created {name} ({identifier})."); st.rerun()
+
     with tab_assign:
         opts=sim_options()
         hdf=q("SELECT household_id,household_name FROM households ORDER BY household_id")
@@ -1366,8 +1449,20 @@ elif page=="Households":
             cur=q("SELECT current_household_id FROM sims WHERE sim_id=?",(ss,))
             st.caption(f"Current household: {cur.iloc[0].current_household_id if not cur.empty and cur.iloc[0].current_household_id else 'None'}")
         if st.button("Assign household",type="primary",key="hh_assign_btn"):
-            con=connect(); con.execute("UPDATE sims SET current_household_id=? WHERE sim_id=?",(sid(house),sid(sim))); con.commit(); con.close()
-            st.success("Household assignment saved.")
+            if not sim:
+                st.error("Choose a Sim first.")
+            else:
+                con=connect()
+                sim_id=sid(sim); new_household=sid(house)
+                old_row=con.execute("SELECT current_household_id FROM sims WHERE sim_id=?",(sim_id,)).fetchone()
+                old_household=old_row[0] if old_row else None
+                con.execute("UPDATE sims SET current_household_id=? WHERE sim_id=?",(new_household,sim_id))
+                for household in {old_household,new_household}:
+                    if household:
+                        admin_ops.refresh_household_counts(con,household,commit=False)
+                con.commit(); con.close()
+                st.success("Household assignment saved.")
+                st.rerun()
 
     with tab_edit:
         hdf=q("SELECT * FROM households ORDER BY household_id")

@@ -67,7 +67,7 @@ def display_name(row):
         return "" if x is None else str(x).strip()
     return " ".join(x for x in [val("title"),val("first_name"),val("last_name"),val("suffix")] if x).strip()
 
-def sync_spouse_ids(con, sim_ids=None):
+def sync_spouse_ids(con, sim_ids=None, commit=True):
     """Rebuild legacy spouse_ids from marriage records so duplicate editing is unnecessary."""
     if sim_ids is None:
         sim_ids=[r[0] for r in con.execute("SELECT sim_id FROM sims")]
@@ -81,7 +81,8 @@ def sync_spouse_ids(con, sim_ids=None):
                 partners.append(other)
         con.execute("UPDATE sims SET spouse_ids=? WHERE sim_id=?",
                     (", ".join(partners) if partners else None,sim_id))
-    con.commit()
+    if commit:
+        con.commit()
 
 def sim_relationships(con, sim_id):
     return con.execute("""SELECT * FROM relationships
