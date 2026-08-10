@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import weakref
+from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ENV_PATH = ROOT / ".env"
 STATE_PATH = ROOT / ".neon_storage.json"
 _POOLS = {}
+_CONNECTION_SCHEMAS = weakref.WeakKeyDictionary()
 
 
 class StorageNotConfigured(RuntimeError):
@@ -36,7 +39,8 @@ def _state():
         return {}
 
 
-def load_config():
+@lru_cache(maxsize=1)
+def _load_config_cached():
     file_values = _env_file_values()
     state = _state()
     pooled = (
@@ -60,6 +64,10 @@ def load_config():
     }
 
 
+def load_config():
+    return dict(_load_config_cached())
+
+
 def configured():
     return bool((load_config().get("pooled_url") or "").strip())
 
@@ -71,6 +79,7 @@ def save_config(pooled_url, direct_url=None, active_save_id=None):
         "active_save_id": active_save_id,
     }
     STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _load_config_cached.cache_clear()
     return data
 
 
@@ -82,6 +91,7 @@ def update_active_save(save_id):
         state.pop("pooled_url", None)
         state.pop("direct_url", None)
     STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    _load_config_cached.cache_clear()
 
 
 class _PooledConnection:
@@ -107,6 +117,20 @@ class _PooledConnection:
         if exc_type:
             self._connection.rollback()
         self.close()
+
+
+def ensure_search_path(connection, schema_name):
+    raw = getattr(connection, "_connection", connection)
+    if _CONNECTION_SCHEMAS.get(raw) == schema_name:
+        return
+    from psycopg import sql
+
+    with raw.cursor() as cursor:
+        cursor.execute(
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name))
+        )
+    raw.commit()
+    _CONNECTION_SCHEMAS[raw] = schema_name
 
 
 def raw_connect(use_direct=False, autocommit=False):

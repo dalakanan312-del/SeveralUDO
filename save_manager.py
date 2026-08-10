@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import tempfile
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -19,6 +20,10 @@ GAMEPLAY_TABLES = [
     "sim_photos", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "raw_import_rows",
 ]
+_SAVE_CACHE = []
+_SAVE_CACHE_AT = 0.0
+_SAVE_CACHE_SECONDS = 5.0
+_SETUP_DONE = False
 
 
 def _now():
@@ -38,9 +43,28 @@ def _record(row):
     }
 
 
+def _invalidate_save_cache():
+    global _SAVE_CACHE, _SAVE_CACHE_AT
+    _SAVE_CACHE = []
+    _SAVE_CACHE_AT = 0.0
+
+
+def _touch_cached(save_id):
+    timestamp = _now()
+    for item in _SAVE_CACHE:
+        if item["save_id"] == save_id:
+            item["updated_at"] = timestamp
+            break
+
+
 def ensure_setup():
+    global _SETUP_DONE
+    if _SETUP_DONE:
+        return list_saves()
     with storage.raw_connect(use_direct=True) as connection:
         cloud_schema.create_registry(connection)
+    _SETUP_DONE = True
+    _invalidate_save_cache()
     saves = list_saves()
     active = storage.load_config().get("active_save_id")
     if saves and not any(item["save_id"] == active for item in saves):
@@ -48,15 +72,21 @@ def ensure_setup():
     return saves
 
 
-def list_saves():
+def list_saves(force_refresh=False):
+    global _SAVE_CACHE, _SAVE_CACHE_AT
+    now = time.monotonic()
+    if not force_refresh and _SAVE_CACHE and now - _SAVE_CACHE_AT < _SAVE_CACHE_SECONDS:
+        return [dict(item) for item in _SAVE_CACHE]
     with storage.raw_connect() as connection:
-        cloud_schema.create_registry(connection)
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT save_id,name,schema_name,created_at,updated_at,source_note "
                 "FROM public.decades_saves ORDER BY created_at,save_id"
             )
-            return [_record(row) for row in cursor.fetchall()]
+            saves = [_record(row) for row in cursor.fetchall()]
+    _SAVE_CACHE = saves
+    _SAVE_CACHE_AT = now
+    return [dict(item) for item in saves]
 
 
 def active_save_id():
@@ -71,13 +101,7 @@ def active_save_id():
 
 
 def get_save(save_id):
-    with storage.raw_connect() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT save_id,name,schema_name,created_at,updated_at,source_note "
-                "FROM public.decades_saves WHERE save_id=%s", (save_id,),
-            )
-            return _record(cursor.fetchone())
+    return next((item for item in list_saves() if item["save_id"] == save_id), None)
 
 
 def active_save():
@@ -103,6 +127,7 @@ def _create_record(name, source_note=None):
                 (save_id, name.strip() or save_id, schema_name, source_note),
             )
         connection.commit()
+    _invalidate_save_cache()
     storage.update_active_save(save_id)
     return get_save(save_id)
 
@@ -229,6 +254,7 @@ def rename_save(save_id, new_name):
                 (new_name.strip(), save_id),
             )
         connection.commit()
+    _invalidate_save_cache()
     return get_save(save_id)
 
 
@@ -245,6 +271,7 @@ def _drop_save(save_id, allow_only=False):
             cursor.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(record["schema_name"])))
             cursor.execute("DELETE FROM public.decades_saves WHERE save_id=%s", (save_id,))
         connection.commit()
+    _invalidate_save_cache()
 
 
 def delete_save(save_id):
@@ -262,6 +289,7 @@ def touch_active():
         with connection.cursor() as cursor:
             cursor.execute("UPDATE public.decades_saves SET updated_at=now() WHERE save_id=%s", (save_id,))
         connection.commit()
+    _touch_cached(save_id)
 
 
 def _sqlite_bytes(save_id):

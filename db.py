@@ -88,10 +88,7 @@ class Connection:
     def __init__(self, raw, schema_name):
         self._raw = raw
         self.schema_name = schema_name
-        from psycopg import sql
-
-        with raw.cursor() as cursor:
-            cursor.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name)))
+        storage.ensure_search_path(raw, schema_name)
 
     def execute(self, statement, parameters=()):
         cursor = self._raw.cursor()
