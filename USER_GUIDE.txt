@@ -1,0 +1,156 @@
+DECADES TRACKER v1.0 — SHORT USER GUIDE
+=======================================
+
+TODAY
+-----
+Use Current Global Day as the main play-time input.
+
+The Today page automatically shows:
+- historical year
+- challenge day within the four-day year
+- Sim weekday
+- historical date range
+- rolls due
+- pregnancies due
+- active historical events
+- upcoming automatic rolls
+
+SIMS
+----
+Directory:
+Browse profiles by name, status, or generation.
+
+Add Sim:
+A short form for normal gameplay. Birth Global Day defaults to the current
+Global Day. Generation can calculate from recorded parents.
+
+Edit Sim:
+Edit the profile in smaller sections instead of one giant form.
+
+Family & Relationships:
+Manage parents, children, and partnerships from one focal Sim.
+
+PHOTOS
+------
+PNG, JPG/JPEG, and WEBP portraits can be attached to Sims.
+
+Photos are stored inside the save database, so they are included in save exports
+and backups.
+
+FAMILY TREE
+-----------
+Choose a focal Sim and select:
+- Family
+- Ancestors
+- Descendants
+
+Depth controls how far the tree expands.
+
+Solid arrows:
+parent -> child
+
+Dashed lines:
+marriage / partnership
+
+Uploaded portraits can appear directly on the tree.
+
+SAVES
+-----
+Use the selector at the top of the sidebar to change worlds.
+
+The Saves page can:
+- create a blank save
+- duplicate a save
+- rename a save
+- export a shareable save
+- import a shared save
+- delete a save
+
+A blank save can start in a completely different historical period.
+
+ROLLS
+-----
+Automatic scheduling creates rule-driven rolls when they become due.
+
+Future obligations are previewed rather than inserted early.
+
+Configure historical/species-specific roll tables under:
+  Rules & Data -> Roll Tables
+
+TIMELINE
+--------
+Timeline combines dated activity from:
+- births
+- deaths
+- relationships
+- pregnancy records
+- households
+- events
+- event effects
+- optional rolls
+
+Use the filters and range slider to narrow the view.
+
+STATISTICS
+----------
+Statistics are calculated from the active save only.
+
+Switching saves switches the entire statistical dataset as well.
+
+REMOVE A SIM
+------------
+Sims -> Remove Sim
+
+Choose the accidental Sim. The tracker shows what is linked to them before
+allowing deletion. Type the exact confirmation text shown on screen.
+
+CREATE A HOUSEHOLD
+------------------
+Households -> Create household
+
+You can:
+- create an empty/manual household
+- choose a head
+- move selected Sims in immediately
+- automatically include an unassigned partner and children of the head
+
+EVENT GAMEPLAY
+--------------
+Today -> Events
+or
+Events -> Now / Play
+
+When an event is active:
+1. open it
+2. read the imported event instructions
+3. use Quick Dice when dice are detected in the instructions
+4. choose the affected Sim/household if relevant
+5. record the outcome/effect
+
+Events -> Event library contains the complete built-in event database and can be
+searched by name, location, affected group, instruction text, type, and year.
+
+NAME RANDOMIZER
+---------------
+Open Name Randomizer from the sidebar.
+
+1. Choose Medieval, Early American, or Modern.
+2. Choose the culture/group.
+3. Choose Female or Male.
+4. Choose how surnames should work:
+   - Same culture, when that source has surnames
+   - No surname
+   - Choose another surname source
+5. Choose how many suggestions you want.
+6. Click Generate names.
+
+The coverage expander shows exactly how many male names, female names, and
+surnames are available for each source group.
+
+ADD SIM + RANDOMIZER
+--------------------
+Sims -> Add Sim -> Generate a name from the reference library
+
+Generate names there, select the one you want, and click Use selected name in
+Add Sim. The fields are filled for you, but remain editable before saving.
+

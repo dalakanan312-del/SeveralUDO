@@ -44,7 +44,7 @@ Use **Saves → Manage → Export portable `.decades-save`**. The exported world
 
 ## Data and secrets excluded from Git
 
-The repository intentionally ignores local databases, local saves, `.decades-save` exports, `.env`, `.neon_storage.json`, and the private Python runtime. Fresh installs use `starter_seed.json` for the bundled rules/event library instead of committing a template database.
+The repository intentionally ignores local databases, local saves, `.decades-save` exports, `.env`, `.neon_storage.json`, and the private Python runtime. Fresh installs use `starter_seed.json.gz` for the bundled rules/event library instead of committing a template database.
 
 ## Version
 

@@ -1,0 +1,36 @@
+# Secrets / local configuration
+.env
+.env.*
+!.env.example
+.neon_storage.json
+
+# User data / local databases
+*.db
+*.sqlite
+*.sqlite3
+saves/
+saves.json
+*.decades-save
+
+# Private runtime / caches
+.runtime/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Streamlit / editor / OS noise
+.streamlit/secrets.toml
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.tmp
+.updates/
+app_source_uncommitted.py
+name_library.json
+event_library.json
+starter_seed.json
