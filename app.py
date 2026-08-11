@@ -43,10 +43,12 @@ st.markdown("""
     --decades-gold:#c79a4a;
     --decades-gold-soft:rgba(199,154,74,.16);
     --decades-wine:#7b3444;
+    --decades-ink:#5b3a22;
     --decades-line:rgba(199,154,74,.25);
     --decades-surface:rgba(128,128,128,.055);
 }
 .stApp{background-image:radial-gradient(circle at 85% -10%,rgba(199,154,74,.08),transparent 28rem)}
+.stApp:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.045;background-image:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(115,78,38,.18) 4px);z-index:0}
 .block-container{padding-top:1.35rem;max-width:1450px;padding-bottom:3.5rem}
 [data-testid="stSidebar"]{
     min-width:255px;
@@ -82,6 +84,15 @@ h1,h2,h3{font-family:Georgia,serif;letter-spacing:-.015em}
 h1{margin-bottom:.15rem}
 .page-kicker{color:var(--decades-gold);font-size:.72rem;font-weight:750;letter-spacing:.17em;text-transform:uppercase;margin-bottom:.2rem}
 .page-subtitle{opacity:.74;margin-top:-.12rem;margin-bottom:1.2rem;max-width:850px;font-size:1rem}
+.chronicle-note{
+    position:relative;margin:.25rem 0 1.25rem;padding:1rem 1.2rem 1rem 1.45rem;
+    border:1px solid var(--decades-line);border-left:4px solid var(--decades-gold);border-radius:3px 13px 13px 3px;
+    background:linear-gradient(135deg,rgba(214,178,112,.16),rgba(123,52,68,.055));
+    box-shadow:0 10px 28px rgba(0,0,0,.07);font-family:Georgia,serif
+}
+.chronicle-note:before{content:"❦";position:absolute;right:1rem;top:.55rem;color:var(--decades-gold);font-size:1.35rem;opacity:.8}
+.chronicle-note-title{font-weight:700;font-size:1.05rem;letter-spacing:.035em;margin-bottom:.25rem}
+.chronicle-note-text{opacity:.8;font-style:italic;max-width:880px;padding-right:2rem}
 .section-note{opacity:.72;font-size:.92rem}
 .pill{
     display:inline-block;padding:.2rem .55rem;border-radius:999px;
@@ -172,6 +183,40 @@ def page_header(title,subtitle=None):
     st.title(title)
     if subtitle:
         st.markdown(f"<div class='page-subtitle'>{subtitle}</div>",unsafe_allow_html=True)
+
+def chronicle_note(title,text):
+    st.markdown(
+        f"<div class='chronicle-note'><div class='chronicle-note-title'>{title}</div>"
+        f"<div class='chronicle-note-text'>{text}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+def chronicle_value(value,fallback=""):
+    return fallback if value is None or not pd.notna(value) or not str(value).strip() else str(value).strip()
+
+def timeline_chronicle_entry(row,start_year,days_per_year):
+    date=global_day_label(int(row["global_day"]),start_year,days_per_year)
+    person=chronicle_value(row.get("primary_sim"))
+    voice=f"I, {person}, record" if person else "The household chronicler records"
+    details=chronicle_value(row.get("details"))
+    subject=chronicle_value(row.get("title"),chronicle_value(row.get("category"),"an event of note"))
+    sentence=f"{voice}: {subject}."
+    if details:
+        sentence+=f" {details.rstrip('.')} ."
+    return f"{date} — {sentence}".replace(" .",".")
+
+def roll_chronicle_entry(row,start_year,days_per_year):
+    day=int(row.get("due_global_day") or 1)
+    date=global_day_label(day,start_year,days_per_year)
+    person=chronicle_value(row.get("sim_name"),chronicle_value(row.get("sim_id"),"an unnamed soul"))
+    trial=chronicle_value(row.get("roll_type"),"the appointed trial")
+    completed=row.get("completed")
+    if pd.notna(completed) and bool(completed):
+        result=chronicle_value(row.get("outcome"),"the result was entered")
+        actual=chronicle_value(row.get("actual_roll"))
+        lot=f" The lot cast was {actual}." if actual else ""
+        return f"{date} — I, {person}, faced {trial}.{lot} {result.rstrip('.')}."
+    return f"{date} — I, {person}, am called to face {trial}; the result has yet to be written."
 
 def friendly_df(df,rename=None,cols=None):
     out=df.copy()
@@ -982,7 +1027,11 @@ elif page=="Family Tree":
                 else: st.caption("None recorded")
 
 elif page=="Timeline":
-    page_header("Timeline","Explore the challenge chronologically without digging through individual tables.")
+    page_header("The Great Chronicle","Explore the challenge chronologically without digging through individual tables.")
+    chronicle_note(
+        "From the keeper of the household annals",
+        "Here are gathered the births, unions, deaths, journeys, and turns of fortune witnessed across the generations.",
+    )
     st.caption("Everything that happened, in one place. Filter it down to a person, household, category, or time period.")
 
     c=connect()
@@ -1030,7 +1079,7 @@ elif page=="Timeline":
         b.metric("First visible Global Day",int(view.global_day.min()) if not view.empty else "—")
         c.metric("Last visible Global Day",int(view.global_day.max()) if not view.empty else "—")
 
-        tab_events,tab_lifespans,tab_decades=st.tabs(["Chronology","Sim lifespans","Decade overview"])
+        tab_events,tab_lifespans,tab_decades=st.tabs(["Chronicle entries","Lives recorded","By the decade"])
 
         with tab_events:
             if view.empty:
@@ -1050,10 +1099,11 @@ elif page=="Timeline":
                 fig.update_layout(height=max(520,120+len(view.category.unique())*35),legend_title_text="Category")
                 fig.update_xaxes(rangeslider_visible=True)
                 st.plotly_chart(fig,use_container_width=True)
-                st.subheader("Chronological feed")
+                st.subheader("Entries from the chronicle")
                 feed=view.sort_values(["global_day","category","title"],ascending=[False,True,True])[
                     ["global_day","year","category","title","primary_sim","household_id","details","source_id"]
-                ]
+                ].copy()
+                feed.insert(0,"Chronicle entry",feed.apply(lambda row:timeline_chronicle_entry(row,sy,dpy),axis=1))
                 st.dataframe(feed,use_container_width=True,hide_index=True,height=520)
 
         with tab_lifespans:
@@ -1222,8 +1272,12 @@ elif page=="Pregnancies":
 
 
 elif page=="Rolls":
-    page_header("Rolls","See what is due, record outcomes, and inspect the automatic schedule.")
-    tab_browse,tab_result,tab_add,tab_auto=st.tabs(["Roll log","✅ Record result","➕ Add manually","🗓️ Automatic schedule"])
+    page_header("The Book of Trials","See what is due, record outcomes, and inspect the automatic schedule.")
+    chronicle_note(
+        "Recorded by those who endured",
+        "Each appointed trial is set down in the voice of the person who faced it; unwritten outcomes remain open until fate is decided.",
+    )
+    tab_browse,tab_result,tab_add,tab_auto=st.tabs(["Chronicle ledger","✒️ Enter an outcome","➕ Add an entry","🗓️ Appointed trials"])
     with tab_browse:
         a,b=st.columns([1,1])
         only_open=a.checkbox("Only incomplete",True,key="roll_browse_open")
@@ -1233,10 +1287,14 @@ elif page=="Rolls":
         overdue=int((rdf.due_global_day<current_gd()).sum()) if not rdf.empty and "due_global_day" in rdf else 0
         a,b,c=st.columns(3)
         a.metric("Shown",len(rdf)); b.metric("Overdue",overdue); c.metric("Due today",int((rdf.due_global_day==current_gd()).sum()) if not rdf.empty else 0)
+        roll_sy,roll_dpy=calendar_settings()
+        if not rdf.empty:
+            rdf=rdf.copy()
+            rdf.insert(0,"Chronicle entry",rdf.apply(lambda row:roll_chronicle_entry(row,roll_sy,roll_dpy),axis=1))
         show=friendly_df(rdf,
             rename={"due_global_day":"Due GD","sim_name":"Sim","roll_type":"Roll","die":"Die","bad_results":"Bad results",
                     "actual_roll":"Actual","outcome":"Outcome","completed":"Done"},
-            cols=["due_global_day","sim_name","roll_type","die","bad_results","actual_roll","outcome","completed"])
+            cols=["Chronicle entry","due_global_day","sim_name","roll_type","die","bad_results","actual_roll","outcome","completed"])
         st.dataframe(show,use_container_width=True,hide_index=True,height=520)
         with st.expander("Show IDs and technical roll fields"):
             st.dataframe(rdf,use_container_width=True,hide_index=True,height=320)
