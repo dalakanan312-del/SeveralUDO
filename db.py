@@ -45,8 +45,20 @@ def _translate(statement):
 
 
 class Cursor:
-    def __init__(self, cursor):
+    def __init__(self, cursor, schema_name):
         self._cursor = cursor
+        self._schema_name = schema_name
+
+    def _select_schema(self):
+        # Neon/PgBouncer may assign a different server connection after each
+        # commit. SET LOCAL keeps every transaction pinned to the intended save.
+        from psycopg import sql
+
+        self._cursor.execute(
+            sql.SQL("SET LOCAL search_path TO {}, public").format(
+                sql.Identifier(self._schema_name)
+            )
+        )
 
     @property
     def description(self):
@@ -76,10 +88,12 @@ class Cursor:
         self._cursor.close()
 
     def execute(self, statement, parameters=()):
+        self._select_schema()
         self._cursor.execute(_translate(statement), tuple(parameters or ()))
         return self
 
     def executemany(self, statement, sequence):
+        self._select_schema()
         self._cursor.executemany(_translate(statement), sequence)
         return self
 
@@ -91,14 +105,10 @@ class Connection:
         storage.ensure_search_path(raw, schema_name)
 
     def execute(self, statement, parameters=()):
-        cursor = self._raw.cursor()
-        cursor.execute(_translate(statement), tuple(parameters or ()))
-        return Cursor(cursor)
+        return Cursor(self._raw.cursor(), self.schema_name).execute(statement, parameters)
 
     def executemany(self, statement, sequence):
-        cursor = self._raw.cursor()
-        cursor.executemany(_translate(statement), sequence)
-        return Cursor(cursor)
+        return Cursor(self._raw.cursor(), self.schema_name).executemany(statement, sequence)
 
     def commit(self):
         self._raw.commit()
@@ -110,7 +120,7 @@ class Connection:
         self._raw.close()
 
     def cursor(self):
-        return Cursor(self._raw.cursor())
+        return Cursor(self._raw.cursor(), self.schema_name)
 
 
 def connect():
