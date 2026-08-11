@@ -41,6 +41,16 @@ def _maternal_stage(age_days):
     if age_days < 240: return "Adult"
     return "Elder"
 
+def _applies(value,candidates,universal=("all","global","any","everywhere","everyone","all countries","all classes")):
+    target=(value or "").strip().casefold()
+    if not target or target in universal:
+        return True
+    for candidate in candidates:
+        text=(candidate or "").strip().casefold()
+        if text and (target in text or text in target):
+            return True
+    return False
+
 def _existing_count(con, source_id, sim_id, due_gd, roll_type):
     return con.execute("""
         SELECT COUNT(*) FROM rolls
@@ -127,6 +137,36 @@ def preview(con, current_gd):
             "quantity":qty,"kind":"Maternal","year":spec["year"],"era_id":spec["era_id"],
             "era_name":spec["era_name"],"rule_status":spec["rule_status"]
         })
+
+    events=con.execute("""SELECT event_id,event_name,start_global_day,location,affected_class,notes
+                          FROM events
+                          WHERE COALESCE(active,1)=1 AND COALESCE(roll_required,0)=1
+                            AND start_global_day IS NOT NULL""").fetchall()
+    event_sims=con.execute("""SELECT s.sim_id,s.title,s.first_name,s.last_name,s.suffix,
+                                     s.birth_global_day,s.death_global_day,s.birthplace,s.species_occult,
+                                     h.location AS household_location,h.social_class
+                              FROM sims s LEFT JOIN households h ON h.household_id=s.current_household_id""").fetchall()
+    for event in events:
+        due=int(event["start_global_day"])
+        if due<tracking:
+            continue
+        for sim in event_sims:
+            if sim["birth_global_day"] is not None and int(sim["birth_global_day"])>due:
+                continue
+            if sim["death_global_day"] is not None and int(sim["death_global_day"])<due:
+                continue
+            if not _applies(event["location"],[sim["household_location"],sim["birthplace"]]):
+                continue
+            if not _applies(event["affected_class"],[sim["social_class"]]):
+                continue
+            obligations.append({
+                "source_id":event["event_id"],"sim_id":sim["sim_id"],"sim_name":_name(sim),
+                "species":(sim["species_occult"] or "Human").strip() or "Human",
+                "due_global_day":due,"roll_type":f"Event — {event['event_name'] or event['event_id']}",
+                "die":None,"bad_results":None,"quantity":1,"kind":"Event",
+                "year":start_year+(due-1)//days_per_year,"era_id":None,
+                "era_name":None,"rule_status":"Event-defined",
+            })
     return obligations
 
 def sync_rolls(con,current_gd):
@@ -136,8 +176,11 @@ def sync_rolls(con,current_gd):
         if o["due_global_day"]>current_gd: continue
         # A due obligation with no era table is still created so the user never misses the roll;
         # die/results remain blank and the note tells them to configure that era.
-        note = f"Auto-generated from {o['era_name']}" if o["rule_status"]=="Ready" \
-               else f"Auto-generated obligation; {o['rule_status']} for {o['species']} in year {o['year']}"
+        if o["kind"]=="Event":
+            note=f"Auto-generated for {o['roll_type']}"
+        else:
+            note = f"Auto-generated from {o['era_name']}" if o["rule_status"]=="Ready" \
+                   else f"Auto-generated obligation; {o['rule_status']} for {o['species']} in year {o['year']}"
         n=_insert_missing(
             con,source_id=o["source_id"],sim_id=o["sim_id"],sim_name=o["sim_name"],
             due_gd=o["due_global_day"],roll_type=o["roll_type"],die=o["die"],bad_results=o["bad_results"],
@@ -145,7 +188,7 @@ def sync_rolls(con,current_gd):
         )
         if n:
             added+=n; by_kind[o["kind"]]+=n
-            if o["rule_status"]!="Ready": skipped_missing_rules+=n
+            if o["rule_status"] not in ("Ready","Event-defined"): skipped_missing_rules+=n
     con.commit()
     return {"added":added,"by_kind":dict(by_kind),"considered":len(obligations),
             "missing_rule_rows":skipped_missing_rules}

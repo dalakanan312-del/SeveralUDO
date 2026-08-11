@@ -1370,7 +1370,7 @@ elif page=="Rolls":
             st.info("No automatic obligations in this preview window.")
 
         st.markdown("**Automatically supported from your current rules:**")
-        st.write("Being Born, Newborn, Infant, Toddler, Child, Preteen, Teen, Young Adult, Adult, Elder Death-Age RNG, and maternal follow-up rolls.")
+        st.write("Being Born, Newborn, Infant, Toddler, Child, Preteen, Teen, Young Adult, Adult, Elder Death-Age RNG, maternal follow-up rolls, and historical-event rolls for eligible living Sims.")
         st.caption("Add or edit later-year and occult/species roll tables under Rules & Data → Roll Tables. The scheduler automatically selects the matching table by historical year and species.")
 
 
