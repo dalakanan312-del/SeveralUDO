@@ -900,6 +900,11 @@ elif page=="Family Tree":
                     added.add(key)
                     net.add_edge(a_id,b_id,title=f"{typ} • {status}",dashes=True,arrows="",color="#888888")
 
+        st.markdown(
+            "**Family-tree key:** **→** solid arrow = parent to child &nbsp; | &nbsp; "
+            "**┈┈** dashed gray line = marriage or partnership &nbsp; | &nbsp; "
+            "**Thick border** = selected Sim"
+        )
         st.components.v1.html(net.generate_html(),height=780,scrolling=True)
         st.caption("Solid arrows are parent → child. Dashed lines are marriages/partnerships. Use the navigation buttons to pan and zoom.")
 
@@ -1152,9 +1157,28 @@ elif page=="Pregnancies":
                             (final_status,babies,
                              gd_caption(int_or_none(delivery_gd)) if int_or_none(delivery_gd) is not None else pr.get("delivery_date"),
                              outcome or None,complication or None,multiple or None,notes or None,pid))
+                if final_status.strip().lower()=="miscarriage":
+                    con.execute(
+                        "DELETE FROM rolls WHERE source_id=? AND lower(COALESCE(roll_type,'')) LIKE 'maternal%'",
+                        (pid,),
+                    )
                 con.commit(); con.close()
                 sync_auto_rolls(show_notice=False)
-                st.success(f"Saved outcome for {pid}; maternal roll schedule refreshed.")
+                st.success(f"Saved outcome for {pid}; roll schedule refreshed.")
+            with st.expander("Delete this pregnancy",expanded=False):
+                st.warning("This permanently deletes the pregnancy record and its linked rolls.")
+                preg_delete_confirm=st.text_input(f"Type {pid} to confirm deletion",key=f"preg_delete_confirm_{pid}")
+                if st.button(
+                    "Permanently delete pregnancy",disabled=preg_delete_confirm.strip()!=pid,
+                    key=f"preg_delete_btn_{pid}"
+                ):
+                    con=connect()
+                    try:
+                        admin_ops.delete_pregnancy(con,pid)
+                    except Exception as error:
+                        con.rollback(); con.close(); st.error(f"Could not delete pregnancy: {error}")
+                    else:
+                        con.close(); st.success(f"Deleted {pid} and its linked rolls."); st.rerun()
 
 
 elif page=="Rolls":
@@ -1476,6 +1500,20 @@ elif page=="Relationships":
                 con.commit(); con.close()
                 st.success("Relationship saved.")
                 st.rerun()
+            with st.expander("Delete this marriage / relationship",expanded=False):
+                st.warning("This permanently deletes the relationship and its saved couple portrait. The Sims are not deleted.")
+                rel_delete_confirm=st.text_input(f"Type {rid} to confirm deletion",key=f"rel_delete_confirm_{rid}")
+                if st.button(
+                    "Permanently delete relationship",disabled=rel_delete_confirm.strip()!=rid,
+                    key=f"rel_delete_btn_{rid}"
+                ):
+                    con=connect()
+                    try:
+                        admin_ops.delete_relationship(con,rid)
+                    except Exception as error:
+                        con.rollback(); con.close(); st.error(f"Could not delete relationship: {error}")
+                    else:
+                        con.close(); st.success(f"Deleted {rid}."); st.rerun()
 
 elif page=="Households":
     page_header("Households","Create households, view members, move Sims, and edit household details.")
@@ -1609,6 +1647,23 @@ elif page=="Households":
                                WHERE household_id=?""",
                             (name or None,location or None,social or None,int_or_none(start),int_or_none(end),1 if active else 0,notes or None,hh))
                 con.commit(); con.close(); st.success(f"Saved {hh}")
+            with st.expander("Delete this household",expanded=False):
+                member_count=scalar("SELECT COUNT(*) FROM sims WHERE current_household_id=?",(hh,))
+                st.warning(
+                    f"This permanently deletes the household. {member_count} assigned Sim(s) will become unassigned; the Sims are not deleted."
+                )
+                hh_delete_confirm=st.text_input(f"Type {hh} to confirm deletion",key=f"hh_delete_confirm_{hh}")
+                if st.button(
+                    "Permanently delete household",disabled=hh_delete_confirm.strip()!=hh,
+                    key=f"hh_delete_btn_{hh}"
+                ):
+                    con=connect()
+                    try:
+                        admin_ops.delete_household(con,hh)
+                    except Exception as error:
+                        con.rollback(); con.close(); st.error(f"Could not delete household: {error}")
+                    else:
+                        con.close(); st.success(f"Deleted {hh}; assigned Sims are now unassigned."); st.rerun()
 
 
 elif page=="Events":

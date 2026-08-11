@@ -84,6 +84,44 @@ def delete_sim(connection, sim_id, commit=True):
         connection.commit()
 
 
+def delete_pregnancy(connection, pregnancy_id, commit=True):
+    if not connection.execute("SELECT 1 FROM pregnancies WHERE pregnancy_id=?", (pregnancy_id,)).fetchone():
+        raise ValueError("Pregnancy not found.")
+    connection.execute("DELETE FROM rolls WHERE source_id=?", (pregnancy_id,))
+    connection.execute("DELETE FROM pregnancies WHERE pregnancy_id=?", (pregnancy_id,))
+    if commit:
+        connection.commit()
+
+
+def delete_relationship(connection, relationship_id, commit=True):
+    row = connection.execute(
+        "SELECT partner1_id,partner2_id FROM relationships WHERE relationship_id=?", (relationship_id,)
+    ).fetchone()
+    if not row:
+        raise ValueError("Relationship not found.")
+    partner_ids = [identifier for identifier in row if identifier]
+    connection.execute("DELETE FROM relationship_photos WHERE relationship_id=?", (relationship_id,))
+    connection.execute("DELETE FROM relationships WHERE relationship_id=?", (relationship_id,))
+    if partner_ids:
+        import profiles
+        profiles.sync_spouse_ids(connection, partner_ids, commit=False)
+    if commit:
+        connection.commit()
+
+
+def delete_household(connection, household_id, commit=True):
+    if not connection.execute("SELECT 1 FROM households WHERE household_id=?", (household_id,)).fetchone():
+        raise ValueError("Household not found.")
+    connection.execute("UPDATE sims SET current_household_id=NULL WHERE current_household_id=?", (household_id,))
+    connection.execute("UPDATE event_results SET household_id=NULL WHERE household_id=?", (household_id,))
+    connection.execute(
+        "UPDATE settings SET value='' WHERE key='main_household_id' AND value=?", (household_id,)
+    )
+    connection.execute("DELETE FROM households WHERE household_id=?", (household_id,))
+    if commit:
+        connection.commit()
+
+
 def refresh_household_counts(connection, household_id=None, commit=True):
     household_ids = (
         [household_id]

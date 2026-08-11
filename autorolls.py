@@ -109,6 +109,9 @@ def preview(con, current_gd):
                                WHERE p.conception_global_day IS NOT NULL AND p.conception_global_day<=?
                                  AND p.due_global_day IS NOT NULL""",(current_gd,)).fetchall()
     for p in pregnancies:
+        # Miscarriages do not create a maternal delivery roll.
+        if (p["status"] or "").strip().lower() == "miscarriage":
+            continue
         due=int(p["due_global_day"])
         if due<tracking or p["mother_birth"] is None or p["mother_id"] is None: continue
         stage=_maternal_stage(due-int(p["mother_birth"]))
