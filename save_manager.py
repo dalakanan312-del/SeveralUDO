@@ -89,7 +89,7 @@ def ensure_setup():
             connection.commit()
         _CLAIMED_WORKSPACES.add(owner)
         _invalidate_save_cache()
-    saves = list_saves(force_refresh=True)
+    saves = list_saves()
     pending = [item["schema_name"] for item in saves if item["schema_name"] not in _ENSURED_SCHEMAS]
     if pending:
         with storage.raw_connect(use_direct=True) as connection:

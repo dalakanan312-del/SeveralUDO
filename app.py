@@ -838,9 +838,9 @@ elif page=="Family Tree":
 
         photo_map={}
         if show_portraits:
-            con=connect(); profiles.ensure_schema(con)
-            for node in sub.nodes:
-                pr=profiles.get_photo(con,node)
+            con=connect()
+            tree_photos=profiles.get_photos(con,list(sub.nodes))
+            for node,pr in tree_photos.items():
                 if pr:
                     mime=pr["mime_type"] or "image/jpeg"
                     photo_map[node]=f"data:{mime};base64,{base64.b64encode(pr['image_data']).decode('ascii')}"

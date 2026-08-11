@@ -45,13 +45,16 @@ def _translate(statement):
 
 
 class Cursor:
-    def __init__(self, cursor, schema_name):
+    def __init__(self, cursor, connection):
         self._cursor = cursor
-        self._schema_name = schema_name
+        self._connection = connection
+        self._schema_name = connection.schema_name
 
     def _select_schema(self):
         # Neon/PgBouncer may assign a different server connection after each
-        # commit. SET LOCAL keeps every transaction pinned to the intended save.
+        # commit. Select once per transaction rather than before every query.
+        if self._connection._schema_selected_in_transaction:
+            return
         from psycopg import sql
 
         self._cursor.execute(
@@ -59,6 +62,7 @@ class Cursor:
                 sql.Identifier(self._schema_name)
             )
         )
+        self._connection._schema_selected_in_transaction = True
 
     @property
     def description(self):
@@ -102,25 +106,28 @@ class Connection:
     def __init__(self, raw, schema_name):
         self._raw = raw
         self.schema_name = schema_name
+        self._schema_selected_in_transaction = False
         storage.ensure_search_path(raw, schema_name)
 
     def execute(self, statement, parameters=()):
-        return Cursor(self._raw.cursor(), self.schema_name).execute(statement, parameters)
+        return Cursor(self._raw.cursor(), self).execute(statement, parameters)
 
     def executemany(self, statement, sequence):
-        return Cursor(self._raw.cursor(), self.schema_name).executemany(statement, sequence)
+        return Cursor(self._raw.cursor(), self).executemany(statement, sequence)
 
     def commit(self):
         self._raw.commit()
+        self._schema_selected_in_transaction = False
 
     def rollback(self):
         self._raw.rollback()
+        self._schema_selected_in_transaction = False
 
     def close(self):
         self._raw.close()
 
     def cursor(self):
-        return Cursor(self._raw.cursor(), self.schema_name)
+        return Cursor(self._raw.cursor(), self)
 
 
 def connect():

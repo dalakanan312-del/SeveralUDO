@@ -18,11 +18,21 @@ def ensure_schema(con):
     con.commit()
 
 def get_photo(con, sim_id):
-    ensure_schema(con)
     return con.execute(
         "SELECT image_data,mime_type,filename,updated_at FROM sim_photos WHERE sim_id=?",
         (sim_id,)
     ).fetchone()
+
+def get_photos(con, sim_ids):
+    identifiers=[identifier for identifier in dict.fromkeys(sim_ids) if identifier]
+    if not identifiers:
+        return {}
+    placeholders=",".join("?" for _ in identifiers)
+    rows=con.execute(
+        f"SELECT sim_id,image_data,mime_type,filename,updated_at FROM sim_photos WHERE sim_id IN ({placeholders})",
+        identifiers,
+    ).fetchall()
+    return {row["sim_id"]:row for row in rows}
 
 def save_photo(con, sim_id, uploaded_file):
     if uploaded_file is None:
