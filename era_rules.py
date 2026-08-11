@@ -1,7 +1,12 @@
 
 from __future__ import annotations
 
+_ENSURED_SCHEMAS=set()
+
 def ensure_schema(con):
+    schema_key=getattr(con,"schema_name",None)
+    if schema_key and schema_key in _ENSURED_SCHEMAS:
+        return
     con.execute("""
     CREATE TABLE IF NOT EXISTS roll_rule_eras(
         era_id TEXT PRIMARY KEY,
@@ -26,6 +31,8 @@ def ensure_schema(con):
     """)
     con.commit()
     seed_pre1700(con)
+    if schema_key:
+        _ENSURED_SCHEMAS.add(schema_key)
 
 def seed_pre1700(con):
     exists=con.execute("SELECT 1 FROM roll_rule_eras WHERE era_id='ERA-HUMAN-PRE1700'").fetchone()

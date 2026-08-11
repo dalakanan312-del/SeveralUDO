@@ -265,9 +265,6 @@ def status_badge(text):
 _schema_con=connect()
 profiles.ensure_schema(_schema_con)
 relationship_photos.ensure_schema(_schema_con)
-autorolls.backfill_lifecycle_schedules(
-    _schema_con,int(float(setting(_schema_con,"current_global_day",1)))
-)
 _schema_con.close()
 
 with st.sidebar:
@@ -1405,6 +1402,19 @@ elif page=="Rolls":
                 st.caption("Future rows marked missing are intentional: they will be created automatically when their Global Day arrives.")
         else:
             st.info("No automatic obligations in this preview window.")
+
+        with st.expander("Repair one Sim's lifecycle schedule",expanded=False):
+            st.caption("Use this for a Sim entered before automatic newborn scheduling was enabled. Existing and completed rolls are preserved.")
+            repair_options=sim_options(blank=False)
+            repair_sim=st.selectbox("Sim to repair",repair_options,key="roll_repair_sim") if repair_options else None
+            if st.button("Schedule missing lifecycle rolls",disabled=not bool(repair_sim),key="roll_repair_btn"):
+                repair_id=sid(repair_sim)
+                con=connect()
+                birth_row=con.execute("SELECT birth_global_day FROM sims WHERE sim_id=?",(repair_id,)).fetchone()
+                through=max(current_gd(),int(birth_row[0]) if birth_row and birth_row[0] is not None else current_gd())
+                added=autorolls.schedule_sim_lifecycle(con,repair_id,through)
+                con.close()
+                st.success(f"Scheduled {added} missing lifecycle roll(s) for {repair_id}.")
 
         st.markdown("**Automatically supported from your current rules:**")
         st.write("Being Born, Newborn, Infant, Toddler, Child, Preteen, Teen, Young Adult, Adult, Elder Death-Age RNG, maternal follow-up rolls, and historical-event rolls for eligible living Sims.")
