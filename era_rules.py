@@ -72,7 +72,7 @@ def roll_spec(con, year, roll_type, species='Human'):
 
 def next_era_id(con):
     nums=[]
-    for (eid,) in con.execute("SELECT era_id FROM roll_rule_eras WHERE era_id LIKE 'ERA-%'"):
+    for (eid,) in con.execute("SELECT era_id FROM roll_rule_eras WHERE era_id LIKE ?",("ERA-%",)):
         try:
             nums.append(int(str(eid).rsplit("-",1)[1]))
         except Exception:

@@ -1159,8 +1159,8 @@ elif page=="Pregnancies":
                              outcome or None,complication or None,multiple or None,notes or None,pid))
                 if final_status.strip().lower()=="miscarriage":
                     con.execute(
-                        "DELETE FROM rolls WHERE source_id=? AND lower(COALESCE(roll_type,'')) LIKE 'maternal%'",
-                        (pid,),
+                        "DELETE FROM rolls WHERE source_id=? AND lower(COALESCE(roll_type,'')) LIKE ?",
+                        (pid,"maternal%"),
                     )
                 con.commit(); con.close()
                 sync_auto_rolls(show_notice=False)

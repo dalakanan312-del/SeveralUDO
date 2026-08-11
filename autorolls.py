@@ -51,7 +51,7 @@ def _existing_count(con, source_id, sim_id, due_gd, roll_type):
 
 def _next_roll_id(con):
     nums=[]
-    for (rid,) in con.execute("SELECT roll_id FROM rolls WHERE roll_id LIKE 'ROLL-%'"):
+    for (rid,) in con.execute("SELECT roll_id FROM rolls WHERE roll_id LIKE ?",("ROLL-%",)):
         try: nums.append(int(str(rid).rsplit("-",1)[1]))
         except Exception: pass
     return f"ROLL-{max(nums,default=0)+1:04d}"
