@@ -1300,7 +1300,7 @@ elif page=="Relationships":
                 st.markdown(f"**{row.get('partner1_name') or row.get('partner1_id') or 'Unknown'}**")
             with mid:
                 if marriage_photo:
-                    st.image(marriage_photo["image_data"],use_container_width=True)
+                    st.image(marriage_photo["image_data"],use_column_width=True)
                 st.markdown("### 💞")
                 st.markdown(f"**{row.get('type') or 'Relationship'}**")
                 st.markdown(status_badge(row.get("status") or "Unknown"),unsafe_allow_html=True)
