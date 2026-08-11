@@ -22,6 +22,7 @@ import admin_ops
 import workspace_access
 import relationship_photos
 import marriage_ai
+import dice_roller
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -93,6 +94,9 @@ h1{margin-bottom:.15rem}
 .chronicle-note:before{content:"❦";position:absolute;right:1rem;top:.55rem;color:var(--decades-gold);font-size:1.35rem;opacity:.8}
 .chronicle-note-title{font-weight:700;font-size:1.05rem;letter-spacing:.035em;margin-bottom:.25rem}
 .chronicle-note-text{opacity:.8;font-style:italic;max-width:880px;padding-right:2rem}
+.dice-case{margin:.75rem 0 .45rem;padding:.85rem 1rem;border:1px solid var(--decades-line);border-radius:13px;background:linear-gradient(145deg,rgba(82,43,24,.13),rgba(199,154,74,.12));box-shadow:inset 0 0 22px rgba(75,43,22,.08)}
+.dice-case-title{font-family:Georgia,serif;font-weight:700;letter-spacing:.04em}
+.dice-case-note{font-size:.88rem;opacity:.72;margin-top:.18rem}
 .section-note{opacity:.72;font-size:.92rem}
 .pill{
     display:inline-block;padding:.2rem .55rem;border-radius:999px;
@@ -217,6 +221,33 @@ def roll_chronicle_entry(row,start_year,days_per_year):
         lot=f" The lot cast was {actual}." if actual else ""
         return f"{date} — I, {person}, faced {trial}.{lot} {result.rstrip('.')}."
     return f"{date} — I, {person}, am called to face {trial}; the result has yet to be written."
+
+def historical_dice_tray(required_die,key_prefix,result_key):
+    notation=chronicle_value(required_die)
+    spec=dice_roller.parse(notation)
+    shown=notation if spec else "the common dice set"
+    st.markdown(
+        f"<div class='dice-case'><div class='dice-case-title'>⚜ The carved dice case · {shown}</div>"
+        "<div class='dice-case-note'>The appointed die is selected from the rule table. Every control has a written label and may be reached by keyboard.</div></div>",
+        unsafe_allow_html=True,
+    )
+    choices=[spec["sides"]] if spec else list(dice_roller.SUPPORTED_DICE)
+    columns=st.columns(len(choices))
+    for column,sides in zip(columns,choices):
+        roll_notation=notation if spec else f"d{sides}"
+        if column.button(
+            f"Cast {roll_notation}",key=f"{key_prefix}_d{sides}",use_container_width=True,
+            help=f"Roll {roll_notation} and place the total in the Actual roll field.",
+        ):
+            result=dice_roller.roll(roll_notation)
+            st.session_state[result_key]=str(result["total"])
+            detail=" + ".join(str(value) for value in result["rolls"])
+            modifier=result["modifier"]
+            st.session_state[f"{key_prefix}_detail"]=(
+                f"{roll_notation}: {detail}{f' {modifier:+d}' if modifier else ''} = {result['total']}"
+            )
+    if st.session_state.get(f"{key_prefix}_detail"):
+        st.success(f"Cast result — {st.session_state[f'{key_prefix}_detail']}")
 
 def friendly_df(df,rename=None,cols=None):
     out=df.copy()
@@ -356,6 +387,7 @@ if page=="Today":
             pick=st.selectbox("Choose roll",labels,key="today_roll_pick")
             rid=pick.split(" — ",1)[0]
             rr=due[due.roll_id==rid].iloc[0]
+            historical_dice_tray(rr.get("die"),f"today_dice_{rid}","today_roll_actual")
             a,b=st.columns(2)
             actual=a.text_input("Actual roll",key="today_roll_actual")
             outcome=b.text_input("Outcome",key="today_roll_outcome")
@@ -2602,7 +2634,71 @@ elif page=="Rules & Data":
     era_rules.ensure_schema(c)
     c.close()
 
-    tab_rules,tab_tables,tab_data=st.tabs(["Imported Rules","Roll Tables","Data & Backup"])
+    tab_settings,tab_rules,tab_tables,tab_data=st.tabs(["Challenge Settings","Imported Rules","Roll Tables","Data & Backup"])
+
+    with tab_settings:
+        st.subheader("Automatic challenge defaults")
+        st.caption("The tracker works immediately with its built-in defaults. Change these values only when your challenge rules call for it.")
+        con=connect()
+        setting_rows=dict(con.execute(
+            "SELECT key,value FROM settings WHERE key IN ('start_year','days_per_year','current_global_day')"
+        ).fetchall())
+        pregnancy_row=con.execute(
+            "SELECT source_row,col_b FROM rules WHERE row_label=? ORDER BY source_row DESC LIMIT 1",
+            ("Pregnancy Length (challenge days)",),
+        ).fetchone()
+        con.close()
+        saved_start=int(float(setting_rows.get("start_year",1200)))
+        saved_dpy=max(1,int(float(setting_rows.get("days_per_year",4))))
+        saved_gd=int(float(setting_rows.get("current_global_day",1)))
+        saved_year,saved_day=global_day_to_year_day(saved_gd,saved_start,saved_dpy)
+        saved_pregnancy=max(1,int(float(pregnancy_row["col_b"] if pregnancy_row and pregnancy_row["col_b"] else 3)))
+        chronicle_note(
+            "The steward's calendar",
+            "Recommended defaults are Start Year 1200, four challenge days per year, and a three-day pregnancy. All may be amended without editing raw tables.",
+        )
+        with st.form("challenge_settings_form"):
+            a,b,c1=st.columns(3)
+            calendar_start=a.number_input("Calendar start year",-10000,10000,saved_start,step=1)
+            days_year=b.number_input("Challenge days per year",1,365,saved_dpy,step=1)
+            pregnancy_days=c1.number_input("Pregnancy length (challenge days)",1,365,saved_pregnancy,step=1)
+            a,b=st.columns(2)
+            current_year_input=a.number_input("Current historical year",-10000,10000,saved_year,step=1)
+            current_day_input=b.number_input(
+                "Current challenge day within year",1,int(days_year),min(saved_day,int(days_year)),step=1
+            )
+            st.warning("Changing the calendar start or days per year changes how every existing Global Day is displayed; records themselves are not deleted.")
+            save_challenge_settings=st.form_submit_button("Save challenge settings",type="primary",use_container_width=True)
+        if save_challenge_settings:
+            new_gd=(int(current_year_input)-int(calendar_start))*int(days_year)+int(current_day_input)
+            con=connect()
+            try:
+                for key,value in (
+                    ("start_year",calendar_start),("days_per_year",days_year),("current_global_day",new_gd)
+                ):
+                    con.execute(
+                        "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (key,str(int(value))),
+                    )
+                if pregnancy_row:
+                    con.execute("UPDATE rules SET col_b=? WHERE source_row=?",(str(int(pregnancy_days)),pregnancy_row["source_row"]))
+                else:
+                    next_source=con.execute("SELECT COALESCE(MAX(source_row),0)+1 FROM rules").fetchone()[0]
+                    con.execute(
+                        "INSERT INTO rules(section,row_label,col_b,source_row) VALUES(?,?,?,?)",
+                        ("PREGNANCY","Pregnancy Length (challenge days)",str(int(pregnancy_days)),next_source),
+                    )
+                con.commit()
+            except Exception as error:
+                con.rollback(); con.close(); st.error(f"Could not save challenge settings: {error}")
+            else:
+                con.close(); sync_auto_rolls(show_notice=False)
+                st.success("Challenge settings saved and the automatic roll schedule refreshed.")
+                st.rerun()
+
+        with st.expander("Try the complete carved dice set",expanded=False):
+            st.caption("A practice tray only; these casts are not written to the roll ledger.")
+            historical_dice_tray(None,"rules_dice_practice","rules_dice_practice_result")
 
     with tab_rules:
         st.subheader("Imported challenge rules")
