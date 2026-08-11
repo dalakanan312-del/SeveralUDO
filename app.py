@@ -20,6 +20,7 @@ import storage
 import neon_ui
 import admin_ops
 import workspace_access
+import relationship_photos
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -149,6 +150,7 @@ def status_badge(text):
 # Lightweight schema migrations for optional app features.
 _schema_con=connect()
 profiles.ensure_schema(_schema_con)
+relationship_photos.ensure_schema(_schema_con)
 _schema_con.close()
 
 with st.sidebar:
@@ -1288,6 +1290,7 @@ elif page=="Relationships":
             con=connect()
             p1photo=profiles.get_photo(con,row.get("partner1_id")) if row.get("partner1_id") else None
             p2photo=profiles.get_photo(con,row.get("partner2_id")) if row.get("partner2_id") else None
+            marriage_photo=relationship_photos.get_photo(con,rid)
             con.close()
             left,mid,right=st.columns([1,2,1])
             with left:
@@ -1295,6 +1298,8 @@ elif page=="Relationships":
                 else: st.markdown("## 👤")
                 st.markdown(f"**{row.get('partner1_name') or row.get('partner1_id') or 'Unknown'}**")
             with mid:
+                if marriage_photo:
+                    st.image(marriage_photo["image_data"],use_container_width=True)
                 st.markdown("### 💞")
                 st.markdown(f"**{row.get('type') or 'Relationship'}**")
                 st.markdown(status_badge(row.get("status") or "Unknown"),unsafe_allow_html=True)
@@ -1325,6 +1330,10 @@ elif page=="Relationships":
         a,b=st.columns(2)
         location=a.text_input("Location",key="rel_add_location")
         status=b.selectbox("Starting status",["Active","Other"],key="rel_add_status")
+        marriage_photo=st.file_uploader(
+            "Marriage / couple portrait (optional)",type=["png","jpg","jpeg","webp"],key="rel_add_photo",
+            help="Stored inside this private save and included in exports and backups."
+        )
         notes=st.text_area("Notes",key="rel_add_notes")
         if st.button("Add relationship",type="primary",use_container_width=True,key="rel_add_btn"):
             s1,s2=sid(p1),sid(p2)
@@ -1349,6 +1358,11 @@ elif page=="Relationships":
                         location,legally_married,notes
                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (rid,s1,s2,names.get(s1),names.get(s2),typ,start,relationship_date,status,location or None,1 if typ=="Marriage" else 0,notes or None))
+                    if marriage_photo is not None:
+                        try:
+                            relationship_photos.save_photo(con,rid,marriage_photo)
+                        except ValueError as error:
+                            con.rollback(); con.close(); st.error(str(error)); st.stop()
                     profiles.sync_spouse_ids(con,[s1,s2])
                     con.commit(); con.close()
                     st.success(f"Added {typ.lower()} between {names.get(s1,s1)} and {names.get(s2,s2)}.")
@@ -1364,7 +1378,10 @@ elif page=="Relationships":
             choice=st.selectbox("Choose relationship",labels,key="rel_edit_select")
             rid=choice.rsplit(" — ",1)[-1]
             row=q("SELECT * FROM relationships WHERE relationship_id=?",(rid,)).iloc[0].to_dict()
+            con=connect(); current_marriage_photo=relationship_photos.get_photo(con,rid); con.close()
             st.markdown(f"### {row.get('partner1_name') or row.get('partner1_id')} + {row.get('partner2_name') or row.get('partner2_id')}")
+            if current_marriage_photo:
+                st.image(current_marriage_photo["image_data"],width=420)
             a,b,c=st.columns(3)
             type_options=["Marriage","Engagement","Partnership","Other"]
             cur_type=row.get("type") or "Other"
@@ -1386,6 +1403,13 @@ elif page=="Relationships":
             if cur not in statuses: statuses=[cur]+statuses
             status=a.selectbox("Status",statuses,index=statuses.index(cur),key="rel_edit_status")
             location=b.text_input("Location",value=row.get("location") or "",key="rel_edit_location")
+            marriage_photo=st.file_uploader(
+                "Upload or replace marriage / couple portrait",type=["png","jpg","jpeg","webp"],key=f"rel_edit_photo_{rid}"
+            )
+            remove_marriage_photo=st.checkbox(
+                "Remove the current marriage portrait when saving",value=False,
+                disabled=not bool(current_marriage_photo),key=f"rel_remove_photo_{rid}"
+            )
             notes=st.text_area("Notes",value=row.get("notes") or "",key="rel_edit_notes")
             if status!="Active" and not int_or_none(end):
                 st.info("If this relationship has ended, enter the ending Global Day above.")
@@ -1395,6 +1419,13 @@ elif page=="Relationships":
                                WHERE relationship_id=?""",
                             (typ,start,(calculated_relationship_date if auto_relationship_date else relationship_start_date) or None,
                              int_or_none(end),status,location or None,notes or None,1 if typ=="Marriage" else 0,rid))
+                if remove_marriage_photo:
+                    relationship_photos.delete_photo(con,rid)
+                elif marriage_photo is not None:
+                    try:
+                        relationship_photos.save_photo(con,rid,marriage_photo)
+                    except ValueError as error:
+                        con.rollback(); con.close(); st.error(str(error)); st.stop()
                 profiles.sync_spouse_ids(con,[row.get("partner1_id"),row.get("partner2_id")])
                 con.commit(); con.close()
                 st.success("Relationship saved.")

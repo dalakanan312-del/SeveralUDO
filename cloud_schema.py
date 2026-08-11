@@ -13,6 +13,7 @@ TABLE_DDLS = [
     "CREATE TABLE IF NOT EXISTS calendar_rows(source_row INTEGER,payload_json TEXT)",
     "CREATE TABLE IF NOT EXISTS raw_import_rows(source_file TEXT,sheet_name TEXT,row_number INTEGER,payload_json TEXT)",
     "CREATE TABLE IF NOT EXISTS sim_photos(sim_id TEXT PRIMARY KEY,image_data BYTEA NOT NULL,mime_type TEXT,filename TEXT,updated_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS relationship_photos(relationship_id TEXT PRIMARY KEY REFERENCES relationships(relationship_id) ON DELETE CASCADE,image_data BYTEA NOT NULL,mime_type TEXT,filename TEXT,updated_at TEXT)",
     "CREATE TABLE IF NOT EXISTS roll_rule_eras(era_id TEXT PRIMARY KEY,era_name TEXT NOT NULL,start_year INTEGER NOT NULL,end_year INTEGER NOT NULL,species TEXT NOT NULL DEFAULT 'Human',active INTEGER NOT NULL DEFAULT 1,notes TEXT)",
     "CREATE TABLE IF NOT EXISTS roll_rule_values(era_id TEXT NOT NULL,roll_type TEXT NOT NULL,die TEXT,bad_results TEXT,notes TEXT,PRIMARY KEY(era_id,roll_type))",
 ]
@@ -20,7 +21,7 @@ TABLE_DDLS = [
 TABLES = [
     "settings", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "rules", "calendar_rows",
-    "raw_import_rows", "sim_photos", "roll_rule_eras", "roll_rule_values",
+    "raw_import_rows", "sim_photos", "relationship_photos", "roll_rule_eras", "roll_rule_values",
 ]
 
 

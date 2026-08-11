@@ -18,13 +18,14 @@ import storage
 ROOT = Path(__file__).resolve().parent
 SAVE_PACKAGE_EXTENSION = ".decades-save"
 GAMEPLAY_TABLES = [
-    "sim_photos", "sims", "households", "pregnancies", "rolls",
+    "sim_photos", "relationship_photos", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "raw_import_rows",
 ]
 _SAVE_CACHE = {}
 _SAVE_CACHE_SECONDS = 5.0
 _SETUP_DONE = False
 _CLAIMED_WORKSPACES = set()
+_ENSURED_SCHEMAS = set()
 _WORKSPACE_ID = ContextVar("workspace_id", default=None)
 _ACTIVE_SAVE_ID = ContextVar("active_save_id", default=None)
 
@@ -88,7 +89,14 @@ def ensure_setup():
             connection.commit()
         _CLAIMED_WORKSPACES.add(owner)
         _invalidate_save_cache()
-    return list_saves(force_refresh=True)
+    saves = list_saves(force_refresh=True)
+    pending = [item["schema_name"] for item in saves if item["schema_name"] not in _ENSURED_SCHEMAS]
+    if pending:
+        with storage.raw_connect(use_direct=True) as connection:
+            for schema_name in pending:
+                cloud_schema.create_save_schema(connection, schema_name)
+                _ENSURED_SCHEMAS.add(schema_name)
+    return saves
 
 
 def list_saves(force_refresh=False):
