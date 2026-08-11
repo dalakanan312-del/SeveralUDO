@@ -39,23 +39,59 @@ if neon_ui.render_first_save_setup(st):
 
 st.markdown("""
 <style>
-.block-container{padding-top:1.1rem;max-width:1450px;padding-bottom:3rem}
-[data-testid="stSidebar"]{min-width:245px}
-[data-testid="stMetric"]{
-    border:1px solid rgba(128,128,128,.22);
-    border-radius:14px;
-    padding:12px 14px;
-    background:rgba(128,128,128,.045)
+:root{
+    --decades-gold:#c79a4a;
+    --decades-gold-soft:rgba(199,154,74,.16);
+    --decades-wine:#7b3444;
+    --decades-line:rgba(199,154,74,.25);
+    --decades-surface:rgba(128,128,128,.055);
 }
-div[data-testid="stExpander"]{border-radius:12px}
-.stButton>button{border-radius:10px}
-.stTextInput input,.stNumberInput input,.stSelectbox div[data-baseweb="select"]>div{border-radius:10px}
+.stApp{background-image:radial-gradient(circle at 85% -10%,rgba(199,154,74,.08),transparent 28rem)}
+.block-container{padding-top:1.35rem;max-width:1450px;padding-bottom:3.5rem}
+[data-testid="stSidebar"]{
+    min-width:255px;
+    border-right:1px solid var(--decades-line);
+    background:linear-gradient(180deg,rgba(199,154,74,.07),transparent 18rem)
+}
+[data-testid="stSidebar"] .block-container{padding-top:1.2rem}
+.sidebar-brand{padding:.35rem .15rem .8rem}
+.sidebar-brand-title{font-family:Georgia,serif;font-size:1.72rem;font-weight:700;letter-spacing:.02em;line-height:1.1}
+.sidebar-brand-subtitle{color:var(--decades-gold);font-size:.75rem;font-weight:700;letter-spacing:.16em;text-transform:uppercase;margin-top:.28rem}
+[data-testid="stSidebar"] [role="radiogroup"] label{
+    border-radius:10px;padding:.22rem .45rem;margin:.08rem 0;transition:background .15s ease,transform .15s ease
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover{background:var(--decades-gold-soft);transform:translateX(2px)}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){background:var(--decades-gold-soft);box-shadow:inset 3px 0 0 var(--decades-gold)}
+[data-testid="stMetric"]{
+    border:1px solid var(--decades-line);border-radius:15px;padding:13px 15px;
+    background:linear-gradient(145deg,var(--decades-gold-soft),var(--decades-surface));
+    box-shadow:0 8px 24px rgba(0,0,0,.06)
+}
+div[data-testid="stExpander"]{border-radius:13px;border-color:var(--decades-line);overflow:hidden}
+.stButton>button{border-radius:10px;border-color:var(--decades-line);font-weight:650;transition:transform .12s ease,box-shadow .12s ease}
+.stButton>button:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(0,0,0,.12);border-color:var(--decades-gold)}
+.stButton>button[kind="primary"]{background:linear-gradient(135deg,#9b6a2d,#c79a4a);border:0;color:white}
+.stTextInput input,.stNumberInput input,.stTextArea textarea,.stSelectbox div[data-baseweb="select"]>div{border-radius:10px;border-color:rgba(128,128,128,.28)}
+[data-baseweb="tab-list"]{gap:.35rem;border-bottom:1px solid var(--decades-line)}
+[data-baseweb="tab"]{border-radius:10px 10px 0 0;padding-left:1rem;padding-right:1rem}
+[data-baseweb="tab"][aria-selected="true"]{background:var(--decades-gold-soft);color:var(--decades-gold)}
+[data-testid="stDataFrame"]{border:1px solid var(--decades-line);border-radius:12px;overflow:hidden}
+[data-testid="stAlert"]{border-radius:12px}
+[data-testid="stImage"] img{border-radius:13px;box-shadow:0 8px 24px rgba(0,0,0,.13)}
+h1,h2,h3{font-family:Georgia,serif;letter-spacing:-.015em}
 h1{margin-bottom:.15rem}
-.page-subtitle{opacity:.72;margin-top:-.15rem;margin-bottom:1rem}
+.page-kicker{color:var(--decades-gold);font-size:.72rem;font-weight:750;letter-spacing:.17em;text-transform:uppercase;margin-bottom:.2rem}
+.page-subtitle{opacity:.74;margin-top:-.12rem;margin-bottom:1.2rem;max-width:850px;font-size:1rem}
 .section-note{opacity:.72;font-size:.92rem}
 .pill{
     display:inline-block;padding:.2rem .55rem;border-radius:999px;
-    border:1px solid rgba(128,128,128,.25);margin-right:.3rem;font-size:.88rem
+    border:1px solid var(--decades-line);background:var(--decades-gold-soft);margin-right:.3rem;font-size:.88rem
+}
+@media(max-width:760px){
+    .block-container{padding:.9rem .85rem 2.5rem}
+    [data-baseweb="tab-list"]{overflow-x:auto;flex-wrap:nowrap}
+    [data-baseweb="tab"]{white-space:nowrap;padding-left:.7rem;padding-right:.7rem}
+    [data-testid="stMetric"]{padding:10px 11px}
 }
 </style>
 """,unsafe_allow_html=True)
@@ -132,6 +168,7 @@ def rule_value(label,default=None):
     return r[0] if r and r[0] not in (None,'') else default
 
 def page_header(title,subtitle=None):
+    st.markdown("<div class='page-kicker'>Decades Challenge Chronicle</div>",unsafe_allow_html=True)
     st.title(title)
     if subtitle:
         st.markdown(f"<div class='page-subtitle'>{subtitle}</div>",unsafe_allow_html=True)
@@ -155,8 +192,11 @@ relationship_photos.ensure_schema(_schema_con)
 _schema_con.close()
 
 with st.sidebar:
-    st.title("🏰 Decades")
-    st.caption("Challenge Tracker")
+    st.markdown(
+        "<div class='sidebar-brand'><div class='sidebar-brand-title'>🏰 Decades</div>"
+        "<div class='sidebar-brand-subtitle'>Challenge Tracker</div></div>",
+        unsafe_allow_html=True,
+    )
 
     saves=save_manager.list_saves()
     active_id=save_manager.active_save_id()
