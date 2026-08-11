@@ -8,12 +8,20 @@ def _actual_number(value):
     return int(numbers[-1]) if numbers else None
 
 
-def automatic_outcome(actual_roll, bad_results):
+def automatic_outcome(actual_roll, bad_results, roll_type=None, die=None):
     """Return an outcome when a numeric roll can be tested against the bad-result rule."""
     actual=_actual_number(actual_roll)
     rule=str(bad_results or "").strip()
     if actual is None or not rule:
         return None
+
+    if str(die or "").strip().casefold()=="rng" or "death-age" in str(roll_type or "").casefold():
+        bounds=[int(n) for n in re.findall(r"-?\d+",rule.replace("–"," to ").replace("—"," to "))]
+        if len(bounds)>=2 and min(bounds[:2])<=actual<=max(bounds[:2]):
+            return f"Death age: {actual}"
+        if len(bounds)>=2:
+            return f"Outside configured range ({min(bounds[:2])}–{max(bounds[:2])})"
+        return f"Death age: {actual}"
 
     bad=False
     for operator,limit in re.findall(r"(<=|>=|<|>)\s*(-?\d+)",rule):

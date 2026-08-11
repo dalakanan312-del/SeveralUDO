@@ -1,5 +1,7 @@
 import tempfile
 import base64
+import re
+import secrets
 from datetime import time
 from pathlib import Path
 import pandas as pd
@@ -223,16 +225,25 @@ def roll_chronicle_entry(row,start_year,days_per_year):
         return f"{date} — I, {person}, faced {trial}.{lot} {result.rstrip('.')}."
     return f"{date} — I, {person}, am called to face {trial}; the result has yet to be written."
 
-def historical_dice_tray(required_die,key_prefix,result_key):
+def historical_dice_tray(required_die,key_prefix,result_key,bad_results=None):
     notation=chronicle_value(required_die)
     spec=dice_roller.parse(notation)
+    rng_bounds=[int(n) for n in re.findall(r"\d+",str(bad_results or ""))[:2]] if notation.casefold()=="rng" else []
     shown=notation if spec else "the common dice set"
     st.markdown(
         f"<div class='dice-case'><div class='dice-case-title'>⚜ The carved dice case · {shown}</div>"
         "<div class='dice-case-note'>The appointed die is selected from the rule table. Every control has a written label and may be reached by keyboard.</div></div>",
         unsafe_allow_html=True,
     )
-    choices=[spec["sides"]] if spec else list(dice_roller.SUPPORTED_DICE)
+    if len(rng_bounds)==2:
+        low,high=sorted(rng_bounds)
+        if st.button(f"Draw a number from {low} to {high}",key=f"{key_prefix}_rng",use_container_width=True):
+            result=low+secrets.randbelow(high-low+1)
+            st.session_state[result_key]=str(result)
+            st.session_state[f"{key_prefix}_detail"]=f"RNG {low}–{high}: {result}"
+        choices=[]
+    else:
+        choices=[spec["sides"]] if spec else list(dice_roller.SUPPORTED_DICE)
     columns=st.columns(len(choices))
     for column,sides in zip(columns,choices):
         roll_notation=notation if spec else f"d{sides}"
@@ -391,10 +402,10 @@ if page=="Today":
             rr=due[due.roll_id==rid].iloc[0]
             actual_key=f"today_roll_actual_{rid}"
             outcome_key=f"today_roll_outcome_{rid}"
-            historical_dice_tray(rr.get("die"),f"today_dice_{rid}",actual_key)
+            historical_dice_tray(rr.get("die"),f"today_dice_{rid}",actual_key,rr.get("bad_results"))
             a,b=st.columns(2)
             actual=a.text_input("Actual roll",key=actual_key)
-            automatic=roll_outcomes.automatic_outcome(actual,rr.get("bad_results"))
+            automatic=roll_outcomes.automatic_outcome(actual,rr.get("bad_results"),rr.get("roll_type"),rr.get("die"))
             if automatic is not None:
                 st.session_state[outcome_key]=automatic
             outcome=b.text_input("Outcome",value=automatic or "",key=outcome_key,
@@ -1354,7 +1365,7 @@ elif page=="Rolls":
             actual_key=f"roll_edit_actual_{rid}"
             outcome_key=f"roll_edit_outcome_{rid}"
             actual=a.text_input("Actual roll",value=str(row.get("actual_roll") or ""),key=actual_key)
-            automatic=roll_outcomes.automatic_outcome(actual,row.get("bad_results"))
+            automatic=roll_outcomes.automatic_outcome(actual,row.get("bad_results"),row.get("roll_type"),row.get("die"))
             if automatic is not None:
                 st.session_state[outcome_key]=automatic
             outcome=b.text_input("Outcome",value=automatic or row.get("outcome") or "",key=outcome_key,

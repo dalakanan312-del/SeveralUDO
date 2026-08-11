@@ -5,6 +5,24 @@ import re
 
 _ENSURED_SCHEMAS=set()
 
+DEFAULT_PRE1700_ROLLS = (
+    ("Adult", "d20", "3 9 20"),
+    ("Being Born", "d20", "5 10 15"),
+    ("Child", "d20", "15 20"),
+    ("Elder Death-Age RNG", "RNG", "60–120"),
+    ("Infant", "d20", "17"),
+    ("Maternal — Adult", "d20", "1 5"),
+    ("Maternal — Elder", "d20", "1–18"),
+    ("Maternal — Preteen", "d20", "1 5 10"),
+    ("Maternal — Teen", "d20", "1 5"),
+    ("Maternal — Young Adult", "d20", "1"),
+    ("Newborn", "d20", "2 6"),
+    ("Preteen", "d20", "13 18"),
+    ("Teen", "d20", "7"),
+    ("Toddler", "d20", "5 10 15"),
+    ("Young Adult", "d20", "14 16"),
+)
+
 def ensure_schema(con):
     schema_key=getattr(con,"schema_name",None)
     if schema_key and schema_key in _ENSURED_SCHEMAS:
@@ -52,6 +70,15 @@ def seed_pre1700(con):
         con.execute("""INSERT OR IGNORE INTO roll_rule_values(era_id,roll_type,die,bad_results,notes)
                        VALUES('ERA-HUMAN-PRE1700',?,?,?,?)""",
                     (rt,r[1],r[2],'Seeded from imported Rules Config'))
+    for roll_type,die,bad_results in DEFAULT_PRE1700_ROLLS:
+        con.execute("""INSERT OR IGNORE INTO roll_rule_values(era_id,roll_type,die,bad_results,notes)
+                       VALUES('ERA-HUMAN-PRE1700',?,?,?,?)""",
+                    (roll_type,die,bad_results,'Built-in historical default; editable'))
+        con.execute("""UPDATE roll_rule_values
+                       SET die=CASE WHEN die IS NULL OR trim(die)='' THEN ? ELSE die END,
+                           bad_results=CASE WHEN bad_results IS NULL OR trim(bad_results)='' THEN ? ELSE bad_results END
+                       WHERE era_id='ERA-HUMAN-PRE1700' AND roll_type=?""",
+                    (die,bad_results,roll_type))
     con.commit()
 
 def list_eras(con):
