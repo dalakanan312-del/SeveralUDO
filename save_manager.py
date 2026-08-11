@@ -9,6 +9,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from contextvars import ContextVar
 from pathlib import Path
 
 import cloud_schema
@@ -20,10 +21,26 @@ GAMEPLAY_TABLES = [
     "sim_photos", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "raw_import_rows",
 ]
-_SAVE_CACHE = []
-_SAVE_CACHE_AT = 0.0
+_SAVE_CACHE = {}
 _SAVE_CACHE_SECONDS = 5.0
 _SETUP_DONE = False
+_CLAIMED_WORKSPACES = set()
+_WORKSPACE_ID = ContextVar("workspace_id", default=None)
+_ACTIVE_SAVE_ID = ContextVar("active_save_id", default=None)
+
+
+def set_workspace(workspace_id, active_save_id=None):
+    if not workspace_id:
+        raise ValueError("A private workspace is required.")
+    _WORKSPACE_ID.set(workspace_id)
+    _ACTIVE_SAVE_ID.set(active_save_id)
+
+
+def workspace_id():
+    value = _WORKSPACE_ID.get()
+    if not value:
+        raise RuntimeError("No private workspace is open.")
+    return value
 
 
 def _now():
@@ -44,14 +61,12 @@ def _record(row):
 
 
 def _invalidate_save_cache():
-    global _SAVE_CACHE, _SAVE_CACHE_AT
-    _SAVE_CACHE = []
-    _SAVE_CACHE_AT = 0.0
+    _SAVE_CACHE.clear()
 
 
 def _touch_cached(save_id):
     timestamp = _now()
-    for item in _SAVE_CACHE:
+    for item in _SAVE_CACHE.get(workspace_id(), (0, []))[1]:
         if item["save_id"] == save_id:
             item["updated_at"] = timestamp
             break
@@ -59,33 +74,38 @@ def _touch_cached(save_id):
 
 def ensure_setup():
     global _SETUP_DONE
-    if _SETUP_DONE:
-        return list_saves()
-    with storage.raw_connect(use_direct=True) as connection:
-        cloud_schema.create_registry(connection)
-    _SETUP_DONE = True
-    _invalidate_save_cache()
-    saves = list_saves()
-    active = storage.load_config().get("active_save_id")
-    if saves and not any(item["save_id"] == active for item in saves):
-        storage.update_active_save(saves[0]["save_id"])
-    return saves
+    if not _SETUP_DONE:
+        with storage.raw_connect(use_direct=True) as connection:
+            cloud_schema.create_registry(connection)
+        _SETUP_DONE = True
+        _invalidate_save_cache()
+    import workspace_access
+    owner = workspace_id()
+    if workspace_access.is_owner(owner) and owner not in _CLAIMED_WORKSPACES:
+        with storage.raw_connect(use_direct=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("UPDATE public.decades_saves SET owner_hash=%s WHERE owner_hash IS NULL", (owner,))
+            connection.commit()
+        _CLAIMED_WORKSPACES.add(owner)
+        _invalidate_save_cache()
+    return list_saves(force_refresh=True)
 
 
 def list_saves(force_refresh=False):
-    global _SAVE_CACHE, _SAVE_CACHE_AT
+    owner = workspace_id()
     now = time.monotonic()
-    if not force_refresh and _SAVE_CACHE and now - _SAVE_CACHE_AT < _SAVE_CACHE_SECONDS:
-        return [dict(item) for item in _SAVE_CACHE]
+    cached_at, cached = _SAVE_CACHE.get(owner, (0, []))
+    if not force_refresh and cached and now - cached_at < _SAVE_CACHE_SECONDS:
+        return [dict(item) for item in cached]
     with storage.raw_connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT save_id,name,schema_name,created_at,updated_at,source_note "
-                "FROM public.decades_saves ORDER BY created_at,save_id"
+                "FROM public.decades_saves WHERE owner_hash=%s ORDER BY created_at,save_id",
+                (owner,),
             )
             saves = [_record(row) for row in cursor.fetchall()]
-    _SAVE_CACHE = saves
-    _SAVE_CACHE_AT = now
+    _SAVE_CACHE[owner] = (now, saves)
     return [dict(item) for item in saves]
 
 
@@ -93,10 +113,10 @@ def active_save_id():
     saves = list_saves()
     if not saves:
         return None
-    configured = storage.load_config().get("active_save_id")
+    configured = _ACTIVE_SAVE_ID.get()
     if any(item["save_id"] == configured for item in saves):
         return configured
-    storage.update_active_save(saves[0]["save_id"])
+    _ACTIVE_SAVE_ID.set(saves[0]["save_id"])
     return saves[0]["save_id"]
 
 
@@ -112,7 +132,7 @@ def active_save():
 def set_active(save_id):
     if not get_save(save_id):
         raise ValueError("Save not found.")
-    storage.update_active_save(save_id)
+    _ACTIVE_SAVE_ID.set(save_id)
 
 
 def _create_record(name, source_note=None):
@@ -123,12 +143,12 @@ def _create_record(name, source_note=None):
         cloud_schema.create_save_schema(connection, schema_name)
         with connection.cursor() as cursor:
             cursor.execute(
-                "INSERT INTO public.decades_saves(save_id,name,schema_name,source_note) VALUES(%s,%s,%s,%s)",
-                (save_id, name.strip() or save_id, schema_name, source_note),
+                "INSERT INTO public.decades_saves(save_id,name,schema_name,source_note,owner_hash) VALUES(%s,%s,%s,%s,%s)",
+                (save_id, name.strip() or save_id, schema_name, source_note, workspace_id()),
             )
         connection.commit()
     _invalidate_save_cache()
-    storage.update_active_save(save_id)
+    _ACTIVE_SAVE_ID.set(save_id)
     return get_save(save_id)
 
 
@@ -190,7 +210,7 @@ def migrate_sqlite_file(path, name=None, make_active=True, source_note=None):
     finally:
         source.close()
     if make_active:
-        storage.update_active_save(record["save_id"])
+        _ACTIVE_SAVE_ID.set(record["save_id"])
     return record
 
 
@@ -250,8 +270,8 @@ def rename_save(save_id, new_name):
     with storage.raw_connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "UPDATE public.decades_saves SET name=%s,updated_at=now() WHERE save_id=%s",
-                (new_name.strip(), save_id),
+                "UPDATE public.decades_saves SET name=%s,updated_at=now() WHERE save_id=%s AND owner_hash=%s",
+                (new_name.strip(), save_id, workspace_id()),
             )
         connection.commit()
     _invalidate_save_cache()
@@ -269,7 +289,7 @@ def _drop_save(save_id, allow_only=False):
     with storage.raw_connect(use_direct=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(record["schema_name"])))
-            cursor.execute("DELETE FROM public.decades_saves WHERE save_id=%s", (save_id,))
+            cursor.execute("DELETE FROM public.decades_saves WHERE save_id=%s AND owner_hash=%s", (save_id, workspace_id()))
         connection.commit()
     _invalidate_save_cache()
 
@@ -278,7 +298,7 @@ def delete_save(save_id):
     _drop_save(save_id)
     remaining = list_saves()
     if remaining:
-        storage.update_active_save(remaining[0]["save_id"])
+        _ACTIVE_SAVE_ID.set(remaining[0]["save_id"])
 
 
 def touch_active():
@@ -287,7 +307,7 @@ def touch_active():
         return
     with storage.raw_connect() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("UPDATE public.decades_saves SET updated_at=now() WHERE save_id=%s", (save_id,))
+            cursor.execute("UPDATE public.decades_saves SET updated_at=now() WHERE save_id=%s AND owner_hash=%s", (save_id, workspace_id()))
         connection.commit()
     _touch_cached(save_id)
 

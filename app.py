@@ -18,6 +18,7 @@ import save_manager
 import storage
 import neon_ui
 import admin_ops
+import workspace_access
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -25,6 +26,10 @@ if not storage.configured():
     neon_ui.render_connection_setup(st)
     st.stop()
 
+workspace=workspace_access.render_gate(st)
+if not workspace:
+    st.stop()
+save_manager.set_workspace(workspace,st.session_state.get("active_save_id"))
 save_manager.ensure_setup()
 if neon_ui.render_first_save_setup(st):
     st.stop()
@@ -152,6 +157,7 @@ with st.sidebar:
     selected_save_id=selected_save_label.rsplit("  •  ",1)[-1]
     if selected_save_id!=active_id:
         save_manager.set_active(selected_save_id)
+        st.session_state["active_save_id"]=selected_save_id
         st.rerun()
 
     st.caption(f"💾 {save_manager.active_save()['name']}")
@@ -178,6 +184,8 @@ with st.sidebar:
     st.caption(f"Year {cy_sidebar} • Challenge Day {cd_sidebar} • {sim_weekday(cg_sidebar)}")
     st.caption("✓ Automatic roll scheduling on")
     st.caption(f"Decades Tracker v{APP_VERSION}")
+    if st.button("Lock private workspace",use_container_width=True):
+        workspace_access.sign_out(st)
 
 if page=="Today":
     page_header("Today","Your play-session dashboard: advance time, handle what is due, and see what comes next.")
@@ -2246,7 +2254,8 @@ elif page=="Saves":
             elif int(initial_year)<int(calendar_start):
                 st.error("The initial historical year cannot be earlier than the calendar start year.")
             else:
-                save_manager.create_blank(new_name.strip(),int(calendar_start),int(initial_year),int(initial_day))
+                created=save_manager.create_blank(new_name.strip(),int(calendar_start),int(initial_year),int(initial_day))
+                st.session_state["active_save_id"]=created["save_id"]
                 st.success("Save created.")
                 st.rerun()
 
@@ -2261,7 +2270,8 @@ elif page=="Saves":
                 st.error("Give the duplicate a name.")
             else:
                 source_id=source.rsplit(" — ",1)[-1]
-                save_manager.duplicate_save(source_id,dup_name.strip())
+                created=save_manager.duplicate_save(source_id,dup_name.strip())
+                st.session_state["active_save_id"]=created["save_id"]
                 st.success("Save duplicated.")
                 st.rerun()
 
@@ -2296,6 +2306,8 @@ elif page=="Saves":
             confirm=st.checkbox(f"I understand this will permanently delete “{selected_rec['name']}” from the app.",key="save_delete_confirm")
             if st.button("Delete save",disabled=not confirm,type="secondary",use_container_width=True,key="save_delete_btn"):
                 save_manager.delete_save(selected_id)
+                if st.session_state.get("active_save_id")==selected_id:
+                    st.session_state.pop("active_save_id",None)
                 st.success("Save deleted.")
                 st.rerun()
 
@@ -2311,6 +2323,7 @@ elif page=="Saves":
                 try:
                     preferred=import_name.strip() or None
                     rec=save_manager.import_save_package(imported.getvalue(),preferred,make_active=True)
+                    st.session_state["active_save_id"]=rec["save_id"]
                     st.success(f"Imported “{rec['name']}”.")
                     st.rerun()
                 except Exception as e:

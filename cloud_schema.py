@@ -33,9 +33,12 @@ def create_registry(connection):
                 schema_name TEXT NOT NULL UNIQUE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                source_note TEXT
+                source_note TEXT,
+                owner_hash TEXT
             )"""
         )
+        cursor.execute("ALTER TABLE public.decades_saves ADD COLUMN IF NOT EXISTS owner_hash TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS decades_saves_owner_hash_idx ON public.decades_saves(owner_hash)")
     connection.commit()
 
 
