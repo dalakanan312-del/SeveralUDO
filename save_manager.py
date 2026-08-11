@@ -245,6 +245,7 @@ def create_blank(name, calendar_start_year=1200, current_year=None, challenge_da
             for key, value in {
                 "start_year": start, "days_per_year": 4,
                 "current_global_day": global_day, "current_heir_id": "", "main_household_id": "",
+                "roll_tracking_start": 1,
             }.items():
                 cursor.execute(
                     sql.SQL("INSERT INTO {}.settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=excluded.value").format(sql.Identifier(record["schema_name"])),

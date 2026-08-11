@@ -80,7 +80,7 @@ def preview(con, current_gd):
     """Return all rule-driven obligations through/future based on known Sims/pregnancies."""
     era_rules.ensure_schema(con)
     aging=_aging_rules(con)
-    tracking=_setting_int(con,"roll_tracking_start",1)
+    tracking=1
     start_year=_setting_int(con,"start_year",1200)
     days_per_year=_setting_int(con,"days_per_year",4)
     obligations=[]

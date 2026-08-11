@@ -51,4 +51,8 @@ def create_save_schema(connection, schema_name):
         cursor.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name)))
         for ddl in TABLE_DDLS:
             cursor.execute(ddl)
+        cursor.execute(
+            "INSERT INTO settings(key,value) VALUES('roll_tracking_start','1') "
+            "ON CONFLICT(key) DO UPDATE SET value='1'"
+        )
     connection.commit()

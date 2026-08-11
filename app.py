@@ -1289,10 +1289,7 @@ elif page=="Rolls":
         st.caption("Milestone timing comes from Rules Config; die and bad-result values come from the matching year/species roll table. Due rolls are inserted automatically and future rolls stay as previews.")
         a,b,c=st.columns(3)
         a.metric("Current Global Day",current_gd())
-        ccon=connect()
-        tracking=setting(ccon,"roll_tracking_start","339")
-        ccon.close()
-        b.metric("Automatic tracking begins",tracking)
+        b.metric("Automatic tracking begins",1)
         c.metric("Rules source","Era-aware tables")
         if st.button("Refresh automatic rolls now",type="primary",key="auto_roll_refresh"):
             sync_auto_rolls(show_notice=True)
