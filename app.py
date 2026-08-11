@@ -23,6 +23,7 @@ import workspace_access
 import relationship_photos
 import marriage_ai
 import dice_roller
+import roll_outcomes
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -388,10 +389,16 @@ if page=="Today":
             pick=st.selectbox("Choose roll",labels,key="today_roll_pick")
             rid=pick.split(" — ",1)[0]
             rr=due[due.roll_id==rid].iloc[0]
-            historical_dice_tray(rr.get("die"),f"today_dice_{rid}","today_roll_actual")
+            actual_key=f"today_roll_actual_{rid}"
+            outcome_key=f"today_roll_outcome_{rid}"
+            historical_dice_tray(rr.get("die"),f"today_dice_{rid}",actual_key)
             a,b=st.columns(2)
-            actual=a.text_input("Actual roll",key="today_roll_actual")
-            outcome=b.text_input("Outcome",key="today_roll_outcome")
+            actual=a.text_input("Actual roll",key=actual_key)
+            automatic=roll_outcomes.automatic_outcome(actual,rr.get("bad_results"))
+            if automatic is not None:
+                st.session_state[outcome_key]=automatic
+            outcome=b.text_input("Outcome",value=automatic or "",key=outcome_key,
+                                 help="Calculated from the editable Bad results rule when a numeric roll is entered.")
             if st.button("Save & complete roll",type="primary",key="today_roll_save",use_container_width=True):
                 con=connect()
                 con.execute("UPDATE rolls SET actual_roll=?,outcome=?,completed=1,completed_global_day=? WHERE roll_id=?",
@@ -1344,8 +1351,14 @@ elif page=="Rolls":
             rid=choice.split(" — ",1)[0]
             row=q("SELECT * FROM rolls WHERE roll_id=?",(rid,)).iloc[0].to_dict()
             a,b,c=st.columns(3)
-            actual=a.text_input("Actual roll",value=str(row.get("actual_roll") or ""),key="roll_edit_actual")
-            outcome=b.text_input("Outcome",value=row.get("outcome") or "",key="roll_edit_outcome")
+            actual_key=f"roll_edit_actual_{rid}"
+            outcome_key=f"roll_edit_outcome_{rid}"
+            actual=a.text_input("Actual roll",value=str(row.get("actual_roll") or ""),key=actual_key)
+            automatic=roll_outcomes.automatic_outcome(actual,row.get("bad_results"))
+            if automatic is not None:
+                st.session_state[outcome_key]=automatic
+            outcome=b.text_input("Outcome",value=automatic or row.get("outcome") or "",key=outcome_key,
+                                 help="Calculated from the editable Bad results rule when a numeric roll is entered.")
             completed_day=c.number_input("Completed Global Day",-10000,20000,int(row.get("completed_global_day") or current_gd()),key="roll_edit_day")
             a,b=st.columns(2)
             completed=a.checkbox("Completed",value=bool(row.get("completed") or 0),key="roll_edit_completed")

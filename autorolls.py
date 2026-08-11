@@ -107,20 +107,34 @@ def _spec_for(con,due_gd,roll_type,species,start_year,days_per_year):
     return {"year":year,**spec,"rule_status":"Ready"}
 
 def repair_generated_roll_dice(con):
-    """Fill only blank dice on automatic rows; custom and recorded values are preserved."""
+    """Refresh incomplete automatic rows from their era table; preserve completed/custom rolls."""
     schema_key=getattr(con,"schema_name",None)
     if schema_key and schema_key in _DICE_REPAIRED_SCHEMAS:
         return 0
-    cursor=con.execute(
-        """UPDATE rolls SET die=CASE
-               WHEN lower(COALESCE(roll_type,'')) LIKE ?
-                AND (lower(COALESCE(roll_type,'')) LIKE ?
-                     OR lower(COALESCE(roll_type,'')) LIKE ?) THEN 'd100'
-               ELSE 'd20' END
-           WHERE (die IS NULL OR trim(die)='') AND notes LIKE ?""",
-        ("%elder%","%death%","%age%","Auto-generated%"),
-    )
-    changed=max(0,cursor.rowcount or 0)
+    start_year=_setting_int(con,"start_year",1200)
+    days_per_year=max(1,_setting_int(con,"days_per_year",4))
+    rows=con.execute("""SELECT r.roll_id,r.due_global_day,r.roll_type,r.die,r.bad_results,
+                               s.species_occult
+                        FROM rolls r LEFT JOIN sims s ON s.sim_id=r.sim_id
+                        WHERE COALESCE(r.completed,0)=0 AND r.notes LIKE ?""",
+                     ("Auto-generated%",)).fetchall()
+    changed=0
+    for row in rows:
+        roll_type=row["roll_type"] or ""
+        if roll_type.casefold().startswith("event"):
+            continue
+        due=_ival(row["due_global_day"],1)
+        year=start_year+(due-1)//days_per_year
+        spec=era_rules.roll_spec(con,year,roll_type,row["species_occult"] or "Human")
+        canonical=(spec or {}).get("matched_roll_type") or roll_type
+        die=(spec or {}).get("die") or row["die"] or default_die(roll_type)
+        bad=(spec or {}).get("bad_results")
+        if bad is None:
+            bad=row["bad_results"]
+        if (canonical,die,bad)!=(roll_type,row["die"],row["bad_results"]):
+            con.execute("UPDATE rolls SET roll_type=?,die=?,bad_results=? WHERE roll_id=?",
+                        (canonical,die,bad,row["roll_id"]))
+            changed+=1
     con.commit()
     if schema_key:
         _DICE_REPAIRED_SCHEMAS.add(schema_key)
@@ -146,6 +160,7 @@ def preview(con, current_gd):
             if s["death_global_day"] is not None and due>int(s["death_global_day"]): continue
             rt=rule["roll_type"]
             spec=_spec_for(con,due,rt,species,start_year,days_per_year)
+            rt=spec.get("matched_roll_type") or rt
             obligations.append({
                 "source_id":s["sim_id"],"sim_id":s["sim_id"],"sim_name":nm,"species":species,
                 "due_global_day":due,"roll_type":rt,"die":spec["die"],"bad_results":spec["bad_results"],
@@ -168,6 +183,7 @@ def preview(con, current_gd):
         rt=f"Maternal — {stage}"
         species=(p["mother_species"] or "Human").strip() or "Human"
         spec=_spec_for(con,due,rt,species,start_year,days_per_year)
+        rt=spec.get("matched_roll_type") or rt
         qty=_ival(p["babies_delivered"],None)
         if qty is None or qty<=0: qty=_ival(p["babies_expected"],1) or 1
         obligations.append({

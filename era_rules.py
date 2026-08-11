@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 
+import re
+
 _ENSURED_SCHEMAS=set()
 
 def ensure_schema(con):
@@ -67,15 +69,48 @@ def matching_era(con, year, species='Human'):
                           ORDER BY (end_year-start_year) ASC,start_year DESC
                           LIMIT 1""",(s,int(year),int(year))).fetchone()
 
+def _roll_key(value):
+    """Make imported and generated roll labels comparable despite punctuation/word order."""
+    words=re.findall(r"[a-z0-9]+",str(value or "").casefold())
+    ignored={"roll","rolling","rng","required","check"}
+    return tuple(sorted(word for word in words if word not in ignored))
+
+def _match_roll_value(con, era_id, requested):
+    rows=con.execute("""SELECT roll_type,die,bad_results,notes FROM roll_rule_values
+                        WHERE era_id=?""",(era_id,)).fetchall()
+    wanted=_roll_key(requested)
+    if not wanted:
+        return None
+    exact=[row for row in rows if str(row["roll_type"] or "").strip().casefold()
+           == str(requested or "").strip().casefold()]
+    if exact:
+        return exact[0]
+    normalized=[row for row in rows if _roll_key(row["roll_type"])==wanted]
+    if normalized:
+        return normalized[0]
+    # Imported sheets have used both "Being Born" and "Birth".
+    aliases={"born":"birth"}
+    wanted_set={aliases.get(word,word) for word in wanted}
+    ranked=[]
+    for row in rows:
+        candidate={aliases.get(word,word) for word in _roll_key(row["roll_type"])}
+        if not candidate:
+            continue
+        if candidate==wanted_set:
+            ranked.append((1,row))
+    return max(ranked,key=lambda item:item[0])[1] if ranked else None
+
 def roll_spec(con, year, roll_type, species='Human'):
     era=matching_era(con,year,species)
     if not era:
         return None
-    val=con.execute("""SELECT die,bad_results,notes FROM roll_rule_values
-                       WHERE era_id=? AND roll_type=?""",(era["era_id"],roll_type)).fetchone()
+    val=_match_roll_value(con,era["era_id"],roll_type)
     if not val:
-        return {"era_id":era["era_id"],"era_name":era["era_name"],"die":None,"bad_results":None,"notes":None}
-    return {"era_id":era["era_id"],"era_name":era["era_name"],"die":val["die"],"bad_results":val["bad_results"],"notes":val["notes"]}
+        return {"era_id":era["era_id"],"era_name":era["era_name"],"matched_roll_type":None,
+                "die":None,"bad_results":None,"notes":None}
+    return {"era_id":era["era_id"],"era_name":era["era_name"],
+            "matched_roll_type":val["roll_type"],"die":val["die"],
+            "bad_results":val["bad_results"],"notes":val["notes"]}
 
 def next_era_id(con):
     nums=[]
