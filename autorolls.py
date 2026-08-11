@@ -17,6 +17,11 @@ DEFAULT_AGING_RULES = [
     {"label":"Elder","offset":240,"roll_type":"Elder Death-Age RNG","qty":1},
 ]
 _BACKFILLED_SCHEMAS = set()
+_DICE_REPAIRED_SCHEMAS = set()
+
+def default_die(roll_type):
+    text=(roll_type or "").strip().casefold()
+    return "d100" if "elder" in text and ("death" in text or "age" in text) else "d20"
 
 def _ival(v, default=None):
     try:
@@ -95,9 +100,31 @@ def _spec_for(con,due_gd,roll_type,species,start_year,days_per_year):
     year=start_year+(int(due_gd)-1)//days_per_year
     spec=era_rules.roll_spec(con,year,roll_type,species)
     if not spec:
-        return {"year":year,"era_id":None,"era_name":None,"die":None,"bad_results":None,"rule_status":"No era table"}
-    has_values=bool(spec.get("die") or spec.get("bad_results"))
-    return {"year":year,**spec,"rule_status":"Ready" if has_values else "Missing roll type"}
+        return {"year":year,"era_id":None,"era_name":"Built-in defaults","die":default_die(roll_type),
+                "bad_results":None,"rule_status":"Ready"}
+    if not spec.get("die"):
+        spec={**spec,"die":default_die(roll_type)}
+    return {"year":year,**spec,"rule_status":"Ready"}
+
+def repair_generated_roll_dice(con):
+    """Fill only blank dice on automatic rows; custom and recorded values are preserved."""
+    schema_key=getattr(con,"schema_name",None)
+    if schema_key and schema_key in _DICE_REPAIRED_SCHEMAS:
+        return 0
+    cursor=con.execute(
+        """UPDATE rolls SET die=CASE
+               WHEN lower(COALESCE(roll_type,'')) LIKE ?
+                AND (lower(COALESCE(roll_type,'')) LIKE ?
+                     OR lower(COALESCE(roll_type,'')) LIKE ?) THEN 'd100'
+               ELSE 'd20' END
+           WHERE (die IS NULL OR trim(die)='') AND notes LIKE ?""",
+        ("%elder%","%death%","%age%","Auto-generated%"),
+    )
+    changed=max(0,cursor.rowcount or 0)
+    con.commit()
+    if schema_key:
+        _DICE_REPAIRED_SCHEMAS.add(schema_key)
+    return changed
 
 def preview(con, current_gd):
     """Return all rule-driven obligations through/future based on known Sims/pregnancies."""
@@ -176,7 +203,7 @@ def preview(con, current_gd):
                 "source_id":event["event_id"],"sim_id":sim["sim_id"],"sim_name":_name(sim),
                 "species":(sim["species_occult"] or "Human").strip() or "Human",
                 "due_global_day":due,"roll_type":f"Event — {event['event_name'] or event['event_id']}",
-                "die":None,"bad_results":None,"quantity":1,"kind":"Event",
+                "die":default_die("Event"),"bad_results":None,"quantity":1,"kind":"Event",
                 "year":start_year+(due-1)//days_per_year,"era_id":None,
                 "era_name":None,"rule_status":"Event-defined",
             })

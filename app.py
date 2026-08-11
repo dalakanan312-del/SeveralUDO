@@ -265,6 +265,7 @@ def status_badge(text):
 _schema_con=connect()
 profiles.ensure_schema(_schema_con)
 relationship_photos.ensure_schema(_schema_con)
+autorolls.repair_generated_roll_dice(_schema_con)
 _schema_con.close()
 
 with st.sidebar:
