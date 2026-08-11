@@ -265,6 +265,9 @@ def status_badge(text):
 _schema_con=connect()
 profiles.ensure_schema(_schema_con)
 relationship_photos.ensure_schema(_schema_con)
+autorolls.backfill_lifecycle_schedules(
+    _schema_con,int(float(setting(_schema_con,"current_global_day",1)))
+)
 _schema_con.close()
 
 with st.sidebar:
@@ -625,9 +628,11 @@ elif page=="Sims":
                             try: profiles.save_photo(con,sim_id.strip(),photo)
                             except ValueError as e:
                                 con.rollback(); con.close(); st.error(str(e)); st.stop()
-                        con.commit(); con.close()
-                        sync_auto_rolls(show_notice=False)
-                        st.success(f"Added {first} {last} ({sim_id}).")
+                        con.commit()
+                        schedule_through=max(current_gd(),int_or_none(bg) or current_gd())
+                        scheduled=autorolls.schedule_sim_lifecycle(con,sim_id.strip(),schedule_through)
+                        con.close()
+                        st.success(f"Added {first} {last} ({sim_id}) and scheduled {scheduled} lifecycle roll(s).")
 
     with tab_edit:
         st.subheader("Edit a Sim")

@@ -4,6 +4,19 @@ from collections import Counter
 import era_rules
 
 AGING_SECTION = "AGING & REQUIRED ROLLS"
+DEFAULT_AGING_RULES = [
+    {"label":"Being Born","offset":0,"roll_type":"Being Born","qty":1},
+    {"label":"Newborn","offset":0,"roll_type":"Newborn","qty":1},
+    {"label":"Infant","offset":1,"roll_type":"Infant","qty":1},
+    {"label":"Toddler","offset":4,"roll_type":"Toddler","qty":1},
+    {"label":"Child","offset":20,"roll_type":"Child","qty":1},
+    {"label":"Preteen","offset":40,"roll_type":"Preteen","qty":1},
+    {"label":"Teen","offset":52,"roll_type":"Teen","qty":1},
+    {"label":"Young Adult","offset":72,"roll_type":"Young Adult","qty":1},
+    {"label":"Adult","offset":160,"roll_type":"Adult","qty":1},
+    {"label":"Elder","offset":240,"roll_type":"Elder Death-Age RNG","qty":1},
+]
+_BACKFILLED_SCHEMAS = set()
 
 def _ival(v, default=None):
     try:
@@ -31,7 +44,7 @@ def _aging_rules(con):
         if offset is None or qty<=0 or not rtype or rtype.lower()=="none":
             continue
         aging.append({"label":r["row_label"],"offset":offset,"roll_type":rtype,"qty":qty})
-    return aging
+    return aging or [dict(rule) for rule in DEFAULT_AGING_RULES]
 
 def _maternal_stage(age_days):
     if age_days is None: return None
@@ -192,6 +205,44 @@ def sync_rolls(con,current_gd):
     con.commit()
     return {"added":added,"by_kind":dict(by_kind),"considered":len(obligations),
             "missing_rule_rows":skipped_missing_rules}
+
+def schedule_sim_lifecycle(con,sim_id,current_gd):
+    """Materialize every lifecycle obligation for a newly created Sim, including future rolls."""
+    obligations=[
+        item for item in preview(con,current_gd)
+        if item["kind"]=="Life stage" and item["sim_id"]==sim_id
+    ]
+    added=0
+    for item in obligations:
+        note = f"Auto-generated from {item['era_name']}" if item["rule_status"]=="Ready" \
+               else f"Auto-generated obligation; {item['rule_status']} for {item['species']} in year {item['year']}"
+        added+=_insert_missing(
+            con,source_id=item["source_id"],sim_id=item["sim_id"],sim_name=item["sim_name"],
+            due_gd=item["due_global_day"],roll_type=item["roll_type"],die=item["die"],
+            bad_results=item["bad_results"],qty=item["quantity"],note=note,
+        )
+    con.commit()
+    return added
+
+def backfill_lifecycle_schedules(con,current_gd):
+    """Repair missing lifecycle schedules for existing Sims without duplicating recorded rolls."""
+    schema_key=getattr(con,"schema_name",None)
+    if schema_key and schema_key in _BACKFILLED_SCHEMAS:
+        return 0
+    obligations=[item for item in preview(con,current_gd) if item["kind"]=="Life stage"]
+    added=0
+    for item in obligations:
+        note = f"Auto-generated from {item['era_name']}" if item["rule_status"]=="Ready" \
+               else f"Auto-generated obligation; {item['rule_status']} for {item['species']} in year {item['year']}"
+        added+=_insert_missing(
+            con,source_id=item["source_id"],sim_id=item["sim_id"],sim_name=item["sim_name"],
+            due_gd=item["due_global_day"],roll_type=item["roll_type"],die=item["die"],
+            bad_results=item["bad_results"],qty=item["quantity"],note=note,
+        )
+    con.commit()
+    if schema_key:
+        _BACKFILLED_SCHEMAS.add(schema_key)
+    return added
 
 def upcoming(con,current_gd,days_ahead=20):
     obligations=preview(con,current_gd)
