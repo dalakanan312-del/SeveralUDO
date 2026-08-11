@@ -21,6 +21,7 @@ import neon_ui
 import admin_ops
 import workspace_access
 import relationship_photos
+import marriage_ai
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -1378,7 +1379,11 @@ elif page=="Relationships":
             choice=st.selectbox("Choose relationship",labels,key="rel_edit_select")
             rid=choice.rsplit(" — ",1)[-1]
             row=q("SELECT * FROM relationships WHERE relationship_id=?",(rid,)).iloc[0].to_dict()
-            con=connect(); current_marriage_photo=relationship_photos.get_photo(con,rid); con.close()
+            con=connect()
+            current_marriage_photo=relationship_photos.get_photo(con,rid)
+            partner1_photo=profiles.get_photo(con,row.get("partner1_id")) if row.get("partner1_id") else None
+            partner2_photo=profiles.get_photo(con,row.get("partner2_id")) if row.get("partner2_id") else None
+            con.close()
             st.markdown(f"### {row.get('partner1_name') or row.get('partner1_id')} + {row.get('partner2_name') or row.get('partner2_id')}")
             if current_marriage_photo:
                 st.image(current_marriage_photo["image_data"],width=420)
@@ -1410,6 +1415,47 @@ elif page=="Relationships":
                 "Remove the current marriage portrait when saving",value=False,
                 disabled=not bool(current_marriage_photo),key=f"rel_remove_photo_{rid}"
             )
+            st.markdown("#### Generate a marriage portrait with AI")
+            marriage_year=challenge_year_day(start)[0]
+            missing_portraits=[]
+            if not partner1_photo: missing_portraits.append(row.get("partner1_name") or "Partner 1")
+            if not partner2_photo: missing_portraits.append(row.get("partner2_name") or "Partner 2")
+            if missing_portraits:
+                st.info("Add an individual portrait for " + " and ".join(missing_portraits) + " before generating a couple portrait.")
+            elif not marriage_ai.configured():
+                st.info("AI generation is ready, but the app owner must add OPENAI_API_KEY to Railway first.")
+            else:
+                st.caption(
+                    f"Uses both individual portraits as identity references and creates era-accurate wedding clothing for {marriage_year}. "
+                    "Generation uses the paid OpenAI API."
+                )
+                allow_replace=True
+                if current_marriage_photo:
+                    allow_replace=st.checkbox(
+                        "Replace the current marriage portrait",value=False,key=f"rel_ai_replace_{rid}"
+                    )
+                if st.button(
+                    f"Generate {marriage_year} marriage portrait",type="secondary",use_container_width=True,
+                    disabled=not allow_replace,key=f"rel_ai_generate_{rid}"
+                ):
+                    with st.spinner("Creating the era-accurate marriage portrait…"):
+                        try:
+                            generated=marriage_ai.generate_portrait(
+                                partner1_photo,partner2_photo,
+                                row.get("partner1_name") or row.get("partner1_id") or "Partner 1",
+                                row.get("partner2_name") or row.get("partner2_id") or "Partner 2",
+                                marriage_year,
+                            )
+                            con=connect()
+                            relationship_photos.save_photo_bytes(
+                                con,rid,generated,"image/png",f"marriage-{rid}-{marriage_year}-ai.png"
+                            )
+                            con.commit(); con.close()
+                        except Exception as error:
+                            st.error(f"The portrait could not be generated: {error}")
+                        else:
+                            st.success("Marriage portrait generated and saved privately to this save.")
+                            st.rerun()
             notes=st.text_area("Notes",value=row.get("notes") or "",key="rel_edit_notes")
             if status!="Active" and not int_or_none(end):
                 st.info("If this relationship has ended, enter the ending Global Day above.")

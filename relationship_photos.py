@@ -35,6 +35,20 @@ def save_photo(connection, relationship_id, uploaded_file):
         raise ValueError("Marriage portraits must be image files.")
     if len(data) > MAX_PHOTO_BYTES:
         raise ValueError("Marriage portrait is larger than 8 MB.")
+    save_photo_bytes(
+        connection,
+        relationship_id,
+        data,
+        mime,
+        getattr(uploaded_file, "name", None),
+    )
+
+
+def save_photo_bytes(connection, relationship_id, data, mime="image/png", filename=None):
+    if not mime.startswith("image/"):
+        raise ValueError("Marriage portraits must be image files.")
+    if len(data) > MAX_PHOTO_BYTES:
+        raise ValueError("Marriage portrait is larger than 8 MB.")
     connection.execute(
         """INSERT INTO relationship_photos(relationship_id,image_data,mime_type,filename,updated_at)
            VALUES(?,?,?,?,?)
@@ -47,7 +61,7 @@ def save_photo(connection, relationship_id, uploaded_file):
             relationship_id,
             data,
             mime,
-            getattr(uploaded_file, "name", None),
+            filename,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
