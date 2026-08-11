@@ -1,5 +1,6 @@
 import tempfile
 import base64
+from datetime import time
 from pathlib import Path
 import pandas as pd
 import streamlit as st
@@ -7,7 +8,7 @@ import plotly.express as px
 import networkx as nx
 from pyvis.network import Network
 from db import connect,setting,set_setting,next_id
-from calendar_utils import global_day_to_year_day,global_day_label,date_to_global_day
+from calendar_utils import global_day_to_year_day,global_day_label,date_to_global_day,global_day_time_to_date,format_exact_date
 import stats_engine as se
 import autorolls
 import era_rules
@@ -93,6 +94,11 @@ def gd_caption(g):
     if g is None:return ""
     y,d=challenge_year_day(g)
     return f"Year {y} • Day {d} • {challenge_date_label(g)}"
+
+def exact_date_from_ingame_time(global_day,clock_time):
+    if global_day is None or clock_time is None:return None
+    sy,dpy=calendar_settings()
+    return format_exact_date(global_day_time_to_date(global_day,clock_time,sy,dpy))
 
 SIM_WEEKDAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
 def sim_weekday(g):
@@ -432,6 +438,12 @@ elif page=="Sims":
             bg=d.text_input("Birth Global Day",value=str(current_gd()),help="Defaults to the current Global Day for a newly born Sim.")
             if int_or_none(bg) is not None:
                 st.caption("Birth: "+gd_caption(int_or_none(bg)))
+            a,b=st.columns(2)
+            birth_clock=a.time_input("In-game birth time",value=time(0,0),step=60,key="sim_add_birth_clock")
+            auto_birth_date=b.checkbox("Calculate exact birth date from in-game time",value=True,key="sim_add_auto_birth_date")
+            calculated_birth_date=exact_date_from_ingame_time(int_or_none(bg),birth_clock) if auto_birth_date else None
+            if calculated_birth_date:
+                st.caption(f"Calculated exact birth date: {calculated_birth_date}")
             a,b,c=st.columns(3)
             mother=a.selectbox("Mother",opts,key="sim_add_mother")
             father=b.selectbox("Father",opts,key="sim_add_father")
@@ -450,7 +462,7 @@ elif page=="Sims":
                 suffix=b.text_input("Suffix")
                 maiden=c.text_input("Maiden / married name")
                 a,b,c=st.columns(3)
-                birth_date=a.text_input("Exact birth date")
+                birth_date=a.text_input("Exact birth date",value=calculated_birth_date or "",disabled=auto_birth_date)
                 birthplace=b.text_input("Birthplace")
                 fertility=c.text_input("Fertility status",value="Unknown")
                 a,b=st.columns(2)
@@ -486,7 +498,7 @@ elif page=="Sims":
                             succession_override,succession_note
                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (sim_id.strip(),1,title or None,first.strip() or None,last.strip() or None,suffix or None,maiden or None,
-                         sex,save_gen,sid(mother),sid(father),int_or_none(bg),birth_date or None,birthplace or None,birth_status,
+                         sex,save_gen,sid(mother),sid(father),int_or_none(bg),(calculated_birth_date if auto_birth_date else birth_date) or None,birthplace or None,birth_status,
                          multiple,None,notes or None,sid(household),1 if legitimate else 0,fertility or None,species or "Human",
                          succession,succession_note or None))
                         if photo is not None:
@@ -548,7 +560,7 @@ elif page=="Sims":
                 legit_default=bool(row.get("legitimate")) if row.get("legitimate") is not None else True
                 legitimate=c.checkbox("Legitimate?",value=legit_default,key="sim_edit_legit")
             with life_tab:
-                st.caption("Global Day is the primary input. Exact dates remain optional.")
+                st.caption("Enter a Global Day and optional in-game clock time. The clock maps proportionally across that historical quarter.")
                 a,b,c=st.columns(3)
                 bg=a.text_input("Birth Global Day",value=str(row.get("birth_global_day") or ""),key="sim_edit_bg")
                 mg=b.text_input("Marriage Global Day",value=str(row.get("marriage_global_day") or ""),key="sim_edit_mg")
@@ -556,9 +568,22 @@ elif page=="Sims":
                 for lab,val in [("Birth",int_or_none(bg)),("Marriage",int_or_none(mg)),("Death",int_or_none(dg))]:
                     if val is not None: st.caption(f"{lab}: {gd_caption(val)}")
                 a,b,c=st.columns(3)
-                birth_date=a.text_input("Exact birth date",value=row.get("birth_date") or "",key="sim_edit_birthdate")
-                marriage_date=b.text_input("Exact marriage date",value=row.get("marriage_date") or "",key="sim_edit_marriagedate")
-                death_date=c.text_input("Exact death date",value=row.get("death_date") or "",key="sim_edit_deathdate")
+                birth_clock=a.time_input("In-game birth time",value=time(0,0),step=60,key=f"sim_edit_birth_clock_{selected}")
+                marriage_clock=b.time_input("In-game marriage time",value=time(0,0),step=60,key=f"sim_edit_marriage_clock_{selected}")
+                death_clock=c.time_input("In-game death time",value=time(0,0),step=60,key=f"sim_edit_death_clock_{selected}")
+                a,b,c=st.columns(3)
+                auto_birth=a.checkbox("Calculate birth date",value=False,key=f"sim_edit_auto_birth_{selected}")
+                auto_marriage=b.checkbox("Calculate marriage date",value=False,key=f"sim_edit_auto_marriage_{selected}")
+                auto_death=c.checkbox("Calculate death date",value=False,key=f"sim_edit_auto_death_{selected}")
+                calculated_birth=exact_date_from_ingame_time(int_or_none(bg),birth_clock) if auto_birth else None
+                calculated_marriage=exact_date_from_ingame_time(int_or_none(mg),marriage_clock) if auto_marriage else None
+                calculated_death=exact_date_from_ingame_time(int_or_none(dg),death_clock) if auto_death else None
+                a,b,c=st.columns(3)
+                birth_date=a.text_input("Exact birth date",value=calculated_birth or row.get("birth_date") or "",key="sim_edit_birthdate",disabled=auto_birth)
+                marriage_date=b.text_input("Exact marriage date",value=calculated_marriage or row.get("marriage_date") or "",key="sim_edit_marriagedate",disabled=auto_marriage)
+                death_date=c.text_input("Exact death date",value=calculated_death or row.get("death_date") or "",key="sim_edit_deathdate",disabled=auto_death)
+                for label,value in [("Birth",calculated_birth),("Marriage",calculated_marriage),("Death",calculated_death)]:
+                    if value: st.caption(f"Calculated {label.lower()} date: {value}")
                 a,b,c=st.columns(3)
                 birthplace=a.text_input("Birthplace",value=row.get("birthplace") or "",key="sim_edit_birthplace")
                 marriage_place=b.text_input("Marriage place",value=row.get("marriage_place") or "",key="sim_edit_marriageplace")
@@ -583,8 +608,8 @@ elif page=="Sims":
                     succession_override=?,succession_note=?
                     WHERE sim_id=?""",
                 (1 if include_tree else 0,title or None,first or None,last or None,suffix or None,maiden or None,sex or None,gen,
-                 sid(mother),sid(father),int_or_none(bg),birth_date or None,birthplace or None,birth_status or None,multiple or None,
-                 int_or_none(mg),marriage_date or None,marriage_place or None,int_or_none(dg),death_date or None,death_place or None,
+                 sid(mother),sid(father),int_or_none(bg),(calculated_birth if auto_birth else birth_date) or None,birthplace or None,birth_status or None,multiple or None,
+                 int_or_none(mg),(calculated_marriage if auto_marriage else marriage_date) or None,marriage_place or None,int_or_none(dg),(calculated_death if auto_death else death_date) or None,death_place or None,
                  cause or None,notes or None,sid(household),1 if legitimate else 0,fertility or None,species or "Human",
                  succession,succession_note or None,selected))
                 if delete_photo:
@@ -1294,6 +1319,10 @@ elif page=="Relationships":
         typ=a.selectbox("Relationship type",["Marriage","Engagement","Partnership","Other"],key="rel_add_type")
         start=b.number_input("Start Global Day",-10000,20000,current_gd(),key="rel_add_start")
         a,b=st.columns(2)
+        relationship_clock=a.time_input("In-game start time",value=time(0,0),step=60,key="rel_add_clock")
+        relationship_date=exact_date_from_ingame_time(start,relationship_clock)
+        b.text_input("Calculated exact start date",value=relationship_date or "",disabled=True,key="rel_add_exact_date")
+        a,b=st.columns(2)
         location=a.text_input("Location",key="rel_add_location")
         status=b.selectbox("Starting status",["Active","Other"],key="rel_add_status")
         notes=st.text_area("Notes",key="rel_add_notes")
@@ -1316,10 +1345,10 @@ elif page=="Relationships":
                     rid=next_id(con,'relationships','relationship_id','REL')
                     names={r[0]:r[1] for r in con.execute("SELECT sim_id,TRIM(COALESCE(title,'')||' '||COALESCE(first_name,'')||' '||COALESCE(last_name,'')) FROM sims")}
                     con.execute("""INSERT INTO relationships(
-                        relationship_id,partner1_id,partner2_id,partner1_name,partner2_name,type,start_global_day,status,
+                        relationship_id,partner1_id,partner2_id,partner1_name,partner2_name,type,start_global_day,start_date,status,
                         location,legally_married,notes
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                    (rid,s1,s2,names.get(s1),names.get(s2),typ,start,status,location or None,1 if typ=="Marriage" else 0,notes or None))
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (rid,s1,s2,names.get(s1),names.get(s2),typ,start,relationship_date,status,location or None,1 if typ=="Marriage" else 0,notes or None))
                     profiles.sync_spouse_ids(con,[s1,s2])
                     con.commit(); con.close()
                     st.success(f"Added {typ.lower()} between {names.get(s1,s1)} and {names.get(s2,s2)}.")
@@ -1343,6 +1372,14 @@ elif page=="Relationships":
             typ=a.selectbox("Type",type_options,index=type_options.index(cur_type),key="rel_edit_type")
             start=b.number_input("Start Global Day",-10000,20000,int(row.get("start_global_day") or current_gd()),key="rel_edit_start")
             end=c.text_input("End Global Day",value=str(row.get("end_global_day") or ""),placeholder="Leave blank while active",key="rel_edit_end")
+            a,b,c=st.columns(3)
+            relationship_clock=a.time_input("In-game start time",value=time(0,0),step=60,key=f"rel_edit_clock_{rid}")
+            auto_relationship_date=b.checkbox("Calculate exact start date",value=False,key=f"rel_edit_auto_date_{rid}")
+            calculated_relationship_date=exact_date_from_ingame_time(start,relationship_clock) if auto_relationship_date else None
+            relationship_start_date=c.text_input(
+                "Exact start date",value=calculated_relationship_date or row.get("start_date") or "",
+                disabled=auto_relationship_date,key=f"rel_edit_exact_date_{rid}"
+            )
             a,b=st.columns(2)
             statuses=["Active","Ended by death","Separated","Divorced","Ended","Other"]
             cur=row.get("status") or "Active"
@@ -1354,9 +1391,10 @@ elif page=="Relationships":
                 st.info("If this relationship has ended, enter the ending Global Day above.")
             if st.button("Save relationship",type="primary",use_container_width=True,key="rel_edit_save"):
                 con=connect()
-                con.execute("""UPDATE relationships SET type=?,start_global_day=?,end_global_day=?,status=?,location=?,notes=?,legally_married=?
+                con.execute("""UPDATE relationships SET type=?,start_global_day=?,start_date=?,end_global_day=?,status=?,location=?,notes=?,legally_married=?
                                WHERE relationship_id=?""",
-                            (typ,start,int_or_none(end),status,location or None,notes or None,1 if typ=="Marriage" else 0,rid))
+                            (typ,start,(calculated_relationship_date if auto_relationship_date else relationship_start_date) or None,
+                             int_or_none(end),status,location or None,notes or None,1 if typ=="Marriage" else 0,rid))
                 profiles.sync_spouse_ids(con,[row.get("partner1_id"),row.get("partner2_id")])
                 con.commit(); con.close()
                 st.success("Relationship saved.")
