@@ -168,6 +168,7 @@ def raw_connect(use_direct=False, autocommit=False):
 
     from psycopg_pool import ConnectionPool
 
+    last_error = None
     for attempt in range(2):
         pool = _POOLS.get(dsn)
         if pool is None:
@@ -179,9 +180,10 @@ def raw_connect(use_direct=False, autocommit=False):
         try:
             return _PooledConnection(pool, pool.getconn(timeout=8))
         except Exception as error:
+            last_error = error
             # A stale pool can survive a Neon compute restart. Recreate it once
             # so an ordinary page load recovers instead of showing PoolTimeout.
-            if attempt or error.__class__.__name__ not in {"PoolTimeout", "OperationalError"}:
+            if error.__class__.__name__ not in {"PoolTimeout", "OperationalError"}:
                 raise
             try:
                 pool.close()
@@ -189,6 +191,19 @@ def raw_connect(use_direct=False, autocommit=False):
                 pass
             if _POOLS.get(dsn) is pool:
                 _POOLS.pop(dsn, None)
+            if attempt:
+                break
+
+    # Under a burst of simultaneous Streamlit reruns every application-pool
+    # slot can briefly be checked out.  The Neon URL already points at its
+    # transaction pooler, so use one short-lived connection for this request
+    # instead of crashing the whole page.  It is closed normally by db.Connection
+    # and never gets returned to the saturated local pool.
+    if last_error and last_error.__class__.__name__ == "PoolTimeout":
+        import psycopg
+        return psycopg.connect(dsn, connect_timeout=10, autocommit=autocommit)
+    if last_error:
+        raise last_error
 
 
 def test_connection(dsn=None):
