@@ -1924,12 +1924,29 @@ elif page=="Challenge Management":
                 else:
                     con=connect(); rid=next_id(con,"era_guidance","rule_id","RULE")
                     con.execute("INSERT INTO era_guidance(rule_id,title,category,start_year,end_year,location,rule_text,active,source) VALUES(?,?,?,?,?,?,?,?,?)",(rid,title.strip(),category,int(start),int(end),rule_loc.strip() or "All",body.strip(),1,"App entry")); con.commit(); con.close(); st.rerun()
-        all_rules=q("SELECT rule_id,title,category,start_year,end_year,location,active FROM era_guidance ORDER BY category,title")
+        all_rules=q("SELECT * FROM era_guidance ORDER BY category,title")
         if not all_rules.empty:
-            with st.expander("Manage existing guidance"):
+            with st.expander("Edit or delete existing guidance"):
                 labels=[f"{r.rule_id} — {r.title}" for _,r in all_rules.iterrows()]
                 chosen=st.selectbox("Rule",labels,key="era_manage")
                 rid=chosen.split(" — ",1)[0]
+                existing=all_rules[all_rules.rule_id==rid].iloc[0]
+                categories=["Marriage & family","Inheritance","Military","Careers & education","Clothing","Building & technology","Health","Economy","Other"]
+                a,b,c=st.columns(3)
+                edit_title=a.text_input("Title",value=existing.title or "",key=f"era_edit_title_{rid}")
+                edit_category=b.selectbox("Category",categories,index=categories.index(existing.category) if existing.category in categories else len(categories)-1,key=f"era_edit_cat_{rid}")
+                edit_location=c.text_input("Location",value=existing.location or "All",key=f"era_edit_loc_{rid}")
+                a,b,c=st.columns(3)
+                edit_start=a.number_input("Start year",-10000,10000,int(existing.start_year or year),key=f"era_edit_start_{rid}")
+                edit_end=b.number_input("End year",-10000,10000,int(existing.end_year or year),key=f"era_edit_end_{rid}")
+                edit_active=c.checkbox("Active",value=bool(existing.active),key=f"era_edit_active_{rid}")
+                edit_body=st.text_area("Guidance",value=existing.rule_text or "",key=f"era_edit_body_{rid}")
+                edit_notes=st.text_input("Notes",value=existing.notes or "",key=f"era_edit_notes_{rid}")
+                if st.button("Save changes",type="primary",key="era_edit_save"):
+                    if not edit_title.strip() or not edit_body.strip(): st.error("Enter a title and guidance.")
+                    elif edit_end<edit_start: st.error("End year must be on or after the start year.")
+                    else:
+                        con=connect(); con.execute("""UPDATE era_guidance SET title=?,category=?,start_year=?,end_year=?,location=?,rule_text=?,active=?,notes=? WHERE rule_id=?""",(edit_title.strip(),edit_category,int(edit_start),int(edit_end),edit_location.strip() or "All",edit_body.strip(),1 if edit_active else 0,edit_notes.strip() or None,rid)); con.commit(); con.close(); st.success("Era guidance updated."); st.rerun()
                 if st.button("Delete selected era rule",key="era_delete"):
                     con=connect(); con.execute("DELETE FROM era_guidance WHERE rule_id=?",(rid,)); con.commit(); con.close(); st.rerun()
 
