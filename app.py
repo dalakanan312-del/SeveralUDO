@@ -119,9 +119,13 @@ h1{margin-bottom:.15rem}
 """,unsafe_allow_html=True)
 
 def q(sql,params=()):
-    c=connect(); df=pd.read_sql_query(sql,c,params=params); c.close(); return df
+    c=connect()
+    try:return pd.read_sql_query(sql,c,params=params)
+    finally:c.close()
 def scalar(sql,params=(),default=0):
-    c=connect(); r=c.execute(sql,params).fetchone(); c.close(); return r[0] if r and r[0] is not None else default
+    c=connect()
+    try:r=c.execute(sql,params).fetchone(); return r[0] if r and r[0] is not None else default
+    finally:c.close()
 def sim_options(blank=True):
     df=q("SELECT sim_id,COALESCE(title,'') title,COALESCE(first_name,'') first_name,COALESCE(last_name,'') last_name FROM sims ORDER BY last_name,first_name")
     out=[f"{r.sim_id} — {' '.join(x for x in [r.title,r.first_name,r.last_name] if x).strip()}" for _,r in df.iterrows()]

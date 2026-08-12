@@ -126,6 +126,14 @@ class _PooledConnection:
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
+    def __del__(self):
+        # Last-resort protection for a request interrupted during a Streamlit
+        # rerun. Normal callers should still close explicitly or use `with`.
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 def reset_pool():
     """Discard pooled sockets after a transient database/network failure."""
@@ -160,14 +168,27 @@ def raw_connect(use_direct=False, autocommit=False):
 
     from psycopg_pool import ConnectionPool
 
-    pool = _POOLS.get(dsn)
-    if pool is None:
-        pool = ConnectionPool(
-            conninfo=dsn,min_size=1,max_size=8,open=True,
-            check=ConnectionPool.check_connection,max_idle=120,max_lifetime=900,
-        )
-        _POOLS[dsn] = pool
-    return _PooledConnection(pool, pool.getconn())
+    for attempt in range(2):
+        pool = _POOLS.get(dsn)
+        if pool is None:
+            pool = ConnectionPool(
+                conninfo=dsn,min_size=0,max_size=20,open=True,timeout=8,
+                check=ConnectionPool.check_connection,max_idle=60,max_lifetime=600,
+            )
+            _POOLS[dsn] = pool
+        try:
+            return _PooledConnection(pool, pool.getconn(timeout=8))
+        except Exception as error:
+            # A stale pool can survive a Neon compute restart. Recreate it once
+            # so an ordinary page load recovers instead of showing PoolTimeout.
+            if attempt or error.__class__.__name__ not in {"PoolTimeout", "OperationalError"}:
+                raise
+            try:
+                pool.close()
+            except Exception:
+                pass
+            if _POOLS.get(dsn) is pool:
+                _POOLS.pop(dsn, None)
 
 
 def test_connection(dsn=None):
