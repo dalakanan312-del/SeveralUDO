@@ -84,16 +84,22 @@ def _next_roll_id(con):
         except Exception: pass
     return f"ROLL-{max(nums,default=0)+1:04d}"
 
-def _insert_missing(con, *, source_id, sim_id, sim_name, due_gd, roll_type, die, bad_results, qty, note):
-    have=_existing_count(con,source_id,sim_id,due_gd,roll_type)
+def _insert_missing(con, *, source_id, sim_id, sim_name, due_gd, roll_type, die, bad_results, qty, note,
+                    existing_counts=None,id_state=None):
+    key=(source_id or "",sim_id or "",int(due_gd),roll_type)
+    have=existing_counts.get(key,0) if existing_counts is not None else _existing_count(con,source_id,sim_id,due_gd,roll_type)
     added=0
     for _ in range(max(0,int(qty)-int(have))):
-        rid=_next_roll_id(con)
+        if id_state is None:
+            rid=_next_roll_id(con)
+        else:
+            id_state[0]+=1; rid=f"ROLL-{id_state[0]:04d}"
         con.execute("""INSERT INTO rolls(
             roll_id,due_global_day,sim_id,sim_name,source_id,roll_type,die,bad_results,completed,notes
         ) VALUES(?,?,?,?,?,?,?,?,0,?)""",
         (rid,int(due_gd),sim_id,sim_name,source_id,roll_type,die,bad_results,note))
         added+=1
+        if existing_counts is not None: existing_counts[key]=existing_counts.get(key,0)+1
     return added
 
 def _spec_for(con,due_gd,roll_type,species,start_year,days_per_year):
@@ -140,7 +146,7 @@ def repair_generated_roll_dice(con):
         _DICE_REPAIRED_SCHEMAS.add(schema_key)
     return changed
 
-def preview(con, current_gd):
+def preview(con, current_gd, due_from=None, due_to=None):
     """Return all rule-driven obligations through/future based on known Sims/pregnancies."""
     era_rules.ensure_schema(con)
     aging=_aging_rules(con)
@@ -148,6 +154,10 @@ def preview(con, current_gd):
     start_year=_setting_int(con,"start_year",1200)
     days_per_year=_setting_int(con,"days_per_year",4)
     obligations=[]
+    due_from=tracking if due_from is None else int(due_from)
+    due_to=None if due_to is None else int(due_to)
+    def in_window(due):
+        return int(due)>=due_from and (due_to is None or int(due)<=due_to)
 
     sims=con.execute("""SELECT sim_id,title,first_name,last_name,suffix,birth_global_day,death_global_day,species_occult
                         FROM sims WHERE birth_global_day IS NOT NULL AND birth_global_day<=?""",(current_gd,)).fetchall()
@@ -156,7 +166,7 @@ def preview(con, current_gd):
         nm=_name(s)
         for rule in aging:
             due=int(s["birth_global_day"])+rule["offset"]
-            if due<tracking: continue
+            if not in_window(due): continue
             if s["death_global_day"] is not None and due>int(s["death_global_day"]): continue
             rt=rule["roll_type"]
             spec=_spec_for(con,due,rt,species,start_year,days_per_year)
@@ -178,7 +188,7 @@ def preview(con, current_gd):
         if (p["status"] or "").strip().lower() == "miscarriage":
             continue
         due=int(p["due_global_day"])
-        if due<tracking or p["mother_birth"] is None or p["mother_id"] is None: continue
+        if not in_window(due) or p["mother_birth"] is None or p["mother_id"] is None: continue
         stage=_maternal_stage(due-int(p["mother_birth"]))
         rt=f"Maternal — {stage}"
         species=(p["mother_species"] or "Human").strip() or "Human"
@@ -204,7 +214,7 @@ def preview(con, current_gd):
                               FROM sims s LEFT JOIN households h ON h.household_id=s.current_household_id""").fetchall()
     for event in events:
         due=int(event["start_global_day"])
-        if due<tracking:
+        if not in_window(due):
             continue
         for sim in event_sims:
             if sim["birth_global_day"] is not None and int(sim["birth_global_day"])>due:
@@ -226,7 +236,16 @@ def preview(con, current_gd):
     return obligations
 
 def sync_rolls(con,current_gd):
-    obligations=preview(con,current_gd)
+    last_synced=_setting_int(con,"auto_rolls_synced_through",0)
+    due_from=last_synced+1 if int(current_gd)>last_synced else int(current_gd)
+    obligations=preview(con,current_gd,due_from=due_from,due_to=current_gd)
+    existing_counts=Counter()
+    max_roll_number=0
+    for row in con.execute("SELECT source_id,sim_id,due_global_day,roll_type,roll_id FROM rolls"):
+        existing_counts[(row["source_id"] or "",row["sim_id"] or "",int(row["due_global_day"]),row["roll_type"])]+=1
+        try:max_roll_number=max(max_roll_number,int(str(row["roll_id"]).rsplit("-",1)[1]))
+        except Exception:pass
+    id_state=[max_roll_number]
     added=0; by_kind=Counter(); skipped_missing_rules=0
     for o in obligations:
         if o["due_global_day"]>current_gd: continue
@@ -240,14 +259,16 @@ def sync_rolls(con,current_gd):
         n=_insert_missing(
             con,source_id=o["source_id"],sim_id=o["sim_id"],sim_name=o["sim_name"],
             due_gd=o["due_global_day"],roll_type=o["roll_type"],die=o["die"],bad_results=o["bad_results"],
-            qty=o["quantity"],note=note
+            qty=o["quantity"],note=note,existing_counts=existing_counts,id_state=id_state
         )
         if n:
             added+=n; by_kind[o["kind"]]+=n
             if o["rule_status"] not in ("Ready","Event-defined"): skipped_missing_rules+=n
+    con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("auto_rolls_synced_through",str(max(last_synced,int(current_gd)))))
     con.commit()
     return {"added":added,"by_kind":dict(by_kind),"considered":len(obligations),
-            "missing_rule_rows":skipped_missing_rules}
+            "missing_rule_rows":skipped_missing_rules,"from_day":due_from,"through_day":int(current_gd)}
 
 def schedule_sim_lifecycle(con,sim_id,current_gd):
     """Materialize every lifecycle obligation for a newly created Sim, including future rolls."""

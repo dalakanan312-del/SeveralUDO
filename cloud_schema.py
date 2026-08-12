@@ -57,6 +57,11 @@ def create_save_schema(connection, schema_name):
         cursor.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name)))
         for ddl in TABLE_DDLS:
             cursor.execute(ddl)
+        cursor.execute("CREATE INDEX IF NOT EXISTS rolls_due_completed_idx ON rolls(due_global_day,completed)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS rolls_obligation_idx ON rolls(source_id,sim_id,due_global_day,roll_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS sims_birth_death_idx ON sims(birth_global_day,death_global_day)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS pregnancies_due_idx ON pregnancies(due_global_day,status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS events_start_active_idx ON events(start_global_day,active,roll_required)")
         cursor.execute(
             "INSERT INTO settings(key,value) VALUES('roll_tracking_start','1') "
             "ON CONFLICT(key) DO UPDATE SET value='1'"
