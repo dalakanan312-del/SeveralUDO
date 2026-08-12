@@ -118,14 +118,29 @@ h1{margin-bottom:.15rem}
 </style>
 """,unsafe_allow_html=True)
 
-def q(sql,params=()):
+@st.cache_data(ttl=30,show_spinner=False)
+def _cached_query(sql,params,workspace_key,save_id,revision):
     c=connect()
     try:return pd.read_sql_query(sql,c,params=params)
     finally:c.close()
-def scalar(sql,params=(),default=0):
+
+@st.cache_data(ttl=30,show_spinner=False)
+def _cached_scalar(sql,params,default,workspace_key,save_id,revision):
     c=connect()
-    try:r=c.execute(sql,params).fetchone(); return r[0] if r and r[0] is not None else default
+    try:
+        row=c.execute(sql,params).fetchone()
+        return row[0] if row and row[0] is not None else default
     finally:c.close()
+
+def _query_revision():
+    record=save_manager.active_save()
+    return workspace,record["save_id"],record.get("updated_at") or ""
+
+def q(sql,params=()):
+    return _cached_query(sql,tuple(params or ()),*_query_revision()).copy()
+
+def scalar(sql,params=(),default=0):
+    return _cached_scalar(sql,tuple(params or ()),default,*_query_revision())
 def sim_options(blank=True):
     df=q("SELECT sim_id,COALESCE(title,'') title,COALESCE(first_name,'') first_name,COALESCE(last_name,'') last_name FROM sims ORDER BY last_name,first_name")
     out=[f"{r.sim_id} — {' '.join(x for x in [r.title,r.first_name,r.last_name] if x).strip()}" for _,r in df.iterrows()]

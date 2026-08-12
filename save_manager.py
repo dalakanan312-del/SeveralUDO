@@ -26,6 +26,7 @@ _SAVE_CACHE_SECONDS = 5.0
 _SETUP_DONE = False
 _CLAIMED_WORKSPACES = set()
 _ENSURED_SCHEMAS = set()
+_LAST_TOUCH = {}
 _WORKSPACE_ID = ContextVar("workspace_id", default=None)
 _ACTIVE_SAVE_ID = ContextVar("active_save_id", default=None)
 
@@ -324,10 +325,18 @@ def touch_active():
     save_id = active_save_id()
     if not save_id:
         return
+    now = time.monotonic()
+    # A single Streamlit action can commit more than once and several actions
+    # may occur close together. Keep the local ordering fresh immediately but
+    # avoid an extra Neon round trip for every individual commit.
+    if now - _LAST_TOUCH.get(save_id, 0) < 10:
+        _touch_cached(save_id)
+        return
     with storage.raw_connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute("UPDATE public.decades_saves SET updated_at=now() WHERE save_id=%s AND owner_hash=%s", (save_id, workspace_id()))
         connection.commit()
+    _LAST_TOUCH[save_id] = now
     _touch_cached(save_id)
 
 
