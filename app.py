@@ -30,6 +30,7 @@ import notebook
 import plant_reference
 import illnesses
 import challenge_management as cm
+import event_library
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -343,7 +344,7 @@ def status_badge(text):
     return f"<span class='pill'>{text}</span>"
 
 @st.cache_resource(show_spinner=False)
-def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-era-defaults"):
+def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-library-v2"):
     """Run migrations once per deployed process/save, not on every page click."""
     con=connect()
     try:
@@ -352,6 +353,7 @@ def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-era-defa
         notebook.ensure_schema(con)
         illnesses.ensure_schema(con)
         cm.ensure_schema(con)
+        event_library.ensure_event_library(con)
         autorolls.repair_generated_roll_dice(con)
     finally:
         con.close()
