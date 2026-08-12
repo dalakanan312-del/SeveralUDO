@@ -141,6 +141,39 @@ def q(sql,params=()):
 
 def scalar(sql,params=(),default=0):
     return _cached_scalar(sql,tuple(params or ()),default,*_query_revision())
+
+@st.cache_data(ttl=60,show_spinner=False)
+def _cached_sim_photo(sim_id,workspace_key,save_id,revision):
+    con=connect()
+    try:return profiles.get_photo(con,sim_id)
+    finally:con.close()
+
+@st.cache_data(ttl=60,show_spinner=False)
+def _cached_relationship_photo(relationship_id,workspace_key,save_id,revision):
+    con=connect()
+    try:return relationship_photos.get_photo(con,relationship_id)
+    finally:con.close()
+
+@st.cache_data(ttl=30,show_spinner=False)
+def _cached_upcoming_rolls(global_day,horizon,workspace_key,save_id,revision):
+    con=connect()
+    try:return autorolls.upcoming(con,global_day,horizon)
+    finally:con.close()
+
+@st.cache_data(ttl=60,show_spinner=False)
+def _cached_statistics(global_day,start_year,workspace_key,save_id,revision):
+    con=connect()
+    try:return se.prepare(con,global_day,start_year)
+    finally:con.close()
+
+def cached_sim_photo(sim_id):
+    return _cached_sim_photo(sim_id,*_query_revision()) if sim_id else None
+
+def cached_relationship_photo(relationship_id):
+    return _cached_relationship_photo(relationship_id,*_query_revision()) if relationship_id else None
+
+def cached_upcoming_rolls(global_day,horizon):
+    return _cached_upcoming_rolls(global_day,horizon,*_query_revision())
 def sim_options(blank=True):
     df=q("SELECT sim_id,COALESCE(title,'') title,COALESCE(first_name,'') first_name,COALESCE(last_name,'') last_name FROM sims ORDER BY last_name,first_name")
     out=[f"{r.sim_id} — {' '.join(x for x in [r.title,r.first_name,r.last_name] if x).strip()}" for _,r in df.iterrows()]
@@ -556,7 +589,7 @@ if page=="Today":
     lookahead=a.selectbox("Look ahead",options=[4,8,12,20,40,80],index=3,format_func=lambda x:f"{x} Global Days",key="today_roll_lookahead")
     with b:
         st.caption("Future rolls stay as previews until they actually become due, so your Roll Log stays clean.")
-    con=connect(); upcoming_rows=autorolls.upcoming(con,g,lookahead); con.close()
+    upcoming_rows=cached_upcoming_rolls(g,lookahead)
     if upcoming_rows:
         udf=pd.DataFrame(upcoming_rows)
         show=friendly_df(
@@ -611,7 +644,7 @@ elif page=="Sims":
             rr=q("SELECT * FROM sims WHERE sim_id=?",(profile_id,))
             if not rr.empty:
                 row=rr.iloc[0]
-                con=connect(); photo=profiles.get_photo(con,profile_id); con.close()
+                photo=cached_sim_photo(profile_id)
                 left,right=st.columns([1,3])
                 with left:
                     if photo:
@@ -756,7 +789,7 @@ elif page=="Sims":
             selected=sid(selected_label)
             rr=q("SELECT * FROM sims WHERE sim_id=?",(selected,))
             row=rr.iloc[0].to_dict()
-            con=connect(); current_photo=profiles.get_photo(con,selected); con.close()
+            current_photo=cached_sim_photo(selected)
             top_left,top_right=st.columns([1,4])
             with top_left:
                 if current_photo:
@@ -1508,9 +1541,7 @@ elif page=="Rolls":
             sync_auto_rolls(show_notice=True)
 
         horizon=st.slider("Preview the next Global Days",1,240,40,key="auto_roll_horizon")
-        con=connect()
-        rows=autorolls.upcoming(con,current_gd(),horizon)
-        con.close()
+        rows=cached_upcoming_rolls(current_gd(),horizon)
         if rows:
             adf=pd.DataFrame(rows)
             missing=adf[adf["missing"]>0].copy()
@@ -1575,11 +1606,9 @@ elif page=="Relationships":
             pick=st.selectbox("Open relationship",labels,key="rel_browse_pick")
             rid=pick.rsplit(" — ",1)[-1]
             row=q("SELECT * FROM relationships WHERE relationship_id=?",(rid,)).iloc[0].to_dict()
-            con=connect()
-            p1photo=profiles.get_photo(con,row.get("partner1_id")) if row.get("partner1_id") else None
-            p2photo=profiles.get_photo(con,row.get("partner2_id")) if row.get("partner2_id") else None
-            marriage_photo=relationship_photos.get_photo(con,rid)
-            con.close()
+            p1photo=cached_sim_photo(row.get("partner1_id"))
+            p2photo=cached_sim_photo(row.get("partner2_id"))
+            marriage_photo=cached_relationship_photo(rid)
             left,mid,right=st.columns([1,2,1])
             with left:
                 if p1photo: st.image(p1photo["image_data"],width=180)
@@ -1666,11 +1695,9 @@ elif page=="Relationships":
             choice=st.selectbox("Choose relationship",labels,key="rel_edit_select")
             rid=choice.rsplit(" — ",1)[-1]
             row=q("SELECT * FROM relationships WHERE relationship_id=?",(rid,)).iloc[0].to_dict()
-            con=connect()
-            current_marriage_photo=relationship_photos.get_photo(con,rid)
-            partner1_photo=profiles.get_photo(con,row.get("partner1_id")) if row.get("partner1_id") else None
-            partner2_photo=profiles.get_photo(con,row.get("partner2_id")) if row.get("partner2_id") else None
-            con.close()
+            current_marriage_photo=cached_relationship_photo(rid)
+            partner1_photo=cached_sim_photo(row.get("partner1_id"))
+            partner2_photo=cached_sim_photo(row.get("partner2_id"))
             st.markdown(f"### {row.get('partner1_name') or row.get('partner1_id')} + {row.get('partner2_name') or row.get('partner2_id')}")
             if current_marriage_photo:
                 st.image(current_marriage_photo["image_data"],width=420)
@@ -2293,11 +2320,9 @@ elif page=="Statistics":
     page_header("Statistics","Detailed analytics, family records, demographic trends, and challenge records.")
     st.caption("Live analytics calculated from the SQLite database. Global Day is the canonical time coordinate.")
 
-    c=connect()
     cg=current_gd()
-    sy=int(float(setting(c,"start_year",1200)))
-    ctx=se.prepare(c,cg,sy)
-    c.close()
+    sy,_=calendar_settings()
+    ctx=_cached_statistics(cg,sy,*_query_revision())
 
     sims=ctx["sims"]; living=sims[sims.living].copy(); deceased=sims[sims.death_global_day.notna()].copy()
     born_to_date=sims[sims.birth_global_day.notna() & (sims.birth_global_day<=cg)].copy()
@@ -2785,7 +2810,7 @@ elif page=="Statistics":
         ss=sid(sel)
         prof=se.individual_profile(ctx,ss)
         if prof:
-            con=connect(); stats_photo=profiles.get_photo(con,ss); con.close()
+            stats_photo=cached_sim_photo(ss)
             if stats_photo:
                 pcol,info_col=st.columns([1,4])
                 with pcol: st.image(stats_photo["image_data"],width=220)

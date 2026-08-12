@@ -22,7 +22,7 @@ GAMEPLAY_TABLES = [
     "relationships", "events", "event_results", "raw_import_rows",
 ]
 _SAVE_CACHE = {}
-_SAVE_CACHE_SECONDS = 5.0
+_SAVE_CACHE_SECONDS = 60.0
 _SETUP_DONE = False
 _CLAIMED_WORKSPACES = set()
 _ENSURED_SCHEMAS = set()
