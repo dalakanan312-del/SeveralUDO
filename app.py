@@ -139,11 +139,24 @@ def opt_index(opts,s):
 def int_or_none(v):
     try:return int(str(v).strip()) if str(v).strip() else None
     except:return None
-def calendar_settings():
+
+def active_cache_key():
+    return workspace,save_manager.active_save_id()
+
+@st.cache_data(ttl=5,show_spinner=False)
+def _cached_clock_settings(workspace_key,save_id):
     c=connect()
-    sy=int(float(setting(c,'start_year',1200)))
-    dpy=int(float(setting(c,'days_per_year',4)))
-    c.close()
+    try:
+        return (
+            int(float(setting(c,'start_year',1200))),
+            int(float(setting(c,'days_per_year',4))),
+            int(float(setting(c,'current_global_day',332))),
+        )
+    finally:
+        c.close()
+
+def calendar_settings():
+    sy,dpy,_=_cached_clock_settings(*active_cache_key())
     return sy,dpy
 
 def challenge_year_day(g):
@@ -171,7 +184,7 @@ def sim_weekday(g):
     return SIM_WEEKDAYS[(int(g)-1)%7]
 
 def current_gd():
-    c=connect(); g=int(float(setting(c,'current_global_day',332))); c.close(); return g
+    return _cached_clock_settings(*active_cache_key())[2]
 
 def sync_auto_rolls(show_notice=False):
     """Idempotently create any missing rule-driven roll obligations."""
@@ -281,15 +294,22 @@ def friendly_df(df,rename=None,cols=None):
 def status_badge(text):
     return f"<span class='pill'>{text}</span>"
 
-# Lightweight schema migrations for optional app features.
-_schema_con=connect()
-profiles.ensure_schema(_schema_con)
-relationship_photos.ensure_schema(_schema_con)
-notebook.ensure_schema(_schema_con)
-illnesses.ensure_schema(_schema_con)
-cm.ensure_schema(_schema_con)
-autorolls.repair_generated_roll_dice(_schema_con)
-_schema_con.close()
+@st.cache_resource(show_spinner=False)
+def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-era-defaults"):
+    """Run migrations once per deployed process/save, not on every page click."""
+    con=connect()
+    try:
+        profiles.ensure_schema(con)
+        relationship_photos.ensure_schema(con)
+        notebook.ensure_schema(con)
+        illnesses.ensure_schema(con)
+        cm.ensure_schema(con)
+        autorolls.repair_generated_roll_dice(con)
+    finally:
+        con.close()
+    return True
+
+_ensure_optional_features(*active_cache_key())
 
 with st.sidebar:
     st.markdown(
@@ -362,6 +382,7 @@ if page=="Today":
     if g!=g0:
         if st.button("Save new Global Day & refresh schedule",type="primary",use_container_width=True):
             cdb=connect(); set_setting(cdb,'current_global_day',g); cdb.close()
+            _cached_clock_settings.clear()
             sync_auto_rolls(show_notice=False)
             st.success("Time advanced and the automatic roll schedule was refreshed.")
             st.rerun()
@@ -3158,7 +3179,7 @@ elif page=="Rules & Data":
             except Exception as error:
                 con.rollback(); con.close(); st.error(f"Could not save challenge settings: {error}")
             else:
-                con.close(); sync_auto_rolls(show_notice=False)
+                con.close(); _cached_clock_settings.clear(); sync_auto_rolls(show_notice=False)
                 st.success("Challenge settings saved and the automatic roll schedule refreshed.")
                 st.rerun()
 
