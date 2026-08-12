@@ -67,10 +67,12 @@ def _invalidate_save_cache():
 
 def _touch_cached(save_id):
     timestamp = _now()
-    for item in _SAVE_CACHE.get(workspace_id(), (0, []))[1]:
+    items=_SAVE_CACHE.get(workspace_id(), (0, []))[1]
+    for item in items:
         if item["save_id"] == save_id:
             item["updated_at"] = timestamp
             break
+    items.sort(key=lambda item:(item.get("updated_at") or "",item.get("created_at") or "",item["save_id"]),reverse=True)
 
 
 def ensure_setup():
@@ -111,7 +113,7 @@ def list_saves(force_refresh=False):
                 with connection.cursor() as cursor:
                     cursor.execute(
                         "SELECT save_id,name,schema_name,created_at,updated_at,source_note "
-                        "FROM public.decades_saves WHERE owner_hash=%s ORDER BY created_at,save_id",
+                        "FROM public.decades_saves WHERE owner_hash=%s ORDER BY updated_at DESC,created_at DESC,save_id",
                         (owner,),
                     )
                     saves = [_record(row) for row in cursor.fetchall()]

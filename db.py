@@ -93,12 +93,20 @@ class Cursor:
 
     def execute(self, statement, parameters=()):
         self._select_schema()
-        self._cursor.execute(_translate(statement), tuple(parameters or ()))
+        translated=_translate(statement)
+        self._cursor.execute(translated, tuple(parameters or ()))
+        command=translated.lstrip().split(None,1)[0].upper() if translated.strip() else ""
+        if command in {"INSERT","UPDATE","DELETE"} and self._cursor.rowcount != 0:
+            self._connection._changed = True
         return self
 
     def executemany(self, statement, sequence):
         self._select_schema()
-        self._cursor.executemany(_translate(statement), sequence)
+        translated=_translate(statement)
+        self._cursor.executemany(translated, sequence)
+        command=translated.lstrip().split(None,1)[0].upper() if translated.strip() else ""
+        if command in {"INSERT","UPDATE","DELETE"} and self._cursor.rowcount != 0:
+            self._connection._changed = True
         return self
 
 
@@ -107,6 +115,7 @@ class Connection:
         self._raw = raw
         self.schema_name = schema_name
         self._schema_selected_in_transaction = False
+        self._changed = False
         storage.ensure_search_path(raw, schema_name)
 
     def execute(self, statement, parameters=()):
@@ -118,10 +127,15 @@ class Connection:
     def commit(self):
         self._raw.commit()
         self._schema_selected_in_transaction = False
+        changed=self._changed
+        self._changed=False
+        if changed:
+            save_manager.touch_active()
 
     def rollback(self):
         self._raw.rollback()
         self._schema_selected_in_transaction = False
+        self._changed=False
 
     def close(self):
         self._raw.close()
@@ -148,7 +162,6 @@ def set_setting(connection, key, value):
         (key, str(value)),
     )
     connection.commit()
-    save_manager.touch_active()
 
 
 def next_id(connection, table, column, prefix, width=4):
