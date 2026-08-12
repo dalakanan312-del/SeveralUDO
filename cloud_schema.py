@@ -17,12 +17,13 @@ TABLE_DDLS = [
     "CREATE TABLE IF NOT EXISTS roll_rule_eras(era_id TEXT PRIMARY KEY,era_name TEXT NOT NULL,start_year INTEGER NOT NULL,end_year INTEGER NOT NULL,species TEXT NOT NULL DEFAULT 'Human',active INTEGER NOT NULL DEFAULT 1,notes TEXT)",
     "CREATE TABLE IF NOT EXISTS roll_rule_values(era_id TEXT NOT NULL,roll_type TEXT NOT NULL,die TEXT,bad_results TEXT,notes TEXT,PRIMARY KEY(era_id,roll_type))",
     "CREATE TABLE IF NOT EXISTS notebook_entries(note_id TEXT PRIMARY KEY,title TEXT NOT NULL,category TEXT,body TEXT,pinned INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS illnesses(illness_id TEXT PRIMARY KEY,sim_id TEXT,sim_name TEXT,illness_name TEXT NOT NULL,onset_global_day INTEGER,end_global_day INTEGER,status TEXT,severity TEXT,contagious INTEGER,treatment TEXT,outcome TEXT,notes TEXT)",
 ]
 
 TABLES = [
     "settings", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "rules", "calendar_rows",
-    "raw_import_rows", "sim_photos", "relationship_photos", "roll_rule_eras", "roll_rule_values", "notebook_entries",
+    "raw_import_rows", "sim_photos", "relationship_photos", "roll_rule_eras", "roll_rule_values", "notebook_entries", "illnesses",
 ]
 
 

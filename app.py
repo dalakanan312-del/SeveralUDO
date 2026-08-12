@@ -28,6 +28,7 @@ import dice_roller
 import roll_outcomes
 import notebook
 import plant_reference
+import illnesses
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -280,6 +281,7 @@ _schema_con=connect()
 profiles.ensure_schema(_schema_con)
 relationship_photos.ensure_schema(_schema_con)
 notebook.ensure_schema(_schema_con)
+illnesses.ensure_schema(_schema_con)
 autorolls.repair_generated_roll_dice(_schema_con)
 _schema_con.close()
 
@@ -312,6 +314,7 @@ with st.sidebar:
         "💍 Relationships":"Relationships",
         "🏘️ Households":"Households",
         "📜 Events":"Events",
+        "🩺 Illnesses":"Illnesses",
         "📊 Statistics":"Statistics",
         "📓 Notes":"Notes",
         "🌿 Planting Reference":"Planting Reference",
@@ -379,17 +382,25 @@ if page=="Today":
     active=q("""SELECT event_id,event_name,scope,location,roll_required,affected_class
                 FROM events WHERE start_global_day<=? AND end_global_day>=?
                 ORDER BY event_name""",(g,g))
+    sick=q("""SELECT illness_id,sim_id,sim_name,illness_name,onset_global_day,status,severity,contagious,treatment
+              FROM illnesses WHERE onset_global_day<=?
+                AND COALESCE(status,'Active') IN ('Active','Improving','Worsening','Chronic')
+                AND (end_global_day IS NULL OR end_global_day>=?)
+              ORDER BY CASE severity WHEN 'Critical' THEN 1 WHEN 'Severe' THEN 2 WHEN 'Moderate' THEN 3 ELSE 4 END,
+                       onset_global_day,sim_name""",(g,g))
 
     st.subheader("Needs attention")
-    a,b,c=st.columns(3)
+    a,b,c,d=st.columns(4)
     a.metric("Rolls due",len(due))
     b.metric("Pregnancies due",len(preg))
     c.metric("Active historical events",len(active))
+    d.metric("Active illnesses",len(sick))
 
-    task_rolls,task_preg,task_events=st.tabs([
+    task_rolls,task_preg,task_events,task_illness=st.tabs([
         f"🎲 Rolls due ({len(due)})",
         f"🤰 Pregnancies due ({len(preg)})",
-        f"📜 Active events ({len(active)})"
+        f"📜 Active events ({len(active)})",
+        f"🩺 Illnesses ({len(sick)})"
     ])
 
     with task_rolls:
@@ -459,6 +470,39 @@ if page=="Today":
                 rename={"event_name":"Event","scope":"Scope","location":"Location","affected_class":"Affected","roll_required":"Roll?"},
                 cols=["event_name","scope","location","affected_class","roll_required"])
             st.dataframe(pretty,use_container_width=True,hide_index=True,height=min(420,80+len(pretty)*35))
+
+    with task_illness:
+        if sick.empty:
+            st.success("No active illnesses today.")
+        else:
+            pretty=friendly_df(sick,
+                rename={"sim_name":"Sim","illness_name":"Illness","onset_global_day":"Began GD",
+                        "status":"Status","severity":"Severity","contagious":"Contagious?","treatment":"Treatment"},
+                cols=["sim_name","illness_name","onset_global_day","status","severity","contagious","treatment"])
+            st.dataframe(pretty,use_container_width=True,hide_index=True,height=min(380,80+len(pretty)*35))
+        st.markdown("**Quickly record an illness**")
+        with st.form("today_add_illness",clear_on_submit=True):
+            opts=sim_options(blank=False)
+            a,b=st.columns(2)
+            ill_sim=a.selectbox("Sim",opts,key="today_illness_sim") if opts else ""
+            ill_name=b.text_input("Illness",placeholder="Influenza, fever, consumption…",key="today_illness_name")
+            a,b,c=st.columns(3)
+            severity=a.selectbox("Severity",illnesses.SEVERITIES,index=1,key="today_illness_severity")
+            status=b.selectbox("Status",illnesses.ACTIVE_STATUSES,key="today_illness_status")
+            contagious=c.checkbox("Contagious",key="today_illness_contagious")
+            treatment=st.text_input("Treatment or care",key="today_illness_treatment")
+            notes=st.text_area("Notes",height=100,key="today_illness_notes")
+            save_illness=st.form_submit_button("Add illness for today",type="primary",use_container_width=True)
+        if save_illness:
+            if not ill_sim: st.error("Add a Sim before recording an illness.")
+            elif not ill_name.strip(): st.error("Enter the illness name.")
+            else:
+                con=connect(); iid=illnesses.next_id(con)
+                con.execute("""INSERT INTO illnesses(illness_id,sim_id,sim_name,illness_name,onset_global_day,status,
+                               severity,contagious,treatment,notes) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                            (iid,sid(ill_sim),ill_sim.split(" — ",1)[1],ill_name.strip(),g,status,severity,
+                             1 if contagious else 0,treatment.strip() or None,notes.strip() or None))
+                con.commit(); con.close(); st.success(f"Recorded {ill_name.strip()} for {ill_sim.split(' — ',1)[1]}."); st.rerun()
 
     st.subheader("Coming up")
     a,b=st.columns([1,3])
@@ -1837,6 +1881,99 @@ elif page=="Households":
                     else:
                         con.close(); st.success(f"Deleted {hh}; assigned Sims are now unassigned."); st.rerun()
 
+
+elif page=="Illnesses":
+    page_header("Illnesses","Track sickness, treatment, recovery, chronic conditions, and outcomes for every Sim.")
+    g=current_gd()
+    idf=q("SELECT * FROM illnesses ORDER BY onset_global_day DESC,sim_name,illness_name")
+    active_mask=idf.status.fillna("Active").isin(illnesses.ACTIVE_STATUSES) if not idf.empty else pd.Series(dtype=bool)
+    a,b,c=st.columns(3)
+    a.metric("Recorded illnesses",len(idf)); b.metric("Currently active",int(active_mask.sum()) if not idf.empty else 0)
+    c.metric("Contagious and active",int((active_mask & (idf.contagious.fillna(0)==1)).sum()) if not idf.empty else 0)
+    tab_current,tab_add,tab_edit=st.tabs(["Illness register","➕ Add illness","✏️ Update or resolve"])
+
+    with tab_current:
+        if idf.empty:
+            st.info("No illnesses have been recorded in this save.")
+        else:
+            a,b=st.columns([2,1])
+            search=a.text_input("Search illnesses",placeholder="Sim or illness name",key="illness_search")
+            status_filter=b.selectbox("Status",["All statuses"]+list(illnesses.ALL_STATUSES),key="illness_status_filter")
+            shown=idf.copy()
+            if search:
+                term=search.casefold()
+                shown=shown[shown.apply(lambda row: term in f"{row.sim_name or ''} {row.illness_name or ''} {row.notes or ''}".casefold(),axis=1)]
+            if status_filter!="All statuses": shown=shown[shown.status==status_filter]
+            show=friendly_df(shown,
+                rename={"sim_name":"Sim","illness_name":"Illness","onset_global_day":"Began GD","end_global_day":"Ended GD",
+                        "status":"Status","severity":"Severity","contagious":"Contagious?","treatment":"Treatment","outcome":"Outcome"},
+                cols=["sim_name","illness_name","onset_global_day","end_global_day","status","severity","contagious","treatment","outcome"])
+            st.dataframe(show,use_container_width=True,hide_index=True,height=520)
+
+    with tab_add:
+        opts=sim_options(blank=False)
+        if not opts:
+            st.info("Add a Sim before recording an illness.")
+        else:
+            sim=st.selectbox("Sim",opts,key="illness_add_sim")
+            a,b,c=st.columns(3)
+            name=a.text_input("Illness",key="illness_add_name")
+            onset=b.number_input("Onset Global Day",-10000,20000,g,key="illness_add_onset")
+            severity=c.selectbox("Severity",illnesses.SEVERITIES,index=1,key="illness_add_severity")
+            a,b=st.columns(2)
+            status=a.selectbox("Status",illnesses.ACTIVE_STATUSES,key="illness_add_status")
+            contagious=b.checkbox("Contagious",key="illness_add_contagious")
+            treatment=st.text_input("Treatment or care",key="illness_add_treatment")
+            notes=st.text_area("Notes",key="illness_add_notes")
+            if st.button("Add illness",type="primary",key="illness_add_btn"):
+                if not name.strip(): st.error("Enter the illness name.")
+                else:
+                    con=connect(); iid=illnesses.next_id(con)
+                    con.execute("""INSERT INTO illnesses(illness_id,sim_id,sim_name,illness_name,onset_global_day,status,
+                                   severity,contagious,treatment,notes) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                                (iid,sid(sim),sim.split(" — ",1)[1],name.strip(),int(onset),status,severity,
+                                 1 if contagious else 0,treatment.strip() or None,notes.strip() or None))
+                    con.commit(); con.close(); st.success(f"Added {iid}."); st.rerun()
+
+    with tab_edit:
+        if idf.empty:
+            st.info("No illnesses to update.")
+        else:
+            labels=[f"{r.illness_id} — {r.sim_name or r.sim_id} — {r.illness_name}" for _,r in idf.iterrows()]
+            choice=st.selectbox("Illness record",labels,key="illness_edit_choice")
+            iid=choice.split(" — ",1)[0]
+            row=idf[idf.illness_id==iid].iloc[0]
+            opts=sim_options(blank=False); current_sim=next((x for x in opts if x.startswith(str(row.sim_id)+" — ")),opts[0] if opts else "")
+            sim=st.selectbox("Sim",opts,index=opts.index(current_sim) if current_sim in opts else 0,key=f"illness_edit_sim_{iid}") if opts else ""
+            a,b,c=st.columns(3)
+            name=a.text_input("Illness",value=row.illness_name or "",key=f"illness_edit_name_{iid}")
+            onset=b.number_input("Onset Global Day",-10000,20000,int(row.onset_global_day or g),key=f"illness_edit_onset_{iid}")
+            severity=c.selectbox("Severity",illnesses.SEVERITIES,index=illnesses.SEVERITIES.index(row.severity) if row.severity in illnesses.SEVERITIES else 1,key=f"illness_edit_severity_{iid}")
+            a,b,c=st.columns(3)
+            status=a.selectbox("Status",illnesses.ALL_STATUSES,index=illnesses.ALL_STATUSES.index(row.status) if row.status in illnesses.ALL_STATUSES else 0,key=f"illness_edit_status_{iid}")
+            end_default=int(row.end_global_day) if pd.notna(row.end_global_day) else g
+            ended=status in ("Recovered","Fatal","Resolved")
+            end_day=b.number_input("End Global Day",-10000,20000,end_default,disabled=not ended,key=f"illness_edit_end_{iid}")
+            contagious=c.checkbox("Contagious",value=bool(row.contagious or 0),key=f"illness_edit_contagious_{iid}")
+            treatment=st.text_input("Treatment or care",value=row.treatment or "",key=f"illness_edit_treatment_{iid}")
+            outcome=st.text_input("Outcome",value=row.outcome or "",key=f"illness_edit_outcome_{iid}")
+            notes=st.text_area("Notes",value=row.notes or "",key=f"illness_edit_notes_{iid}")
+            if st.button("Save illness",type="primary",key=f"illness_edit_save_{iid}"):
+                if not name.strip(): st.error("Enter the illness name.")
+                else:
+                    sim_name=sim.split(" — ",1)[1] if sim else row.sim_name
+                    con=connect(); con.execute("""UPDATE illnesses SET sim_id=?,sim_name=?,illness_name=?,onset_global_day=?,
+                                                   end_global_day=?,status=?,severity=?,contagious=?,treatment=?,outcome=?,notes=?
+                                                   WHERE illness_id=?""",
+                                               (sid(sim),sim_name,name.strip(),int(onset),int(end_day) if ended else None,status,
+                                                severity,1 if contagious else 0,treatment.strip() or None,outcome.strip() or None,
+                                                notes.strip() or None,iid))
+                    con.commit(); con.close(); st.success("Illness updated."); st.rerun()
+            with st.expander("Delete this illness record"):
+                confirm=st.checkbox("I understand this permanently deletes the selected illness record.",key=f"illness_delete_confirm_{iid}")
+                if st.button("Delete illness record",disabled=not confirm,key=f"illness_delete_{iid}"):
+                    con=connect(); con.execute("DELETE FROM illnesses WHERE illness_id=?",(iid,)); con.commit(); con.close()
+                    st.success("Illness record deleted."); st.rerun()
 
 elif page=="Events":
     page_header("Historical Events","Manage challenge-wide events and record their effects.")
