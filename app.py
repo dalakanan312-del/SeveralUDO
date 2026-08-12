@@ -2,6 +2,7 @@ import tempfile
 import base64
 import re
 import secrets
+import html
 from datetime import time
 from pathlib import Path
 import pandas as pd
@@ -49,16 +50,14 @@ if neon_ui.render_first_save_setup(st):
 st.markdown("""
 <style>
 :root{
-    --decades-gold:#c79a4a;
-    --decades-gold-soft:rgba(199,154,74,.16);
-    --decades-wine:#7b3444;
-    --decades-ink:#5b3a22;
-    --decades-line:rgba(199,154,74,.25);
-    --decades-surface:rgba(128,128,128,.055);
+    --decades-gold:#b98a43;--decades-gold-soft:rgba(185,138,67,.13);
+    --decades-wine:#753747;--decades-ink:#3d2a1d;
+    --decades-line:rgba(185,138,67,.22);--decades-surface:rgba(128,128,128,.045);
+    --decades-card:rgba(255,255,255,.035);--decades-muted:rgba(128,128,128,.72);
 }
-.stApp{background-image:radial-gradient(circle at 85% -10%,rgba(199,154,74,.08),transparent 28rem)}
+.stApp{background-image:radial-gradient(circle at 85% -10%,rgba(185,138,67,.08),transparent 28rem)}
 .stApp:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.045;background-image:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(115,78,38,.18) 4px);z-index:0}
-.block-container{padding-top:1.35rem;max-width:1450px;padding-bottom:3.5rem}
+.block-container{padding-top:1.2rem;max-width:1280px;padding-bottom:4rem}
 [data-testid="stSidebar"]{
     min-width:255px;
     border-right:1px solid var(--decades-line);
@@ -74,7 +73,7 @@ st.markdown("""
 [data-testid="stSidebar"] [role="radiogroup"] label:hover{background:var(--decades-gold-soft);transform:translateX(2px)}
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){background:var(--decades-gold-soft);box-shadow:inset 3px 0 0 var(--decades-gold)}
 [data-testid="stMetric"]{
-    border:1px solid var(--decades-line);border-radius:15px;padding:13px 15px;
+    border:1px solid var(--decades-line);border-radius:18px;padding:14px 16px;
     background:linear-gradient(145deg,var(--decades-gold-soft),var(--decades-surface));
     box-shadow:0 8px 24px rgba(0,0,0,.06)
 }
@@ -89,8 +88,8 @@ div[data-testid="stExpander"]{border-radius:13px;border-color:var(--decades-line
 [data-testid="stDataFrame"]{border:1px solid var(--decades-line);border-radius:12px;overflow:hidden}
 [data-testid="stAlert"]{border-radius:12px}
 [data-testid="stImage"] img{border-radius:13px;box-shadow:0 8px 24px rgba(0,0,0,.13)}
-h1,h2,h3{font-family:Georgia,serif;letter-spacing:-.015em}
-h1{margin-bottom:.15rem}
+h1,h2,h3{font-family:Georgia,serif;letter-spacing:-.018em}
+h1{margin-bottom:.1rem;font-size:clamp(2rem,4vw,3.1rem)}
 .page-kicker{color:var(--decades-gold);font-size:.72rem;font-weight:750;letter-spacing:.17em;text-transform:uppercase;margin-bottom:.2rem}
 .page-subtitle{opacity:.74;margin-top:-.12rem;margin-bottom:1.2rem;max-width:850px;font-size:1rem}
 .chronicle-note{
@@ -110,6 +109,19 @@ h1{margin-bottom:.15rem}
     display:inline-block;padding:.2rem .55rem;border-radius:999px;
     border:1px solid var(--decades-line);background:var(--decades-gold-soft);margin-right:.3rem;font-size:.88rem
 }
+.v3-hero{margin:.2rem 0 1.2rem;padding:1.35rem 1.5rem;border:1px solid var(--decades-line);border-radius:22px;background:linear-gradient(135deg,rgba(185,138,67,.16),rgba(117,55,71,.08));box-shadow:0 12px 38px rgba(0,0,0,.07)}
+.v3-eyebrow{font-size:.72rem;text-transform:uppercase;letter-spacing:.17em;font-weight:800;color:var(--decades-gold)}
+.v3-hero-title{font:700 clamp(1.7rem,3vw,2.55rem)/1.1 Georgia,serif;margin:.25rem 0}
+.v3-hero-copy{opacity:.76;max-width:760px;font-size:1rem}
+.v3-section{display:flex;justify-content:space-between;align-items:end;gap:1rem;margin:1.65rem 0 .7rem}
+.v3-section-title{font:700 1.35rem/1.2 Georgia,serif}.v3-section-note{opacity:.65;font-size:.9rem}
+.v3-card{border:1px solid var(--decades-line);border-radius:17px;padding:1rem 1.1rem;margin:.55rem 0;background:var(--decades-card);box-shadow:0 5px 18px rgba(0,0,0,.045)}
+.v3-card:hover{border-color:rgba(185,138,67,.5);box-shadow:0 9px 25px rgba(0,0,0,.075)}
+.v3-card-top{display:flex;justify-content:space-between;align-items:start;gap:1rem}.v3-card-title{font:700 1.05rem/1.25 Georgia,serif}.v3-card-badge{white-space:nowrap;border-radius:999px;padding:.18rem .52rem;background:var(--decades-gold-soft);color:var(--decades-gold);font-size:.75rem;font-weight:750}
+.v3-card-meta{display:flex;gap:.85rem;flex-wrap:wrap;margin:.45rem 0 0;color:var(--decades-muted);font-size:.86rem}.v3-card-body{margin-top:.55rem;opacity:.82;line-height:1.48}
+.v3-empty{text-align:center;padding:2.1rem 1rem;border:1px dashed var(--decades-line);border-radius:18px;opacity:.72}
+.v3-nav-group{font-size:.68rem;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--decades-gold);margin:1rem .4rem .25rem}
+[data-testid="stDataFrame"]{opacity:.94}
 @media(max-width:760px){
     .block-container{padding:.9rem .85rem 2.5rem}
     [data-baseweb="tab-list"]{overflow-x:auto;flex-wrap:nowrap}
@@ -256,10 +268,28 @@ def rule_value(label,default=None):
     return r[0] if r and r[0] not in (None,'') else default
 
 def page_header(title,subtitle=None):
-    st.markdown("<div class='page-kicker'>Decades Challenge Chronicle</div>",unsafe_allow_html=True)
-    st.title(title)
-    if subtitle:
-        st.markdown(f"<div class='page-subtitle'>{subtitle}</div>",unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='v3-hero'><div class='v3-eyebrow'>Decades Tracker 3.0</div>"
+        f"<div class='v3-hero-title'>{html.escape(str(title))}</div>"
+        f"<div class='v3-hero-copy'>{html.escape(str(subtitle or ''))}</div></div>",unsafe_allow_html=True)
+
+def section_heading(title,note=""):
+    st.markdown(f"<div class='v3-section'><div class='v3-section-title'>{html.escape(str(title))}</div><div class='v3-section-note'>{html.escape(str(note))}</div></div>",unsafe_allow_html=True)
+
+def friendly_cards(rows,title,meta=(),body=None,badge=None,empty="Nothing to show here yet.",limit=50):
+    records=rows.to_dict("records") if isinstance(rows,pd.DataFrame) else list(rows or [])
+    if not records:
+        st.markdown(f"<div class='v3-empty'>{html.escape(empty)}</div>",unsafe_allow_html=True); return
+    for row in records[:limit]:
+        heading=title(row) if callable(title) else row.get(title)
+        badge_text=(badge(row) if callable(badge) else row.get(badge)) if badge else ""
+        meta_bits=[]
+        for item in meta:
+            label,value=item(row) if callable(item) else (item,row.get(item))
+            if value not in (None,"",False) and pd.notna(value): meta_bits.append(f"<span><b>{html.escape(str(label))}</b> {html.escape(str(value))}</span>")
+        body_text=(body(row) if callable(body) else row.get(body)) if body else ""
+        st.markdown(f"<div class='v3-card'><div class='v3-card-top'><div class='v3-card-title'>{html.escape(str(heading or 'Untitled'))}</div>{f'<div class=\"v3-card-badge\">{html.escape(str(badge_text))}</div>' if badge_text else ''}</div><div class='v3-card-meta'>{''.join(meta_bits)}</div>{f'<div class=\"v3-card-body\">{html.escape(str(body_text))}</div>' if body_text else ''}</div>",unsafe_allow_html=True)
+    if len(records)>limit: st.caption(f"Showing the first {limit} of {len(records)} items. Narrow the filters to see more.")
 
 def chronicle_note(title,text):
     st.markdown(
@@ -364,7 +394,7 @@ _ensure_optional_features(*active_cache_key())
 with st.sidebar:
     st.markdown(
         "<div class='sidebar-brand'><div class='sidebar-brand-title'>🏰 Decades</div>"
-        "<div class='sidebar-brand-subtitle'>Challenge Tracker</div></div>",
+        "<div class='sidebar-brand-subtitle'>Your living family chronicle · 3.0</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -471,7 +501,7 @@ if page=="Today":
               ORDER BY CASE severity WHEN 'Critical' THEN 1 WHEN 'Severe' THEN 2 WHEN 'Moderate' THEN 3 ELSE 4 END,
                        onset_global_day,sim_name""",(g,g))
 
-    st.subheader("Needs attention")
+    section_heading("What needs you now","Choose a category and complete one task at a time")
     a,b,c,d=st.columns(4)
     a.metric("Rolls due",len(due))
     b.metric("Pregnancies due",len(preg))
@@ -489,10 +519,9 @@ if page=="Today":
         if due.empty:
             st.success("No rolls are due right now.")
         else:
-            pretty=friendly_df(due,
-                rename={"due_global_day":"Due GD","sim_name":"Sim","roll_type":"Roll","die":"Die","bad_results":"Bad results"},
-                cols=["due_global_day","sim_name","roll_type","die","bad_results"])
-            st.dataframe(pretty,use_container_width=True,hide_index=True,height=min(420,80+len(pretty)*35))
+            friendly_cards(due,lambda r:r.get("roll_type") or "Scheduled roll",
+                meta=(lambda r:("Sim",r.get("sim_name") or r.get("sim_id")),lambda r:("Due",f"Global Day {r.get('due_global_day')}"),lambda r:("Die",r.get("die"))),
+                body=lambda r:f"Bad results: {r.get('bad_results') or 'Use the current rule table'}",badge="roll_id")
             st.markdown("**Record a result**")
             labels=[f"{r.roll_id} — {r.sim_name or r.sim_id} — {r.roll_type} (GD {r.due_global_day})" for _,r in due.iterrows()]
             pick=st.selectbox("Choose roll",labels,key="today_roll_pick")
@@ -520,10 +549,9 @@ if page=="Today":
         if preg.empty:
             st.success("No pregnancies are due right now.")
         else:
-            pretty=friendly_df(preg,
-                rename={"mother_name":"Mother","father_name":"Father","due_global_day":"Due GD","babies_expected":"Expected","status":"Status"},
-                cols=["mother_name","father_name","due_global_day","babies_expected","status"])
-            st.dataframe(pretty,use_container_width=True,hide_index=True,height=min(420,80+len(pretty)*35))
+            friendly_cards(preg,lambda r:f"{r.get('mother_name') or r.get('mother_id')} is due",
+                meta=(lambda r:("Father",r.get("father_name")),lambda r:("Due",f"Global Day {r.get('due_global_day')}"),lambda r:("Babies expected",r.get("babies_expected"))),
+                badge=lambda r:r.get("status") or "Active")
             st.markdown("**Record an outcome**")
             labels=[f"{r.pregnancy_id} — {r.mother_name or r.mother_id} (GD {r.due_global_day})" for _,r in preg.iterrows()]
             pick=st.selectbox("Choose pregnancy",labels,key="today_preg_pick")
@@ -548,20 +576,16 @@ if page=="Today":
         if active.empty:
             st.success("No historical events are active today.")
         else:
-            pretty=friendly_df(active,
-                rename={"event_name":"Event","scope":"Scope","location":"Location","affected_class":"Affected","roll_required":"Roll?"},
-                cols=["event_name","scope","location","affected_class","roll_required"])
-            st.dataframe(pretty,use_container_width=True,hide_index=True,height=min(420,80+len(pretty)*35))
+            friendly_cards(active,"event_name",meta=("scope","location","affected_class"),
+                badge=lambda r:"Roll required" if r.get("roll_required") else "In effect")
 
     with task_illness:
         if sick.empty:
             st.success("No active illnesses today.")
         else:
-            pretty=friendly_df(sick,
-                rename={"sim_name":"Sim","illness_name":"Illness","onset_global_day":"Began GD",
-                        "status":"Status","severity":"Severity","contagious":"Contagious?","treatment":"Treatment"},
-                cols=["sim_name","illness_name","onset_global_day","status","severity","contagious","treatment"])
-            st.dataframe(pretty,use_container_width=True,hide_index=True,height=min(380,80+len(pretty)*35))
+            friendly_cards(sick,lambda r:f"{r.get('sim_name') or r.get('sim_id')} — {r.get('illness_name')}",
+                meta=(lambda r:("Began",f"Global Day {r.get('onset_global_day')}"),"status",lambda r:("Contagious","Yes" if r.get("contagious") else "No")),
+                body="treatment",badge="severity")
         st.markdown("**Quickly record an illness**")
         with st.form("today_add_illness",clear_on_submit=True):
             opts=sim_options(blank=False)
@@ -586,7 +610,7 @@ if page=="Today":
                              1 if contagious else 0,treatment.strip() or None,notes.strip() or None))
                 con.commit(); con.close(); st.success(f"Recorded {ill_name.strip()} for {ill_sim.split(' — ',1)[1]}."); st.rerun()
 
-    st.subheader("Coming up")
+    section_heading("Coming up","A calm preview—nothing is added to the log until it becomes due")
     a,b=st.columns([1,3])
     lookahead=a.selectbox("Look ahead",options=[4,8,12,20,40,80],index=3,format_func=lambda x:f"{x} Global Days",key="today_roll_lookahead")
     with b:
@@ -594,12 +618,9 @@ if page=="Today":
     upcoming_rows=cached_upcoming_rolls(g,lookahead)
     if upcoming_rows:
         udf=pd.DataFrame(upcoming_rows)
-        show=friendly_df(
-            udf,
-            rename={"due_global_day":"Due GD","year":"Year","sim_name":"Sim","roll_type":"Roll","die":"Die","bad_results":"Bad results","rule_status":"Rule status"},
-            cols=["due_global_day","year","sim_name","roll_type","die","bad_results","rule_status"]
-        )
-        st.dataframe(show,use_container_width=True,hide_index=True,height=min(420,80+len(show)*35))
+        friendly_cards(udf,lambda r:r.get("roll_type") or "Upcoming roll",
+            meta=(lambda r:("Sim",r.get("sim_name") or r.get("sim_id")),lambda r:("When",f"Year {r.get('year')} · GD {r.get('due_global_day')}"),"die"),
+            body=lambda r:f"Bad results: {r.get('bad_results') or 'Not configured'}",badge="rule_status",limit=20)
     else:
         st.info("Nothing automatically scheduled in this window.")
 
@@ -635,11 +656,9 @@ elif page=="Sims":
         if not df.empty:
             df["Name"]=(df["title"].fillna("")+" "+df["first_name"].fillna("")+" "+df["last_name"].fillna("")+" "+df["suffix"].fillna("")).str.replace(r"\s+"," ",regex=True).str.strip()
             df["Status"]=df["death_global_day"].apply(lambda x:"Deceased" if pd.notna(x) else "Living")
-            show=friendly_df(df,
-                rename={"sim_id":"ID","sex":"Gender","generation":"Gen.","birth_global_day":"Birth GD",
-                        "death_global_day":"Death GD","current_household_id":"Household","species_occult":"Species"},
-                cols=["sim_id","Name","Status","sex","generation","birth_global_day","death_global_day","species_occult","current_household_id"])
-            st.dataframe(show,use_container_width=True,hide_index=True,height=390)
+            friendly_cards(df,"Name",
+                meta=(lambda r:("Born",f"Global Day {r.get('birth_global_day')}" if pd.notna(r.get('birth_global_day')) else "Unknown"),lambda r:("Generation",r.get("generation")),lambda r:("Household",r.get("current_household_id")),lambda r:("Species",r.get("species_occult"))),
+                badge="Status",limit=30)
             labels=[f"{r.Name} — {r.sim_id}" for _,r in df.iterrows()]
             profile_pick=st.selectbox("Open a Sim profile",labels,key="sim_dir_profile")
             profile_id=profile_pick.rsplit(" — ",1)[-1]
@@ -1596,11 +1615,9 @@ elif page=="Relationships":
                 |view.partner1_id.fillna("").str.lower().str.contains(s,regex=False)
                 |view.partner2_id.fillna("").str.lower().str.contains(s,regex=False)
             ]
-        show=friendly_df(view,
-            rename={"partner1_name":"Partner 1","partner2_name":"Partner 2","type":"Type","start_global_day":"Start GD",
-                    "end_global_day":"End GD","status":"Status","location":"Location","children_count":"Children"},
-            cols=["partner1_name","partner2_name","type","start_global_day","end_global_day","status","location","children_count"])
-        st.dataframe(show,use_container_width=True,hide_index=True,height=390)
+        friendly_cards(view,lambda r:f"{r.get('partner1_name') or r.get('partner1_id')} + {r.get('partner2_name') or r.get('partner2_id')}",
+            meta=("type",lambda r:("Started",f"Global Day {r.get('start_global_day')}"),"location",lambda r:("Children",r.get("children_count"))),
+            body="notes",badge=lambda r:r.get("status") or "Unknown",empty="No relationships match this search.")
 
         if not view.empty:
             labels=[f"{r.partner1_name or r.partner1_id} + {r.partner2_name or r.partner2_id} — {r.type or 'Relationship'} — {r.relationship_id}"
@@ -1817,11 +1834,9 @@ elif page=="Households":
         a.metric("Households",len(hdf))
         b.metric("Active",int(hdf.active.fillna(0).astype(bool).sum()) if not hdf.empty else 0)
         c.metric("Living members",scalar("SELECT COUNT(*) FROM sims WHERE death_global_day IS NULL AND current_household_id IS NOT NULL"))
-        show=friendly_df(hdf,
-            rename={"household_name":"Household","location":"Location","social_class":"Class","living_members":"Living",
-                    "total_assigned_members":"Associated","active":"Active","head_sim_id":"Head ID"},
-            cols=["household_id","household_name","location","social_class","living_members","total_assigned_members","active"])
-        st.dataframe(show,use_container_width=True,hide_index=True,height=400)
+        friendly_cards(hdf,lambda r:r.get("household_name") or r.get("household_id"),
+            meta=("location",lambda r:("Class",r.get("social_class")),lambda r:("Living",r.get("living_members")),lambda r:("Associated",r.get("total_assigned_members"))),
+            body="notes",badge=lambda r:"Active" if r.get("active") else "Inactive")
         if not hdf.empty:
             labels=[f"{r.household_id} — {r.household_name or ''}" for _,r in hdf.iterrows()]
             pick=st.selectbox("View household members",labels,key="hh_show")
@@ -1973,7 +1988,7 @@ elif page=="Challenge Management":
         a,b,c=st.columns(3)
         a.metric("Current year",year); b.metric("Applicable guidance",len(rdf)); c.metric("Active historical events",scalar("SELECT COUNT(*) FROM events WHERE active=1 AND start_global_day<=? AND end_global_day>=?",(g,g)))
         if rdf.empty: st.info("No custom era guidance applies yet. Add your first editable rule below.")
-        else: st.dataframe(friendly_df(rdf,rename={"title":"Rule","category":"Category","start_year":"From","end_year":"Through","location":"Location","rule_text":"Guidance"},cols=["category","title","start_year","end_year","location","rule_text"]),use_container_width=True,hide_index=True)
+        else: friendly_cards(rdf,"title",meta=("category",lambda r:("Years",f"{r.get('start_year')}–{r.get('end_year')}"),"location"),body="rule_text",badge=lambda r:"In force")
         with st.expander("Add editable era guidance",expanded=rdf.empty):
             a,b,c=st.columns(3)
             title=a.text_input("Rule title",key="era_add_title")
@@ -2034,7 +2049,7 @@ elif page=="Challenge Management":
         else:
             heir=ranked.iloc[0]
             st.success(f"Current recommended heir: {heir['name'] or heir.sim_id}")
-            st.dataframe(ranked[["rank","sim_id","name","sex","birth_global_day","generation","succession_override","succession_note"]],use_container_width=True,hide_index=True)
+            friendly_cards(ranked,lambda r:f"#{r.get('rank')} · {r.get('name') or r.get('sim_id')}",meta=("sex",lambda r:("Born",f"Global Day {r.get('birth_global_day')}"),"generation"),body="succession_note",badge="succession_override")
         st.caption("Use a Sim's Succession Override field to mark them Heir/Priority or Exclude/Disinherit; the ranking updates automatically.")
 
     with tabs[2]:
@@ -2064,7 +2079,7 @@ elif page=="Challenge Management":
                 score=max(0,100-abs(int(first_row.birth_global_day)-int(candidate.birth_global_day)))+(10 if same_house else 0)-(100 if warning else 0)
                 rows.append({"sim_id":candidate.sim_id,"name":candidate["name"],"age_days":g-int(candidate.birth_global_day),"compatibility":score,"kinship_warning":warning or "None"})
             candidates=pd.DataFrame(rows).sort_values(["compatibility","name"],ascending=[False,True])
-            st.dataframe(candidates,use_container_width=True,hide_index=True)
+            friendly_cards(candidates,"name",meta=(lambda r:("Age",f"{r.get('age_days')} challenge days"),lambda r:("Compatibility",r.get("compatibility"))),badge="kinship_warning")
             second=st.selectbox("Chosen match",[f"{r.sim_id} — {r['name']}" for _,r in candidates.iterrows()],key="match_second"); second_id=sid(second)
             warning=cm.kinship_warning(fid,second_id,sims)
             if warning: st.error(f"Close-relative warning: {warning}. The tracker will not create this courtship.")
@@ -2078,7 +2093,7 @@ elif page=="Challenge Management":
         campaigns=q("SELECT * FROM military_campaigns ORDER BY start_global_day DESC,campaign_id")
         services=q("SELECT * FROM military_service ORDER BY enlisted_global_day DESC,service_id")
         a,b,c=st.columns(3); a.metric("Campaigns",len(campaigns)); b.metric("Serving now",int(services.status.fillna("").eq("Active").sum()) if not services.empty else 0); c.metric("Service records",len(services))
-        if not services.empty: st.dataframe(services[["service_id","sim_name","role","status","enlisted_global_day","return_global_day","outcome","injury"]],use_container_width=True,hide_index=True)
+        if not services.empty: friendly_cards(services,"sim_name",meta=("role",lambda r:("Enlisted",f"Global Day {r.get('enlisted_global_day')}"),lambda r:("Returned",r.get("return_global_day"))),body=lambda r:r.get("outcome") or r.get("injury"),badge="status")
         with st.expander("Create a campaign",expanded=campaigns.empty):
             events=q("SELECT event_id,event_name FROM events ORDER BY start_global_day DESC")
             event_opts=[""]+[f"{r.event_id} — {r.event_name}" for _,r in events.iterrows()]
@@ -2098,7 +2113,7 @@ elif page=="Challenge Management":
             roster=cm.eligible_for_campaign(sims,households,int(campaign.start_global_day),int(campaign.min_age_days or 0),int(campaign.max_age_days or 10000),campaign.location or "All",campaign.eligible_sexes or "All",campaign.eligible_classes or "All")
             existing=set(services[services.campaign_id==cid].sim_id.astype(str)) if not services.empty else set()
             roster=roster[~roster.sim_id.astype(str).isin(existing)]
-            st.dataframe(roster[["sim_id","name","sex","age_days","household_location","social_class"]],use_container_width=True,hide_index=True)
+            friendly_cards(roster,"name",meta=("sex",lambda r:("Age",f"{r.get('age_days')} days"),lambda r:("Location",r.get("household_location")),"social_class"),badge=lambda r:"Eligible")
             chosen=st.multiselect("Select Sims to enlist",roster.sim_id.tolist(),format_func=lambda x: next((str(n) for i,n in zip(roster.sim_id,roster.name) if i==x),x),key="war_enlist_select")
             role=st.text_input("Service role","Conscript",key="war_role")
             if st.button("Enlist selected Sims",type="primary",disabled=not chosen,key="war_enlist"):
@@ -2139,11 +2154,9 @@ elif page=="Illnesses":
                 term=search.casefold()
                 shown=shown[shown.apply(lambda row: term in f"{row.sim_name or ''} {row.illness_name or ''} {row.notes or ''}".casefold(),axis=1)]
             if status_filter!="All statuses": shown=shown[shown.status==status_filter]
-            show=friendly_df(shown,
-                rename={"sim_name":"Sim","illness_name":"Illness","onset_global_day":"Began GD","end_global_day":"Ended GD",
-                        "status":"Status","severity":"Severity","contagious":"Contagious?","treatment":"Treatment","outcome":"Outcome"},
-                cols=["sim_name","illness_name","onset_global_day","end_global_day","status","severity","contagious","treatment","outcome"])
-            st.dataframe(show,use_container_width=True,hide_index=True,height=520)
+            friendly_cards(shown,lambda r:f"{r.get('sim_name') or r.get('sim_id')} — {r.get('illness_name')}",
+                meta=(lambda r:("Began",f"Global Day {r.get('onset_global_day')}"),"status",lambda r:("Contagious","Yes" if r.get("contagious") else "No")),
+                body=lambda r:r.get("outcome") or r.get("treatment") or r.get("notes"),badge="severity",empty="No illnesses match these filters.")
 
     with tab_add:
         opts=sim_options(blank=False)
@@ -2221,19 +2234,19 @@ elif page=="Events":
         active_now=edf[(edf.start_global_day<=g)&(edf.end_global_day>=g)] if not edf.empty else edf
         a,b,c=st.columns(3)
         a.metric("Historical events",len(edf)); b.metric("Active today",len(active_now)); c.metric("Recorded effects",scalar("SELECT COUNT(*) FROM event_results"))
-        show=friendly_df(edf,
-            rename={"event_name":"Event","start_global_day":"Start GD","end_global_day":"End GD","scope":"Scope",
-                    "location":"Location","affected_class":"Affected","roll_required":"Roll?","active":"Enabled"},
-            cols=["event_name","start_global_day","end_global_day","scope","location","affected_class","roll_required","active"])
-        st.dataframe(show,use_container_width=True,hide_index=True,height=420)
+        event_search=st.text_input("Find an event",placeholder="Search by event, place, or scope…",key="events_v3_search")
+        event_view=edf
+        if event_search and not edf.empty:
+            needle=event_search.casefold()
+            event_view=edf[edf.apply(lambda row:needle in f"{row.event_name or ''} {row.location or ''} {row.scope or ''}".casefold(),axis=1)]
+        friendly_cards(event_view,lambda r:r.get("event_name") or r.get("event_id"),
+            meta=(lambda r:("When",f"GD {r.get('start_global_day')}–{r.get('end_global_day')}"),"scope","location",lambda r:("Affected",r.get("affected_class"))),
+            body="notes",badge=lambda r:"Roll required" if r.get("roll_required") else ("Active" if r.get("active") else "Disabled"),limit=40)
         results=q("SELECT * FROM event_results ORDER BY global_day DESC,result_id")
         if not results.empty:
-            st.subheader("Recorded effects")
-            rshow=friendly_df(results,
-                rename={"global_day":"Global Day","sim_id":"Sim ID","household_id":"Household","outcome":"Outcome",
-                        "status":"Status","cause_effect":"Cause / effect","death":"Death?"},
-                cols=["global_day","sim_id","household_id","outcome","status","cause_effect","death"])
-            st.dataframe(rshow,use_container_width=True,hide_index=True,height=350)
+            section_heading("Recorded effects")
+            friendly_cards(results,lambda r:r.get("outcome") or r.get("cause_effect") or "Recorded effect",
+                meta=(lambda r:("When",f"Global Day {r.get('global_day')}"),"sim_id","household_id"),body="notes",badge=lambda r:"Death" if r.get("death") else (r.get("status") or "Recorded"),limit=20)
         with st.expander("Show event IDs and technical fields"):
             st.dataframe(edf,use_container_width=True,hide_index=True,height=280)
 
