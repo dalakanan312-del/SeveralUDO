@@ -330,6 +330,10 @@ with st.sidebar:
     st.caption(f"Year {cy_sidebar} • Challenge Day {cd_sidebar} • {sim_weekday(cg_sidebar)}")
     st.caption("✓ Automatic roll scheduling on")
     st.caption(f"Decades Tracker v{APP_VERSION}")
+    st.divider()
+    st.markdown("**Help preserve the chronicle**")
+    st.caption("If this tracker enriches your challenge, you can help support its hosting and continued development.")
+    st.link_button("☕ Support SeveralUDO on Ko-fi","https://ko-fi.com/SeveralUDO",use_container_width=True)
     if st.button("Lock private workspace",use_container_width=True):
         workspace_access.sign_out(st)
 
