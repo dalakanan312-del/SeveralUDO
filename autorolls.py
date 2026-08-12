@@ -160,7 +160,9 @@ def preview(con, current_gd, due_from=None, due_to=None):
         return int(due)>=due_from and (due_to is None or int(due)<=due_to)
 
     sims=con.execute("""SELECT sim_id,title,first_name,last_name,suffix,birth_global_day,death_global_day,species_occult
-                        FROM sims WHERE birth_global_day IS NOT NULL AND birth_global_day<=?""",(current_gd,)).fetchall()
+                        FROM sims WHERE birth_global_day IS NOT NULL AND birth_global_day<=?
+                          AND (death_global_day IS NULL OR death_global_day>=?)""",
+                     (current_gd,due_from)).fetchall()
     for s in sims:
         species=(s["species_occult"] or "Human").strip() or "Human"
         nm=_name(s)
@@ -179,7 +181,8 @@ def preview(con, current_gd, due_from=None, due_to=None):
             })
 
     pregnancies=con.execute("""SELECT p.*,s.title,s.first_name,s.last_name,s.suffix,
-                                      s.birth_global_day AS mother_birth,s.species_occult AS mother_species
+                                      s.birth_global_day AS mother_birth,s.death_global_day AS mother_death,
+                                      s.species_occult AS mother_species
                                FROM pregnancies p LEFT JOIN sims s ON s.sim_id=p.mother_id
                                WHERE p.conception_global_day IS NOT NULL AND p.conception_global_day<=?
                                  AND p.due_global_day IS NOT NULL""",(current_gd,)).fetchall()
@@ -189,6 +192,7 @@ def preview(con, current_gd, due_from=None, due_to=None):
             continue
         due=int(p["due_global_day"])
         if not in_window(due) or p["mother_birth"] is None or p["mother_id"] is None: continue
+        if p["mother_death"] is not None and due>int(p["mother_death"]): continue
         stage=_maternal_stage(due-int(p["mother_birth"]))
         rt=f"Maternal — {stage}"
         species=(p["mother_species"] or "Human").strip() or "Human"
@@ -211,7 +215,9 @@ def preview(con, current_gd, due_from=None, due_to=None):
     event_sims=con.execute("""SELECT s.sim_id,s.title,s.first_name,s.last_name,s.suffix,
                                      s.birth_global_day,s.death_global_day,s.birthplace,s.species_occult,
                                      h.location AS household_location,h.social_class
-                              FROM sims s LEFT JOIN households h ON h.household_id=s.current_household_id""").fetchall()
+                              FROM sims s LEFT JOIN households h ON h.household_id=s.current_household_id
+                              WHERE s.death_global_day IS NULL OR s.death_global_day>=?""",
+                           (due_from,)).fetchall()
     for event in events:
         due=int(event["start_global_day"])
         if not in_window(due):
@@ -238,6 +244,14 @@ def preview(con, current_gd, due_from=None, due_to=None):
 def sync_rolls(con,current_gd):
     last_synced=_setting_int(con,"auto_rolls_synced_through",0)
     due_from=last_synced+1 if int(current_gd)>last_synced else int(current_gd)
+    # Deaths can be recorded after future lifecycle rolls were materialized.
+    # Remove only untouched automatic rolls after the Sim's death; completed and
+    # manually-created records remain historical data.
+    removed=con.execute("""DELETE FROM rolls WHERE roll_id IN (
+        SELECT r.roll_id FROM rolls r JOIN sims s ON s.sim_id=r.sim_id
+        WHERE COALESCE(r.completed,0)=0 AND r.notes LIKE ?
+          AND s.death_global_day IS NOT NULL AND r.due_global_day>s.death_global_day
+    )""",("Auto-generated%",)).rowcount
     obligations=preview(con,current_gd,due_from=due_from,due_to=current_gd)
     existing_counts=Counter()
     max_roll_number=0
@@ -267,7 +281,7 @@ def sync_rolls(con,current_gd):
     con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 ("auto_rolls_synced_through",str(max(last_synced,int(current_gd)))))
     con.commit()
-    return {"added":added,"by_kind":dict(by_kind),"considered":len(obligations),
+    return {"added":added,"removed":max(0,removed),"by_kind":dict(by_kind),"considered":len(obligations),
             "missing_rule_rows":skipped_missing_rules,"from_day":due_from,"through_day":int(current_gd)}
 
 def schedule_sim_lifecycle(con,sim_id,current_gd):
@@ -309,7 +323,9 @@ def backfill_lifecycle_schedules(con,current_gd):
     return added
 
 def upcoming(con,current_gd,days_ahead=20):
-    obligations=preview(con,current_gd)
+    # Generate only the visible future window. This also lets preview discard
+    # Sims who died before the window before any per-rule work begins.
+    obligations=preview(con,current_gd,due_from=current_gd+1,due_to=current_gd+days_ahead)
     rows=[]
     for o in obligations:
         if current_gd < o["due_global_day"] <= current_gd+days_ahead:
