@@ -2612,29 +2612,47 @@ elif page=="Notes":
                     st.success("Note deleted."); st.rerun()
 
 elif page=="Planting Reference":
-    page_header("Planting Reference","Find when plants produce outdoors, where to obtain them, and where they can grow.")
-    st.info("With Seasons installed, outdoor plants produce only in their listed seasons. Put standard plants under a roof or in a greenhouse to grow them year-round. Without Seasons, base-game plants are not season-limited.")
-    plants=pd.DataFrame(plant_reference.rows())
+    page_header("Historical Planting Reference","See which Sims plants fit the current year and challenge location.")
+    con=connect()
+    main_household=setting(con,"main_household_id","")
+    location_row=con.execute("SELECT location FROM households WHERE household_id=?",(main_household,)).fetchone() if main_household else None
+    con.close()
+    saved_location=(location_row[0] if location_row else "") or "England"
+    historical_year,_=challenge_year_day(current_gd())
+    a,b=st.columns(2)
+    reference_year=int(a.number_input("Historical year",-5000,3000,int(historical_year),key="plant_reference_year",
+                                      help="Defaults to the year calculated from the save's current Global Day."))
+    challenge_location=b.text_input("Challenge location",value=saved_location,key="plant_reference_location",
+                                    help="Defaults to the Main household's saved location.")
+    detected=plant_reference.region_for(challenge_location)
+    region=st.selectbox("Historical growing region",plant_reference.REGIONS,
+                        index=plant_reference.REGIONS.index(detected),key="plant_reference_region",
+                        help="Confirm the broad region used for historical introduction dates.")
+    if detected=="Other / custom":
+        st.warning("The location could not be mapped automatically. Choose the closest historical growing region above; dates will remain approximate.")
+    plants=pd.DataFrame(plant_reference.rows(reference_year,region))
+    available=int((plants.Status=="Historically available").sum())
+    later=int(plants.Status.str.startswith("Not yet").sum())
+    fantasy=int((plants.Status=="Challenge-dependent").sum())
+    x,y,z=st.columns(3); x.metric("Historically available",available); y.metric("Not introduced yet",later); z.metric("Challenge-dependent",fantasy)
+    st.info(f"Showing historical plausibility for {region} in {reference_year}. Sims outdoor seasons remain listed separately for gameplay.")
     a,b,c=st.columns([2,1,1])
-    search=a.text_input("Find a plant",placeholder="Apple, death flower, mushroom…",key="plant_search")
-    season=b.selectbox("Outdoor season",["Any","Spring","Summer","Fall","Winter","All seasons"],key="plant_season")
-    pack=c.selectbox("Pack",["All packs"]+sorted(plants.Pack.unique()),key="plant_pack")
+    search=a.text_input("Find a plant",placeholder="Apple, potato, death flower…",key="plant_search")
+    status=b.selectbox("Historical status",["All statuses","Historically available","Not yet","Challenge-dependent","Needs local research"],key="plant_status")
+    season=c.selectbox("Sims outdoor season",["Any","Spring","Summer","Fall","Winter","All seasons"],key="plant_season")
     shown=plants.copy()
     if search:
         term=search.casefold()
         shown=shown[shown.apply(lambda row: term in " ".join(str(x) for x in row).casefold(),axis=1)]
+    if status=="Not yet": shown=shown[shown.Status.str.startswith("Not yet")]
+    elif status!="All statuses": shown=shown[shown.Status==status]
     if season!="Any":
-        shown=shown[shown["Outdoor season"].str.contains(season,case=False,na=False)]
-    if pack!="All packs": shown=shown[shown.Pack==pack]
+        shown=shown[shown["Sims outdoor season"].str.contains(season,case=False,na=False)]
     st.caption(f"{len(shown):,} plants shown")
     st.dataframe(shown.sort_values("Plant"),use_container_width=True,hide_index=True,height=620)
-    st.markdown("**Growing places at a glance**")
-    x,y,z=st.columns(3)
-    x.markdown("**Ground or planter**  \nStandard harvestables can grow directly in soil or in planter boxes/pots.")
-    y.markdown("**Sheltered or greenhouse**  \nStandard plants remain productive outside their normal season when sheltered.")
-    z.markdown("**Garden Patch**  \nCottage Living oversized crops require an Oversized Crop Garden Patch.")
-    st.caption("Reference sources: EA's official Sims 4 gardening guide for packs and seasons; Carl's Sims 4 Guide for neighborhood harvest locations. World spawns may require spending a few in-game minutes in the neighborhood.")
-    st.markdown("[Official EA gardening guide](https://help.ea.com/en/help/the-sims/the-sims-4/the-sims-4-gardening-guide/) · [Plant locations by neighborhood](https://www.carls-sims-4-guide.com/skills/gardening/plant-locations.php)")
+    st.warning("Historical cutoffs are conservative gameplay guidelines. A plant may have existed earlier as an imported luxury, wild species, medicine, or ornamental before it became a practical household crop.")
+    st.caption("Research basis: English Heritage's British food timeline, the Royal Horticultural Society's crop histories, Nature's tomato history, and scholarship on the Columbian Exchange. Sims seasons come from EA's gardening guide.")
+    st.markdown("[English Heritage food timeline](https://www.english-heritage.org.uk/visit/places/stonehenge/history-and-stories/history/food-timeline/) · [RHS crop facts](https://www.rhs.org.uk/advice/grow-your-own/features/fascinating-facts-and-figures/) · [Columbian Exchange research](https://pubs.aeaweb.org/doi/10.1257/jep.24.2.163) · [EA gardening guide](https://help.ea.com/en/help/the-sims/the-sims-4/the-sims-4-gardening-guide/)")
 
 elif page=="Saves":
     page_header("Saves","Keep completely separate challenge worlds in one tracker. Each save has its own Sims, calendar, photos, rolls, events, relationships, households, and statistics.")
