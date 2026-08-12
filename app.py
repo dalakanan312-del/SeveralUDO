@@ -26,6 +26,8 @@ import relationship_photos
 import marriage_ai
 import dice_roller
 import roll_outcomes
+import notebook
+import plant_reference
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -277,6 +279,7 @@ def status_badge(text):
 _schema_con=connect()
 profiles.ensure_schema(_schema_con)
 relationship_photos.ensure_schema(_schema_con)
+notebook.ensure_schema(_schema_con)
 autorolls.repair_generated_roll_dice(_schema_con)
 _schema_con.close()
 
@@ -310,6 +313,8 @@ with st.sidebar:
         "🏘️ Households":"Households",
         "📜 Events":"Events",
         "📊 Statistics":"Statistics",
+        "📓 Notes":"Notes",
+        "🌿 Planting Reference":"Planting Reference",
         "💾 Saves":"Saves",
         "⚙️ Rules & Data":"Rules & Data",
     }
@@ -2534,6 +2539,102 @@ elif page=="Statistics":
 - **Personal-life event categories** such as birth, death, marriage, graduation, career, and move are not inferred from notes because the current standardized Events table represents historical/challenge events.
 """)
 
+
+elif page=="Notes":
+    page_header("Notes","A private notebook for the active save: plans, research, reminders, and family chronicles.")
+    notes=q("""SELECT note_id,title,category,body,pinned,created_at,updated_at
+               FROM notebook_entries ORDER BY pinned DESC,updated_at DESC,title""")
+    tab_read,tab_new,tab_edit=st.tabs(["Notebook","New note","Edit or delete"])
+
+    with tab_read:
+        if notes.empty:
+            st.info("No notes yet. Use New note to begin this save's notebook.")
+        else:
+            categories=sorted(x for x in notes.category.dropna().unique() if str(x).strip())
+            a,b=st.columns([2,1])
+            search=a.text_input("Search notes",placeholder="Search titles and text",key="notes_search")
+            category=b.selectbox("Category",["All categories"]+categories,key="notes_category_filter")
+            shown=notes.copy()
+            if search:
+                term=search.casefold()
+                shown=shown[shown.apply(lambda row: term in f"{row.title} {row.category or ''} {row.body or ''}".casefold(),axis=1)]
+            if category!="All categories": shown=shown[shown.category==category]
+            st.caption(f"{len(shown):,} note{'s' if len(shown)!=1 else ''} shown")
+            for _,row in shown.iterrows():
+                pin="📌 " if bool(row.pinned) else ""
+                label=f"{pin}{row.title} · {row.category or 'Unfiled'}"
+                with st.expander(label):
+                    st.markdown(row.body or "*Empty note*")
+                    st.caption(f"Updated {row.updated_at or row.created_at or '—'} · {row.note_id}")
+
+    with tab_new:
+        with st.form("new_notebook_note",clear_on_submit=True):
+            title=st.text_input("Title")
+            a,b=st.columns([2,1])
+            category=a.text_input("Category",placeholder="Family, Build plans, Research…")
+            pinned=b.checkbox("Pin this note")
+            body=st.text_area("Note",height=280)
+            submitted=st.form_submit_button("Save note",type="primary",use_container_width=True)
+        if submitted:
+            if not title.strip(): st.error("Give the note a title.")
+            else:
+                con=connect(); nid=notebook.next_id(con); now=notebook.timestamp()
+                con.execute("""INSERT INTO notebook_entries(note_id,title,category,body,pinned,created_at,updated_at)
+                               VALUES(?,?,?,?,?,?,?)""",
+                            (nid,title.strip(),category.strip() or None,body.strip() or None,1 if pinned else 0,now,now))
+                con.commit(); con.close(); st.success(f"Saved {title.strip()}."); st.rerun()
+
+    with tab_edit:
+        if notes.empty:
+            st.info("Create a note first.")
+        else:
+            labels=[f"{r.note_id} — {r.title}" for _,r in notes.iterrows()]
+            choice=st.selectbox("Choose note",labels,key="note_edit_choice")
+            nid=choice.split(" — ",1)[0]
+            row=notes[notes.note_id==nid].iloc[0]
+            title=st.text_input("Title",value=row.title,key=f"note_title_{nid}")
+            a,b=st.columns([2,1])
+            category=a.text_input("Category",value=row.category or "",key=f"note_category_{nid}")
+            pinned=b.checkbox("Pinned",value=bool(row.pinned),key=f"note_pinned_{nid}")
+            body=st.text_area("Note",value=row.body or "",height=280,key=f"note_body_{nid}")
+            if st.button("Save changes",type="primary",key=f"note_save_{nid}"):
+                if not title.strip(): st.error("Give the note a title.")
+                else:
+                    con=connect(); con.execute("""UPDATE notebook_entries SET title=?,category=?,body=?,pinned=?,updated_at=?
+                                                   WHERE note_id=?""",
+                                               (title.strip(),category.strip() or None,body.strip() or None,
+                                                1 if pinned else 0,notebook.timestamp(),nid))
+                    con.commit(); con.close(); st.success("Note updated."); st.rerun()
+            with st.expander("Delete this note"):
+                confirm=st.checkbox("I understand this permanently deletes the selected note.",key=f"note_delete_confirm_{nid}")
+                if st.button("Delete note",disabled=not confirm,key=f"note_delete_{nid}"):
+                    con=connect(); con.execute("DELETE FROM notebook_entries WHERE note_id=?",(nid,)); con.commit(); con.close()
+                    st.success("Note deleted."); st.rerun()
+
+elif page=="Planting Reference":
+    page_header("Planting Reference","Find when plants produce outdoors, where to obtain them, and where they can grow.")
+    st.info("With Seasons installed, outdoor plants produce only in their listed seasons. Put standard plants under a roof or in a greenhouse to grow them year-round. Without Seasons, base-game plants are not season-limited.")
+    plants=pd.DataFrame(plant_reference.rows())
+    a,b,c=st.columns([2,1,1])
+    search=a.text_input("Find a plant",placeholder="Apple, death flower, mushroom…",key="plant_search")
+    season=b.selectbox("Outdoor season",["Any","Spring","Summer","Fall","Winter","All seasons"],key="plant_season")
+    pack=c.selectbox("Pack",["All packs"]+sorted(plants.Pack.unique()),key="plant_pack")
+    shown=plants.copy()
+    if search:
+        term=search.casefold()
+        shown=shown[shown.apply(lambda row: term in " ".join(str(x) for x in row).casefold(),axis=1)]
+    if season!="Any":
+        shown=shown[shown["Outdoor season"].str.contains(season,case=False,na=False)]
+    if pack!="All packs": shown=shown[shown.Pack==pack]
+    st.caption(f"{len(shown):,} plants shown")
+    st.dataframe(shown.sort_values("Plant"),use_container_width=True,hide_index=True,height=620)
+    st.markdown("**Growing places at a glance**")
+    x,y,z=st.columns(3)
+    x.markdown("**Ground or planter**  \nStandard harvestables can grow directly in soil or in planter boxes/pots.")
+    y.markdown("**Sheltered or greenhouse**  \nStandard plants remain productive outside their normal season when sheltered.")
+    z.markdown("**Garden Patch**  \nCottage Living oversized crops require an Oversized Crop Garden Patch.")
+    st.caption("Reference sources: EA's official Sims 4 gardening guide for packs and seasons; Carl's Sims 4 Guide for neighborhood harvest locations. World spawns may require spending a few in-game minutes in the neighborhood.")
+    st.markdown("[Official EA gardening guide](https://help.ea.com/en/help/the-sims/the-sims-4/the-sims-4-gardening-guide/) · [Plant locations by neighborhood](https://www.carls-sims-4-guide.com/skills/gardening/plant-locations.php)")
 
 elif page=="Saves":
     page_header("Saves","Keep completely separate challenge worlds in one tracker. Each save has its own Sims, calendar, photos, rolls, events, relationships, households, and statistics.")
