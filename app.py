@@ -1979,7 +1979,7 @@ elif page=="Challenge Management":
         if new_min!=min_age:
             con=connect(); set_setting(con,"marriage_min_age_days",int(new_min)); con.close()
         married=set()
-        rels=q("SELECT * FROM relationships WHERE COALESCE(status,'Active')='Active' AND (COALESCE(legally_married,0)=1 OR LOWER(COALESCE(type,'')) LIKE '%marriage%')")
+        rels=q("SELECT * FROM relationships WHERE COALESCE(status,'Active')='Active' AND (COALESCE(legally_married,0)=1 OR LOWER(COALESCE(type,'')) LIKE ?)",( "%marriage%",))
         if not rels.empty:
             married.update(rels.partner1_id.dropna().astype(str)); married.update(rels.partner2_id.dropna().astype(str))
         eligible=sims[sims.death_global_day.isna() & sims.birth_global_day.notna()].copy()
