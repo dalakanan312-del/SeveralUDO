@@ -29,6 +29,7 @@ import roll_outcomes
 import notebook
 import plant_reference
 import illnesses
+import challenge_management as cm
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -282,6 +283,7 @@ profiles.ensure_schema(_schema_con)
 relationship_photos.ensure_schema(_schema_con)
 notebook.ensure_schema(_schema_con)
 illnesses.ensure_schema(_schema_con)
+cm.ensure_schema(_schema_con)
 autorolls.repair_generated_roll_dice(_schema_con)
 _schema_con.close()
 
@@ -321,6 +323,7 @@ with st.sidebar:
         "💾 Saves":"Saves",
         "⚙️ Rules & Data":"Rules & Data",
     }
+    nav_labels["Challenge Management"]="Challenge Management"
     nav=st.radio("Navigate",list(nav_labels),label_visibility="collapsed")
     page=nav_labels[nav]
     st.divider()
@@ -1885,6 +1888,148 @@ elif page=="Households":
                     else:
                         con.close(); st.success(f"Deleted {hh}; assigned Sims are now unassigned."); st.rerun()
 
+
+elif page=="Challenge Management":
+    page_header("Challenge Management","Era guidance, succession, marriage matches, and wartime service in one place.")
+    g=current_gd(); year,_=challenge_year_day(g)
+    sims=q("SELECT * FROM sims ORDER BY birth_global_day,sim_id")
+    households=q("SELECT * FROM households ORDER BY household_name,household_id")
+    tabs=st.tabs(["Era rules","Succession","Matchmaking","War & conscription"])
+
+    with tabs[0]:
+        st.subheader(f"Rules in force — Year {year}")
+        locations=["All"]+sorted({str(x) for x in households.location.dropna() if str(x).strip()})
+        loc=st.selectbox("Challenge location",locations,key="era_location")
+        rdf=q("SELECT * FROM era_guidance WHERE active=1 AND (start_year IS NULL OR start_year<=?) AND (end_year IS NULL OR end_year>=?) AND (location IS NULL OR location='' OR LOWER(location)='all' OR LOWER(location)=LOWER(?)) ORDER BY category,title",(year,year,loc))
+        a,b,c=st.columns(3)
+        a.metric("Current year",year); b.metric("Applicable guidance",len(rdf)); c.metric("Active historical events",scalar("SELECT COUNT(*) FROM events WHERE active=1 AND start_global_day<=? AND end_global_day>=?",(g,g)))
+        if rdf.empty: st.info("No custom era guidance applies yet. Add your first editable rule below.")
+        else: st.dataframe(friendly_df(rdf,rename={"title":"Rule","category":"Category","start_year":"From","end_year":"Through","location":"Location","rule_text":"Guidance"},cols=["category","title","start_year","end_year","location","rule_text"]),use_container_width=True,hide_index=True)
+        with st.expander("Add editable era guidance",expanded=rdf.empty):
+            a,b,c=st.columns(3)
+            title=a.text_input("Rule title",key="era_add_title")
+            category=b.selectbox("Category",["Marriage & family","Inheritance","Military","Careers & education","Clothing","Building & technology","Health","Economy","Other"],key="era_add_cat")
+            rule_loc=c.text_input("Location","All",key="era_add_loc")
+            a,b=st.columns(2)
+            start=a.number_input("Start year",-10000,10000,year,key="era_add_start")
+            end=b.number_input("End year",-10000,10000,year,key="era_add_end")
+            body=st.text_area("Rule or guidance",key="era_add_body")
+            if st.button("Add era rule",type="primary",key="era_add_btn"):
+                if not title.strip() or not body.strip(): st.error("Enter a title and guidance.")
+                elif end<start: st.error("End year must be on or after the start year.")
+                else:
+                    con=connect(); rid=next_id(con,"era_guidance","rule_id","RULE")
+                    con.execute("INSERT INTO era_guidance(rule_id,title,category,start_year,end_year,location,rule_text,active,source) VALUES(?,?,?,?,?,?,?,?,?)",(rid,title.strip(),category,int(start),int(end),rule_loc.strip() or "All",body.strip(),1,"App entry")); con.commit(); con.close(); st.rerun()
+        all_rules=q("SELECT rule_id,title,category,start_year,end_year,location,active FROM era_guidance ORDER BY category,title")
+        if not all_rules.empty:
+            with st.expander("Manage existing guidance"):
+                labels=[f"{r.rule_id} — {r.title}" for _,r in all_rules.iterrows()]
+                chosen=st.selectbox("Rule",labels,key="era_manage")
+                rid=chosen.split(" — ",1)[0]
+                if st.button("Delete selected era rule",key="era_delete"):
+                    con=connect(); con.execute("DELETE FROM era_guidance WHERE rule_id=?",(rid,)); con.commit(); con.close(); st.rerun()
+
+    with tabs[1]:
+        st.subheader("Line of succession")
+        con=connect()
+        system=setting(con,"succession_system","Absolute primogeniture")
+        legitimate=str(setting(con,"succession_require_legitimate","0"))=="1"
+        root=setting(con,"succession_root_id","")
+        con.close()
+        opts=sim_options(); systems=["Absolute primogeniture","Male-preference primogeniture","Female-preference primogeniture","Eldest living"]
+        a,b,c=st.columns(3)
+        new_system=a.selectbox("Succession system",systems,index=systems.index(system) if system in systems else 0)
+        root_choice=b.selectbox("Dynasty founder / root",opts,index=opt_index(opts,root),help="Leave blank to rank all living Sims.")
+        new_legitimate=c.checkbox("Require legitimacy",value=legitimate)
+        if st.button("Save succession rules",key="succ_save"):
+            con=connect(); set_setting(con,"succession_system",new_system); set_setting(con,"succession_root_id",sid(root_choice) or ""); set_setting(con,"succession_require_legitimate",1 if new_legitimate else 0); con.close(); st.success("Succession rules saved.")
+        ranked=cm.succession_ranking(sims,sid(root_choice),new_system,new_legitimate)
+        if ranked.empty: st.info("No living eligible heirs match these rules.")
+        else:
+            heir=ranked.iloc[0]
+            st.success(f"Current recommended heir: {heir['name'] or heir.sim_id}")
+            st.dataframe(ranked[["rank","sim_id","name","sex","birth_global_day","generation","succession_override","succession_note"]],use_container_width=True,hide_index=True)
+        st.caption("Use a Sim's Succession Override field to mark them Heir/Priority or Exclude/Disinherit; the ranking updates automatically.")
+
+    with tabs[2]:
+        st.subheader("Marriage eligibility & matchmaking")
+        con=connect(); min_age=int(float(setting(con,"marriage_min_age_days",72))); con.close()
+        new_min=st.number_input("Minimum marriage age (challenge days)",0,10000,min_age,key="match_min_age")
+        if new_min!=min_age:
+            con=connect(); set_setting(con,"marriage_min_age_days",int(new_min)); con.close()
+        married=set()
+        rels=q("SELECT * FROM relationships WHERE COALESCE(status,'Active')='Active' AND (COALESCE(legally_married,0)=1 OR LOWER(COALESCE(type,'')) LIKE '%marriage%')")
+        if not rels.empty:
+            married.update(rels.partner1_id.dropna().astype(str)); married.update(rels.partner2_id.dropna().astype(str))
+        eligible=sims[sims.death_global_day.isna() & sims.birth_global_day.notna()].copy()
+        eligible=eligible[(g-eligible.birth_global_day)>=new_min]
+        eligible=eligible[~eligible.sim_id.astype(str).isin(married)]
+        eligible["name"]=eligible.apply(cm.sim_name,axis=1)
+        st.caption(f"{len(eligible)} living, unmarried Sim(s) meet the current age rule.")
+        if len(eligible)<2: st.info("At least two eligible Sims are needed for matchmaking.")
+        else:
+            labels=[f"{r.sim_id} — {r['name']}" for _,r in eligible.iterrows()]
+            first=st.selectbox("First Sim",labels,key="match_first"); fid=sid(first)
+            rows=[]
+            first_row=eligible[eligible.sim_id==fid].iloc[0]
+            for _,candidate in eligible[eligible.sim_id!=fid].iterrows():
+                warning=cm.kinship_warning(fid,candidate.sim_id,sims)
+                same_house=bool(first_row.current_household_id and first_row.current_household_id==candidate.current_household_id)
+                score=max(0,100-abs(int(first_row.birth_global_day)-int(candidate.birth_global_day)))+(10 if same_house else 0)-(100 if warning else 0)
+                rows.append({"sim_id":candidate.sim_id,"name":candidate["name"],"age_days":g-int(candidate.birth_global_day),"compatibility":score,"kinship_warning":warning or "None"})
+            candidates=pd.DataFrame(rows).sort_values(["compatibility","name"],ascending=[False,True])
+            st.dataframe(candidates,use_container_width=True,hide_index=True)
+            second=st.selectbox("Chosen match",[f"{r.sim_id} — {r['name']}" for _,r in candidates.iterrows()],key="match_second"); second_id=sid(second)
+            warning=cm.kinship_warning(fid,second_id,sims)
+            if warning: st.error(f"Close-relative warning: {warning}. The tracker will not create this courtship.")
+            if st.button("Create active courtship",type="primary",disabled=bool(warning),key="match_create"):
+                p1=sims[sims.sim_id==fid].iloc[0]; p2=sims[sims.sim_id==second_id].iloc[0]
+                con=connect(); rel_id=next_id(con,"relationships","relationship_id","REL")
+                con.execute("INSERT INTO relationships(relationship_id,partner1_id,partner2_id,partner1_name,partner2_name,type,start_global_day,status,legally_married,children_count,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(rel_id,fid,second_id,cm.sim_name(p1),cm.sim_name(p2),"Courtship",g,"Active",0,0,"Created by Matchmaking")); con.commit(); con.close(); st.success(f"Created {rel_id}."); st.rerun()
+
+    with tabs[3]:
+        st.subheader("War & conscription")
+        campaigns=q("SELECT * FROM military_campaigns ORDER BY start_global_day DESC,campaign_id")
+        services=q("SELECT * FROM military_service ORDER BY enlisted_global_day DESC,service_id")
+        a,b,c=st.columns(3); a.metric("Campaigns",len(campaigns)); b.metric("Serving now",int(services.status.fillna("").eq("Active").sum()) if not services.empty else 0); c.metric("Service records",len(services))
+        if not services.empty: st.dataframe(services[["service_id","sim_name","role","status","enlisted_global_day","return_global_day","outcome","injury"]],use_container_width=True,hide_index=True)
+        with st.expander("Create a campaign",expanded=campaigns.empty):
+            events=q("SELECT event_id,event_name FROM events ORDER BY start_global_day DESC")
+            event_opts=[""]+[f"{r.event_id} — {r.event_name}" for _,r in events.iterrows()]
+            event=st.selectbox("Linked historical event (optional)",event_opts,key="war_event")
+            a,b,c=st.columns(3); name=a.text_input("Campaign name",key="war_name"); start=b.number_input("Start day",-10000,20000,g,key="war_start"); end=c.number_input("End day",-10000,20000,g,key="war_end")
+            a,b,c=st.columns(3); location=a.text_input("Location","All",key="war_loc"); min_age=b.number_input("Minimum age (days)",0,10000,72,key="war_min"); max_age=c.number_input("Maximum age (days)",0,10000,240,key="war_max")
+            a,b=st.columns(2); sexes=a.text_input("Eligible sexes (comma-separated)","All",key="war_sexes"); classes=b.text_input("Eligible classes (comma-separated)","All",key="war_classes")
+            notes=st.text_area("Campaign notes",key="war_notes")
+            if st.button("Create campaign",type="primary",key="war_create"):
+                if not name.strip(): st.error("Enter a campaign name.")
+                else:
+                    con=connect(); cid=next_id(con,"military_campaigns","campaign_id","WAR")
+                    con.execute("INSERT INTO military_campaigns(campaign_id,event_id,name,start_global_day,end_global_day,location,min_age_days,max_age_days,eligible_sexes,eligible_classes,active,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(cid,sid(event),name.strip(),int(start),int(end),location.strip() or "All",int(min_age),int(max_age),sexes.strip() or "All",classes.strip() or "All",1,notes.strip() or None)); con.commit(); con.close(); st.rerun()
+        if not campaigns.empty:
+            labels=[f"{r.campaign_id} — {r['name']}" for _,r in campaigns.iterrows()]
+            selected=st.selectbox("Campaign roster",labels,key="war_selected"); cid=selected.split(" — ",1)[0]; campaign=campaigns[campaigns.campaign_id==cid].iloc[0]
+            roster=cm.eligible_for_campaign(sims,households,int(campaign.start_global_day),int(campaign.min_age_days or 0),int(campaign.max_age_days or 10000),campaign.location or "All",campaign.eligible_sexes or "All",campaign.eligible_classes or "All")
+            existing=set(services[services.campaign_id==cid].sim_id.astype(str)) if not services.empty else set()
+            roster=roster[~roster.sim_id.astype(str).isin(existing)]
+            st.dataframe(roster[["sim_id","name","sex","age_days","household_location","social_class"]],use_container_width=True,hide_index=True)
+            chosen=st.multiselect("Select Sims to enlist",roster.sim_id.tolist(),format_func=lambda x: next((str(n) for i,n in zip(roster.sim_id,roster.name) if i==x),x),key="war_enlist_select")
+            role=st.text_input("Service role","Conscript",key="war_role")
+            if st.button("Enlist selected Sims",type="primary",disabled=not chosen,key="war_enlist"):
+                con=connect()
+                for sim_id in chosen:
+                    row=roster[roster.sim_id==sim_id].iloc[0]; service_id=next_id(con,"military_service","service_id","SVC")
+                    con.execute("INSERT INTO military_service(service_id,campaign_id,event_id,sim_id,sim_name,role,status,enlisted_global_day) VALUES(?,?,?,?,?,?,?,?)",(service_id,cid,campaign.event_id,sim_id,row["name"],role.strip() or "Conscript","Active",int(campaign.start_global_day)))
+                con.commit(); con.close(); st.rerun()
+        if not services.empty:
+            with st.expander("Update a service outcome"):
+                labels=[f"{r.service_id} — {r.sim_name}" for _,r in services.iterrows()]; choice=st.selectbox("Service record",labels,key="svc_edit"); service_id=choice.split(" — ",1)[0]; row=services[services.service_id==service_id].iloc[0]
+                a,b,c=st.columns(3); status=a.selectbox("Status",["Active","Returned","Injured","Missing","Killed"],index=["Active","Returned","Injured","Missing","Killed"].index(row.status) if row.status in ["Active","Returned","Injured","Missing","Killed"] else 0); return_day=b.number_input("Return/outcome day",-10000,20000,int(row.return_global_day or g)); injury=c.text_input("Injury",value=row.injury or "")
+                outcome=st.text_area("Outcome",value=row.outcome or ""); record_death=st.checkbox("If killed, also record this as the Sim's death",value=False,disabled=status!="Killed")
+                if st.button("Save service outcome",key="svc_save"):
+                    con=connect(); con.execute("UPDATE military_service SET status=?,return_global_day=?,outcome=?,injury=? WHERE service_id=?",(status,int(return_day) if status!="Active" else None,outcome.strip() or None,injury.strip() or None,service_id))
+                    if status=="Killed" and record_death: con.execute("UPDATE sims SET death_global_day=COALESCE(death_global_day,?),cause_of_death=COALESCE(cause_of_death,'Military service') WHERE sim_id=?",(int(return_day),row.sim_id))
+                    con.commit(); con.close(); st.rerun()
 
 elif page=="Illnesses":
     page_header("Illnesses","Track sickness, treatment, recovery, chronic conditions, and outcomes for every Sim.")
