@@ -105,18 +105,34 @@ class _PooledConnection:
 
     def close(self):
         if not self._returned:
-            if not self._connection.autocommit:
-                self._connection.rollback()
-            self._pool.putconn(self._connection)
+            broken=bool(getattr(self._connection,"closed",False) or getattr(self._connection,"broken",False))
+            if not broken and not self._connection.autocommit:
+                try:
+                    self._connection.rollback()
+                except Exception:
+                    broken=True
+            # Never return a dead Neon socket to the pool. More importantly,
+            # cleanup must not hide the useful error raised by the query.
+            try:
+                self._pool.putconn(self._connection,close=broken)
+            except Exception:
+                try: self._connection.close()
+                except Exception: pass
             self._returned = True
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        if exc_type:
-            self._connection.rollback()
         self.close()
+
+
+def reset_pool():
+    """Discard pooled sockets after a transient database/network failure."""
+    for pool in list(_POOLS.values()):
+        try: pool.close()
+        except Exception: pass
+    _POOLS.clear()
 
 
 def ensure_search_path(connection, schema_name):
@@ -146,7 +162,10 @@ def raw_connect(use_direct=False, autocommit=False):
 
     pool = _POOLS.get(dsn)
     if pool is None:
-        pool = ConnectionPool(conninfo=dsn, min_size=1, max_size=8, open=True)
+        pool = ConnectionPool(
+            conninfo=dsn,min_size=1,max_size=8,open=True,
+            check=ConnectionPool.check_connection,max_idle=120,max_lifetime=900,
+        )
         _POOLS[dsn] = pool
     return _PooledConnection(pool, pool.getconn())
 

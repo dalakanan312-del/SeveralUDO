@@ -105,14 +105,22 @@ def list_saves(force_refresh=False):
     cached_at, cached = _SAVE_CACHE.get(owner, (0, []))
     if not force_refresh and cached and now - cached_at < _SAVE_CACHE_SECONDS:
         return [dict(item) for item in cached]
-    with storage.raw_connect() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT save_id,name,schema_name,created_at,updated_at,source_note "
-                "FROM public.decades_saves WHERE owner_hash=%s ORDER BY created_at,save_id",
-                (owner,),
-            )
-            saves = [_record(row) for row in cursor.fetchall()]
+    for attempt in range(2):
+        try:
+            with storage.raw_connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT save_id,name,schema_name,created_at,updated_at,source_note "
+                        "FROM public.decades_saves WHERE owner_hash=%s ORDER BY created_at,save_id",
+                        (owner,),
+                    )
+                    saves = [_record(row) for row in cursor.fetchall()]
+            break
+        except Exception:
+            if attempt:
+                raise
+            storage.reset_pool()
+            time.sleep(0.25)
     _SAVE_CACHE[owner] = (now, saves)
     return [dict(item) for item in saves]
 
