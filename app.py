@@ -233,6 +233,38 @@ def today_counts(global_day):
     return _cached_today_counts(global_day,*_query_revision(
         tables=("rolls","pregnancies","events","illnesses")))
 
+def is_death_outcome(outcome):
+    return bool(re.search(r"\b(death|dead|dies|died|killed|fatal)\b",str(outcome or ""),re.I))
+
+def random_death_for_roll(roll):
+    """Choose a stable valid date inside an event span or the roll's quarter."""
+    due=int(roll.get("due_global_day") or current_gd())
+    low=high=due
+    source=roll.get("source_id")
+    con=connect()
+    try:
+        event=con.execute("SELECT start_global_day,end_global_day,event_name FROM events WHERE event_id=?",(source,)).fetchone()
+        sim=con.execute("SELECT birth_global_day,death_global_day FROM sims WHERE sim_id=?",(roll.get("sim_id"),)).fetchone()
+    finally:
+        con.close()
+    cause=str(roll.get("roll_type") or "Roll outcome")
+    if event:
+        low=int(event[0] if event[0] is not None else due)
+        high=int(event[1] if event[1] is not None else low)
+        cause=str(event[2] or cause)
+    low,high=sorted((low,high))
+    if sim and sim[0] is not None:
+        low=max(low,int(sim[0]))
+    if sim and sim[1] is not None:
+        high=min(high,int(sim[1]))
+    if high<low:
+        low=high=due
+    death_gd=low+secrets.randbelow(high-low+1)
+    minute=secrets.randbelow(24*60)
+    sy,dpy=calendar_settings()
+    exact=format_exact_date(global_day_time_to_date(death_gd,time(minute//60,minute%60),sy,dpy))
+    return death_gd,exact,cause
+
 def _event_applies(value,candidates,universal=("all","global","any","everywhere","everyone","all countries","all classes")):
     target="" if value is None or pd.isna(value) else str(value).strip().casefold()
     if not target or target in universal:
@@ -608,7 +640,7 @@ if page=="Today":
         roll_page_size=50
         roll_pages=max(1,(rolls_count+roll_page_size-1)//roll_page_size)
         roll_page=st.number_input("Roll page",1,roll_pages,1,key="today_roll_page") if roll_pages>1 else 1
-        due=q("""SELECT roll_id,due_global_day,sim_id,sim_name,roll_type,die,bad_results,actual_roll,outcome
+        due=q("""SELECT roll_id,due_global_day,sim_id,sim_name,source_id,roll_type,die,bad_results,actual_roll,outcome
                  FROM rolls WHERE COALESCE(completed,0)=0 AND due_global_day<=?
                  ORDER BY due_global_day,sim_name,roll_type LIMIT ? OFFSET ?""",
               (g,roll_page_size,(int(roll_page)-1)*roll_page_size))
@@ -643,8 +675,17 @@ if page=="Today":
                 con=connect()
                 con.execute("UPDATE rolls SET actual_roll=?,outcome=?,completed=1,completed_global_day=? WHERE roll_id=?",
                             (actual or None,outcome or None,g,rid))
+                death_record=None
+                if rr.get("sim_id") and is_death_outcome(outcome):
+                    death_record=random_death_for_roll(rr)
+                    con.execute("""UPDATE sims SET death_global_day=COALESCE(death_global_day,?),
+                                   death_date=COALESCE(death_date,?),cause_of_death=COALESCE(cause_of_death,?)
+                                   WHERE sim_id=?""",(*death_record,rr.get("sim_id")))
                 con.commit(); con.close()
-                st.success(f"Completed {rid}.")
+                if death_record:
+                    st.success(f"Completed {rid}. Death recorded as {death_record[1]} (Global Day {death_record[0]}).")
+                else:
+                    st.success(f"Completed {rid}.")
                 st.rerun()
 
     if "Pregnancies due" in task_view:

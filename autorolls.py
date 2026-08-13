@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 from collections import Counter
+import re
 import era_rules
 
 AGING_SECTION = "AGING & REQUIRED ROLLS"
@@ -22,6 +23,30 @@ _DICE_REPAIRED_SCHEMAS = set()
 def default_die(roll_type):
     text=(roll_type or "").strip().casefold()
     return "d100" if "elder" in text and ("death" in text or "age" in text) else "d20"
+
+def event_roll_spec(notes):
+    """Extract the first actionable die and result clauses from library prose."""
+    text=str(notes or "").replace(";",". ")
+    match=re.search(r"\broll\s+(?:an?\s+)?(?:the\s+)?d(\d+)\b",text,re.I)
+    if not match:
+        return {"die":"d20","bad_results":None}
+    die=f"d{match.group(1)}"
+    tail=text[match.end():]
+    next_roll=re.search(r"\broll\s+(?:an?\s+)?(?:the\s+)?d\d+\b",tail,re.I)
+    if next_roll:
+        tail=tail[:next_roll.start()]
+    clauses=[]
+    for part in re.split(r"[.;\n]+",tail):
+        cleaned=part.strip(" -*")
+        if re.search(r"\b\d+(?:\s*(?:,|or|and)\s*\d+)*\s*(?:means|:|=)",cleaned,re.I):
+            cleaned=re.sub(r"\bmeans\b",":",cleaned,flags=re.I)
+            grouped=re.match(r"^\s*([\d\s,orand]+)\s*[:=]\s*(.+)$",cleaned,re.I)
+            if grouped and re.sub(r"\d|\s|,|or|and","",grouped.group(1),flags=re.I)=="":
+                numbers=re.findall(r"\d+",grouped.group(1))
+                clauses.extend(f"{number}: {grouped.group(2).strip()}" for number in numbers)
+            else:
+                clauses.append(cleaned)
+    return {"die":die,"bad_results":"; ".join(clauses) or None}
 
 def _ival(v, default=None):
     try:
@@ -239,11 +264,13 @@ def preview(con, current_gd, due_from=None, due_to=None, event_due_from=None):
                 continue
             if not global_scope and not _applies(event["affected_class"],[sim["social_class"]]):
                 continue
+            event_spec=event_roll_spec(event["notes"])
             obligations.append({
                 "source_id":event["event_id"],"sim_id":sim["sim_id"],"sim_name":_name(sim),
                 "species":(sim["species_occult"] or "Human").strip() or "Human",
                 "due_global_day":due,"roll_type":f"Event — {event['event_name'] or event['event_id']}",
-                "die":default_die("Event"),"bad_results":None,"quantity":1,"kind":"Event",
+                "die":event_spec["die"],"bad_results":event_spec["bad_results"],
+                "quantity":1,"kind":"Event",
                 "year":start_year+(due-1)//days_per_year,"era_id":None,
                 "era_name":None,"rule_status":"Event-defined",
             })
@@ -264,6 +291,12 @@ def sync_rolls(con,current_gd):
     # imported or enabled after the calendar has already passed their date;
     # lifecycle rolls still use the lightweight incremental window.
     obligations=preview(con,current_gd,due_from=due_from,due_to=current_gd,event_due_from=-10**9)
+    # Repair event rows created before the event-library prose parser existed.
+    for row in con.execute("""SELECT r.roll_id,e.notes FROM rolls r JOIN events e ON e.event_id=r.source_id
+                              WHERE COALESCE(r.completed,0)=0 AND COALESCE(r.roll_type,'') LIKE ?""",("Event%",)):
+        spec=event_roll_spec(row["notes"])
+        con.execute("UPDATE rolls SET die=?,bad_results=? WHERE roll_id=?",
+                    (spec["die"],spec["bad_results"],row["roll_id"]))
     existing_counts=Counter()
     max_roll_number=0
     for row in con.execute("SELECT source_id,sim_id,due_global_day,roll_type,roll_id FROM rolls"):
