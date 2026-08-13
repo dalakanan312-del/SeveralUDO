@@ -211,6 +211,57 @@ def cached_relationship_photo(relationship_id):
 
 def cached_upcoming_rolls(global_day,horizon):
     return _cached_upcoming_rolls(global_day,horizon,*_query_revision(tables=("rolls","sims","pregnancies","events","households","rules","roll_rule_eras","roll_rule_values","settings")))
+
+def _event_applies(value,candidates,universal=("all","global","any","everywhere","everyone","all countries","all classes")):
+    target="" if value is None or pd.isna(value) else str(value).strip().casefold()
+    if not target or target in universal:
+        return True
+    texts=("" if candidate is None or pd.isna(candidate) else str(candidate).strip().casefold()
+           for candidate in candidates)
+    return any(text and (target in text or text in target) for text in texts)
+
+def add_applicable_events(rows):
+    """Attach applicable historical-event names using batched lookups."""
+    if rows is None or len(rows)==0:
+        return rows
+    frame=rows.copy() if isinstance(rows,pd.DataFrame) else pd.DataFrame(rows)
+    if frame.empty or "due_global_day" not in frame:
+        return rows
+    days=pd.to_numeric(frame["due_global_day"],errors="coerce").dropna()
+    if days.empty:
+        return rows
+    events=q("""SELECT event_id,event_name,start_global_day,end_global_day,location,affected_class
+                FROM events WHERE COALESCE(active,1)=1 AND start_global_day<=? AND end_global_day>=?
+                ORDER BY start_global_day,event_name""",(int(days.max()),int(days.min())))
+    sim_ids=[str(value) for value in frame.get("sim_id",pd.Series(dtype=str)).dropna().unique() if str(value).strip()]
+    sims={}
+    if sim_ids:
+        placeholders=",".join("?" for _ in sim_ids)
+        sim_rows=q(f"""SELECT s.sim_id,s.birthplace,h.location AS household_location,h.social_class
+                         FROM sims s LEFT JOIN households h ON h.household_id=s.current_household_id
+                         WHERE s.sim_id IN ({placeholders})""",sim_ids)
+        sims={str(row.sim_id):row for _,row in sim_rows.iterrows()}
+    contexts=[]
+    for _,roll in frame.iterrows():
+        due=int(roll["due_global_day"])
+        roll_sim_id=roll.get("sim_id")
+        sim=sims.get("" if roll_sim_id is None or pd.isna(roll_sim_id) else str(roll_sim_id))
+        names=[]
+        for _,event in events.iterrows():
+            if not (int(event.start_global_day)<=due<=int(event.end_global_day)):
+                continue
+            if sim is not None:
+                if not _event_applies(event.location,[sim.get("household_location"),sim.get("birthplace")]):
+                    continue
+                if not _event_applies(event.affected_class,[sim.get("social_class")]):
+                    continue
+            elif not (_event_applies(event.location,[]) and _event_applies(event.affected_class,[])):
+                continue
+            event_name=event.get("event_name")
+            names.append(str(event.get("event_id") if event_name is None or pd.isna(event_name) or not str(event_name).strip() else event_name))
+        contexts.append(" | ".join(dict.fromkeys(names)))
+    frame["applicable_events"]=contexts
+    return frame if isinstance(rows,pd.DataFrame) else frame.to_dict("records")
 def sim_options(blank=True):
     df=q("SELECT sim_id,COALESCE(title,'') title,COALESCE(first_name,'') first_name,COALESCE(last_name,'') last_name FROM sims ORDER BY last_name,first_name")
     out=[f"{r.sim_id} — {' '.join(x for x in [r.title,r.first_name,r.last_name] if x).strip()}" for _,r in df.iterrows()]
@@ -511,6 +562,7 @@ if page=="Today":
     due=q("""SELECT roll_id,due_global_day,sim_id,sim_name,roll_type,die,bad_results,actual_roll,outcome
              FROM rolls WHERE COALESCE(completed,0)=0 AND due_global_day<=?
              ORDER BY due_global_day,sim_name,roll_type""",(g,))
+    due=add_applicable_events(due)
     preg=q("""SELECT pregnancy_id,mother_id,mother_name,father_name,conception_global_day,due_global_day,
                      babies_expected,status,outcome
               FROM pregnancies WHERE due_global_day<=?
@@ -546,12 +598,15 @@ if page=="Today":
         else:
             friendly_cards(due,lambda r:r.get("roll_type") or "Scheduled roll",
                 meta=(lambda r:("Sim",r.get("sim_name") or r.get("sim_id")),lambda r:("Due",f"Global Day {r.get('due_global_day')}"),lambda r:("Die",r.get("die"))),
-                body=lambda r:f"Bad results: {r.get('bad_results') or 'Use the current rule table'}",badge="roll_id")
+                body=lambda r:(f"Historical context: {r.get('applicable_events')}\n\n" if r.get('applicable_events') else "")+
+                              f"Bad results: {r.get('bad_results') or 'Use the current rule table'}",badge="roll_id")
             st.markdown("**Record a result**")
             labels=[f"{r.roll_id} — {r.sim_name or r.sim_id} — {r.roll_type} (GD {r.due_global_day})" for _,r in due.iterrows()]
             pick=st.selectbox("Choose roll",labels,key="today_roll_pick")
             rid=pick.split(" — ",1)[0]
             rr=due[due.roll_id==rid].iloc[0]
+            if rr.get("applicable_events"):
+                st.info(f"Applicable historical events: {rr.get('applicable_events')}")
             actual_key=f"today_roll_actual_{rid}"
             outcome_key=f"today_roll_outcome_{rid}"
             historical_dice_tray(rr.get("die"),f"today_dice_{rid}",actual_key,rr.get("bad_results"))
@@ -642,10 +697,11 @@ if page=="Today":
         st.caption("Future rolls stay as previews until they actually become due, so your Roll Log stays clean.")
     upcoming_rows=cached_upcoming_rolls(g,lookahead)
     if upcoming_rows:
-        udf=pd.DataFrame(upcoming_rows)
+        udf=add_applicable_events(pd.DataFrame(upcoming_rows))
         friendly_cards(udf,lambda r:r.get("roll_type") or "Upcoming roll",
             meta=(lambda r:("Sim",r.get("sim_name") or r.get("sim_id")),lambda r:("When",f"Year {r.get('year')} · GD {r.get('due_global_day')}"),"die"),
-            body=lambda r:f"Bad results: {r.get('bad_results') or 'Not configured'}",badge="rule_status",limit=20)
+            body=lambda r:(f"Historical context: {r.get('applicable_events')}\n\n" if r.get('applicable_events') else "")+
+                          f"Bad results: {r.get('bad_results') or 'Not configured'}",badge="rule_status",limit=20)
     else:
         st.info("Nothing automatically scheduled in this window.")
 
