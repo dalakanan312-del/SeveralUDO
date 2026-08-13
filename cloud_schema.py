@@ -46,6 +46,22 @@ def create_registry(connection):
         )
         cursor.execute("ALTER TABLE public.decades_saves ADD COLUMN IF NOT EXISTS owner_hash TEXT")
         cursor.execute("CREATE INDEX IF NOT EXISTS decades_saves_owner_hash_idx ON public.decades_saves(owner_hash)")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS public.decades_identities(
+            email TEXT PRIMARY KEY,
+            workspace_hash TEXT NOT NULL,
+            google_subject TEXT UNIQUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_login_at TIMESTAMPTZ
+        )""")
+        cursor.execute("CREATE INDEX IF NOT EXISTS decades_identities_workspace_idx ON public.decades_identities(workspace_hash)")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS public.decades_sessions(
+            token_hash TEXT PRIMARY KEY,
+            workspace_hash TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+        cursor.execute("CREATE INDEX IF NOT EXISTS decades_sessions_expiry_idx ON public.decades_sessions(expires_at)")
     connection.commit()
 
 

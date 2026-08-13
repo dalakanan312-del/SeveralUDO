@@ -465,6 +465,7 @@ with st.sidebar:
     st.markdown("**Help preserve the chronicle**")
     st.caption("If this tracker enriches your challenge, you can help support its hosting and continued development.")
     st.link_button("☕ Support SeveralUDO on Ko-fi","https://ko-fi.com/SeveralUDO",use_container_width=True)
+    workspace_access.render_account_settings(st,workspace)
     if st.button("Lock private workspace",use_container_width=True):
         workspace_access.sign_out(st)
 

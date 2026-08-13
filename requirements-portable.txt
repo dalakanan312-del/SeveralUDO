@@ -1,4 +1,5 @@
 streamlit==1.37.1
+streamlit-cookies-manager-v2>=0.2.0,<1
 pandas==2.2.2
 plotly==5.22.0
 networkx==3.3
