@@ -836,8 +836,14 @@ elif page=="Sims":
             sql+=" AND death_global_day IS NOT NULL"
         if gen_choice!="All":
             sql+=" AND generation=?"; params.append(int(gen_choice))
-        sql+=" ORDER BY last_name,first_name,sim_id"
+        count_sql="SELECT COUNT(*) FROM ("+sql+") sim_directory"
+        sim_total=scalar(count_sql,tuple(params))
+        sim_page_size=30; sim_pages=max(1,(sim_total+sim_page_size-1)//sim_page_size)
+        sim_page=st.number_input("Directory page",1,sim_pages,1,key="sim_directory_page") if sim_pages>1 else 1
+        sql+=" ORDER BY last_name,first_name,sim_id LIMIT ? OFFSET ?"
+        params.extend([sim_page_size,(int(sim_page)-1)*sim_page_size])
         df=q(sql,tuple(params))
+        if sim_pages>1: st.caption(f"Showing page {int(sim_page)} of {sim_pages} · {sim_total} matching Sims")
         if not df.empty:
             df["Name"]=(df["title"].fillna("")+" "+df["first_name"].fillna("")+" "+df["last_name"].fillna("")+" "+df["suffix"].fillna("")).str.replace(r"\s+"," ",regex=True).str.strip()
             df["Status"]=df["death_global_day"].apply(lambda x:"Deceased" if pd.notna(x) else "Living")
@@ -1037,6 +1043,16 @@ elif page=="Sims":
                 legitimate=c.checkbox("Legitimate?",value=legit_default,key="sim_edit_legit")
             with life_tab:
                 st.caption("Enter a Global Day and optional in-game clock time. The clock maps proportionally across that historical quarter.")
+                spouse_rows=q("""SELECT partner1_id,partner2_id FROM relationships WHERE
+                                  (partner1_id=? OR partner2_id=?) AND
+                                  (LOWER(COALESCE(type,''))='marriage' OR COALESCE(legally_married,0)=1)
+                                  ORDER BY start_global_day DESC LIMIT 1""",(selected,selected))
+                current_spouse=None
+                if not spouse_rows.empty:
+                    rel=spouse_rows.iloc[0]; current_spouse=rel.partner2_id if rel.partner1_id==selected else rel.partner1_id
+                spouse_opts=[option for option in sim_options() if sid(option)!=selected]
+                spouse=st.selectbox("Spouse",spouse_opts,index=opt_index(spouse_opts,current_spouse),key=f"sim_edit_spouse_{selected}",
+                                    help="Saving a spouse and marriage day updates both Sims and creates the Marriage record automatically.")
                 a,b,c=st.columns(3)
                 bg=a.text_input("Birth Global Day",value=str(row.get("birth_global_day") or ""),key="sim_edit_bg")
                 mg=b.text_input("Marriage Global Day",value=str(row.get("marriage_global_day") or ""),key="sim_edit_mg")
@@ -1088,6 +1104,13 @@ elif page=="Sims":
                  int_or_none(mg),(calculated_marriage if auto_marriage else marriage_date) or None,marriage_place or None,int_or_none(dg),(calculated_death if auto_death else death_date) or None,death_place or None,
                  cause or None,notes or None,sid(household),1 if legitimate else 0,fertility or None,species or "Human",
                  succession,succession_note or None,selected))
+                marriage_rel=None
+                if sid(spouse) and int_or_none(mg) is not None:
+                    marriage_rel=profiles.sync_marriage(
+                        con,selected,sid(spouse),int_or_none(mg),
+                        (calculated_marriage if auto_marriage else marriage_date) or None,
+                        marriage_place or None,
+                    )
                 if delete_photo:
                     profiles.delete_photo(con,selected)
                 elif photo is not None:
@@ -1098,7 +1121,7 @@ elif page=="Sims":
                 profiles.sync_cached_names(con,[selected])
                 con.close()
                 sync_auto_rolls(show_notice=False)
-                st.success("Sim profile saved. Related names were updated automatically.")
+                st.success("Sim profile saved. "+(f"Marriage {marriage_rel} and both spouse profiles were synchronized." if marriage_rel else "Related names were updated automatically."))
                 st.rerun()
 
             with st.expander("Delete this Sim",expanded=False):

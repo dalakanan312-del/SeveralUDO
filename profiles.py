@@ -94,6 +94,43 @@ def sync_spouse_ids(con, sim_ids=None, commit=True):
     if commit:
         con.commit()
 
+def sync_marriage(con,sim_id,spouse_id,global_day,date_text=None,location=None):
+    """Create/update one marriage and mirror its details onto both Sim profiles."""
+    if not sim_id or not spouse_id or sim_id==spouse_id or global_day is None:
+        return None
+    names={}
+    for row in con.execute("""SELECT sim_id,TRIM(COALESCE(title,'')||' '||COALESCE(first_name,'')||' '||
+                               COALESCE(last_name,'')||' '||COALESCE(suffix,'')) FROM sims WHERE sim_id IN (?,?)""",
+                           (sim_id,spouse_id)):
+        names[row[0]]=row[1]
+    existing=con.execute("""SELECT relationship_id,partner1_id,partner2_id FROM relationships WHERE
+                            ((partner1_id=? AND partner2_id=?) OR (partner1_id=? AND partner2_id=?))
+                            AND (LOWER(COALESCE(type,''))='marriage' OR COALESCE(legally_married,0)=1)
+                            ORDER BY start_global_day DESC LIMIT 1""",
+                         (sim_id,spouse_id,spouse_id,sim_id)).fetchone()
+    if existing:
+        relationship_id=existing[0]
+        con.execute("""UPDATE relationships SET partner1_name=?,partner2_name=?,type='Marriage',
+                       start_global_day=?,start_date=?,status='Active',location=?,legally_married=1
+                       WHERE relationship_id=?""",
+                    (names.get(existing[1]),names.get(existing[2]),int(global_day),date_text or None,
+                     location or None,relationship_id))
+    else:
+        numbers=[]
+        for row in con.execute("SELECT relationship_id FROM relationships WHERE relationship_id LIKE ?",("REL-%",)):
+            try:numbers.append(int(str(row[0]).rsplit("-",1)[1]))
+            except Exception:pass
+        relationship_id=f"REL-{max(numbers,default=0)+1:04d}"
+        con.execute("""INSERT INTO relationships(relationship_id,partner1_id,partner2_id,partner1_name,
+                       partner2_name,type,start_global_day,start_date,status,location,legally_married,children_count,notes)
+                       VALUES(?,?,?,?,?,'Marriage',?,?,'Active',?,1,0,?)""",
+                    (relationship_id,sim_id,spouse_id,names.get(sim_id),names.get(spouse_id),int(global_day),
+                     date_text or None,location or None,"Created automatically from Sim marriage details"))
+    con.execute("""UPDATE sims SET marriage_global_day=?,marriage_date=?,marriage_place=? WHERE sim_id IN (?,?)""",
+                (int(global_day),date_text or None,location or None,sim_id,spouse_id))
+    sync_spouse_ids(con,[sim_id,spouse_id],commit=False)
+    return relationship_id
+
 def sim_relationships(con, sim_id):
     return con.execute("""SELECT * FROM relationships
                           WHERE partner1_id=? OR partner2_id=?
