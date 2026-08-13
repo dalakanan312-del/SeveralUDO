@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import weakref
 from functools import lru_cache
 from pathlib import Path
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parent
 ENV_PATH = ROOT / ".env"
 STATE_PATH = ROOT / ".neon_storage.json"
 _POOLS = {}
+_POOLS_LOCK = threading.RLock()
 _CONNECTION_SCHEMAS = weakref.WeakKeyDictionary()
 
 
@@ -137,10 +139,15 @@ class _PooledConnection:
 
 def reset_pool():
     """Discard pooled sockets after a transient database/network failure."""
-    for pool in list(_POOLS.values()):
+    # Detach the pools atomically before closing them. Streamlit can run several
+    # sessions in the same process, so another session may be checking out a
+    # connection while one session is recovering from a Neon interruption.
+    with _POOLS_LOCK:
+        pools = list(_POOLS.values())
+        _POOLS.clear()
+    for pool in pools:
         try: pool.close()
         except Exception: pass
-    _POOLS.clear()
 
 
 def ensure_search_path(connection, schema_name):
@@ -170,27 +177,33 @@ def raw_connect(use_direct=False, autocommit=False):
 
     last_error = None
     for attempt in range(2):
-        pool = _POOLS.get(dsn)
-        if pool is None:
-            pool = ConnectionPool(
-                conninfo=dsn,min_size=0,max_size=20,open=True,timeout=8,
-                check=ConnectionPool.check_connection,max_idle=60,max_lifetime=600,
-            )
-            _POOLS[dsn] = pool
         try:
-            return _PooledConnection(pool, pool.getconn(timeout=8))
+            # Pool creation and checkout must be one atomic operation relative
+            # to reset_pool(); otherwise a concurrent recovery can close the
+            # newly selected pool immediately before getconn().
+            with _POOLS_LOCK:
+                pool = _POOLS.get(dsn)
+                if pool is None or getattr(pool, "closed", False):
+                    pool = ConnectionPool(
+                        conninfo=dsn,min_size=0,max_size=20,open=True,timeout=8,
+                        check=ConnectionPool.check_connection,max_idle=60,max_lifetime=600,
+                    )
+                    _POOLS[dsn] = pool
+                connection = pool.getconn(timeout=8)
+            return _PooledConnection(pool, connection)
         except Exception as error:
             last_error = error
             # A stale pool can survive a Neon compute restart. Recreate it once
             # so an ordinary page load recovers instead of showing PoolTimeout.
-            if error.__class__.__name__ not in {"PoolTimeout", "OperationalError"}:
+            if error.__class__.__name__ not in {"PoolClosed", "PoolTimeout", "OperationalError"}:
                 raise
-            try:
-                pool.close()
-            except Exception:
-                pass
-            if _POOLS.get(dsn) is pool:
-                _POOLS.pop(dsn, None)
+            with _POOLS_LOCK:
+                if _POOLS.get(dsn) is pool:
+                    _POOLS.pop(dsn, None)
+                    try:
+                        pool.close()
+                    except Exception:
+                        pass
             if attempt:
                 break
 
