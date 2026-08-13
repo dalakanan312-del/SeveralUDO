@@ -10,7 +10,7 @@ import streamlit as st
 import plotly.express as px
 import networkx as nx
 from pyvis.network import Network
-from db import connect,setting,set_setting,next_id
+from db import connect,setting,set_setting,next_id,statement_tables,cache_token
 from calendar_utils import global_day_to_year_day,global_day_label,date_to_global_day,global_day_time_to_date,format_exact_date
 import stats_engine as se
 import autorolls
@@ -145,15 +145,19 @@ def _cached_scalar(sql,params,default,workspace_key,save_id,revision):
         return row[0] if row and row[0] is not None else default
     finally:c.close()
 
-def _query_revision():
+def _query_revision(sql=None,tables=None):
     record=save_manager.active_save()
+    if sql is not None:
+        tables=statement_tables(sql)
+    if tables is not None:
+        return workspace,record["save_id"],cache_token(record["schema_name"],tables)
     return workspace,record["save_id"],record.get("updated_at") or ""
 
 def q(sql,params=()):
-    return _cached_query(sql,tuple(params or ()),*_query_revision()).copy()
+    return _cached_query(sql,tuple(params or ()),*_query_revision(sql=sql)).copy()
 
 def scalar(sql,params=(),default=0):
-    return _cached_scalar(sql,tuple(params or ()),default,*_query_revision())
+    return _cached_scalar(sql,tuple(params or ()),default,*_query_revision(sql=sql))
 
 @st.cache_data(ttl=60,show_spinner=False)
 def _cached_sim_photo(sim_id,workspace_key,save_id,revision):
@@ -180,13 +184,13 @@ def _cached_statistics(global_day,start_year,workspace_key,save_id,revision):
     finally:con.close()
 
 def cached_sim_photo(sim_id):
-    return _cached_sim_photo(sim_id,*_query_revision()) if sim_id else None
+    return _cached_sim_photo(sim_id,*_query_revision(tables=("sim_photos",))) if sim_id else None
 
 def cached_relationship_photo(relationship_id):
-    return _cached_relationship_photo(relationship_id,*_query_revision()) if relationship_id else None
+    return _cached_relationship_photo(relationship_id,*_query_revision(tables=("relationship_photos",))) if relationship_id else None
 
 def cached_upcoming_rolls(global_day,horizon):
-    return _cached_upcoming_rolls(global_day,horizon,*_query_revision())
+    return _cached_upcoming_rolls(global_day,horizon,*_query_revision(tables=("rolls","sims","pregnancies","events","households","rules","roll_rule_eras","roll_rule_values","settings")))
 def sim_options(blank=True):
     df=q("SELECT sim_id,COALESCE(title,'') title,COALESCE(first_name,'') first_name,COALESCE(last_name,'') last_name FROM sims ORDER BY last_name,first_name")
     out=[f"{r.sim_id} — {' '.join(x for x in [r.title,r.first_name,r.last_name] if x).strip()}" for _,r in df.iterrows()]
@@ -508,14 +512,14 @@ if page=="Today":
     c.metric("Active historical events",len(active))
     d.metric("Active illnesses",len(sick))
 
-    task_rolls,task_preg,task_events,task_illness=st.tabs([
+    task_view=st.segmented_control("Today task",[
         f"🎲 Rolls due ({len(due)})",
         f"🤰 Pregnancies due ({len(preg)})",
         f"📜 Active events ({len(active)})",
         f"🩺 Illnesses ({len(sick)})"
-    ])
+    ],default=None,label_visibility="collapsed",key="today_task_view") or "Rolls due"
 
-    with task_rolls:
+    if "Rolls due" in task_view:
         if due.empty:
             st.success("No rolls are due right now.")
         else:
@@ -545,7 +549,7 @@ if page=="Today":
                 st.success(f"Completed {rid}.")
                 st.rerun()
 
-    with task_preg:
+    if "Pregnancies due" in task_view:
         if preg.empty:
             st.success("No pregnancies are due right now.")
         else:
@@ -572,14 +576,14 @@ if page=="Today":
                 st.success(f"Updated {pid}.")
                 st.rerun()
 
-    with task_events:
+    if "Active events" in task_view:
         if active.empty:
             st.success("No historical events are active today.")
         else:
             friendly_cards(active,"event_name",meta=("scope","location","affected_class"),
                 badge=lambda r:"Roll required" if r.get("roll_required") else "In effect")
 
-    with task_illness:
+    if "Illnesses" in task_view:
         if sick.empty:
             st.success("No active illnesses today.")
         else:
@@ -2337,7 +2341,7 @@ elif page=="Statistics":
 
     cg=current_gd()
     sy,_=calendar_settings()
-    ctx=_cached_statistics(cg,sy,*_query_revision())
+    ctx=_cached_statistics(cg,sy,*_query_revision(tables=("sims","households","pregnancies","relationships","rolls","events","event_results","settings")))
 
     sims=ctx["sims"]; living=sims[sims.living].copy(); deceased=sims[sims.death_global_day.notna()].copy()
     born_to_date=sims[sims.birth_global_day.notna() & (sims.birth_global_day<=cg)].copy()

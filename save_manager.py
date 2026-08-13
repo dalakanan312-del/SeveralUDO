@@ -329,7 +329,7 @@ def touch_active():
     # A single Streamlit action can commit more than once and several actions
     # may occur close together. Keep the local ordering fresh immediately but
     # avoid an extra Neon round trip for every individual commit.
-    if now - _LAST_TOUCH.get(save_id, 0) < 10:
+    if now - _LAST_TOUCH.get(save_id, 0) < 60:
         _touch_cached(save_id)
         return
     with storage.raw_connect() as connection:

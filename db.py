@@ -1,9 +1,29 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 
 import save_manager
 import storage
+
+_TABLE_REVISIONS = defaultdict(int)
+
+
+def statement_tables(statement):
+    """Return the ordinary table names referenced by a simple app query."""
+    text = re.sub(r"\s+", " ", str(statement))
+    names = re.findall(
+        r"\b(?:FROM|JOIN|UPDATE|INTO|DELETE\s+FROM)\s+(?:[a-zA-Z_][\w]*\.)?([a-zA-Z_][\w]*)",
+        text,
+        flags=re.I,
+    )
+    return tuple(sorted({name.lower() for name in names}))
+
+
+def cache_token(schema_name, tables=None):
+    """Small hashable version token for only the data a view depends on."""
+    selected = tuple(sorted(set(tables or ())))
+    return tuple((table, _TABLE_REVISIONS[(schema_name, table)]) for table in selected)
 
 
 class HybridRow:
@@ -98,6 +118,7 @@ class Cursor:
         command=translated.lstrip().split(None,1)[0].upper() if translated.strip() else ""
         if command in {"INSERT","UPDATE","DELETE"} and self._cursor.rowcount != 0:
             self._connection._changed = True
+            self._connection._changed_tables.update(statement_tables(translated))
         return self
 
     def executemany(self, statement, sequence):
@@ -107,6 +128,7 @@ class Cursor:
         command=translated.lstrip().split(None,1)[0].upper() if translated.strip() else ""
         if command in {"INSERT","UPDATE","DELETE"} and self._cursor.rowcount != 0:
             self._connection._changed = True
+            self._connection._changed_tables.update(statement_tables(translated))
         return self
 
 
@@ -116,6 +138,7 @@ class Connection:
         self.schema_name = schema_name
         self._schema_selected_in_transaction = False
         self._changed = False
+        self._changed_tables = set()
         storage.ensure_search_path(raw, schema_name)
 
     def execute(self, statement, parameters=()):
@@ -128,14 +151,19 @@ class Connection:
         self._raw.commit()
         self._schema_selected_in_transaction = False
         changed=self._changed
+        changed_tables=set(self._changed_tables)
         self._changed=False
+        self._changed_tables.clear()
         if changed:
+            for table in changed_tables:
+                _TABLE_REVISIONS[(self.schema_name, table)] += 1
             save_manager.touch_active()
 
     def rollback(self):
         self._raw.rollback()
         self._schema_selected_in_transaction = False
         self._changed=False
+        self._changed_tables.clear()
 
     def close(self):
         self._raw.close()
