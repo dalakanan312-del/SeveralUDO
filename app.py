@@ -180,8 +180,17 @@ def _cached_upcoming_rolls(global_day,horizon,workspace_key,save_id,revision):
 @st.cache_data(ttl=60,show_spinner=False)
 def _cached_statistics(global_day,start_year,workspace_key,save_id,revision):
     con=connect()
-    try:return se.prepare(con,global_day,start_year)
+    try:
+        ctx=se.prepare(con,global_day,start_year)
     finally:con.close()
+    ctx["_yearly"]=se.population_yearly(ctx)
+    ctx["_decades"]=se.decade_summary(ctx)
+    ctx["_birth_bundle"]=se.births_stats(ctx)
+    ctx["_sibling_bundle"]=se.sibling_table(ctx)
+    ctx["_lineage"]=se.lineage_table(ctx)
+    ctx["_relationship_bundle"]=se.relationship_stats(ctx)
+    ctx["_household_stats"]=se.household_stats(ctx)
+    return ctx
 
 def cached_sim_photo(sim_id):
     return _cached_sim_photo(sim_id,*_query_revision(tables=("sim_photos",))) if sim_id else None
@@ -631,11 +640,9 @@ if page=="Today":
 elif page=="Sims":
     page_header("Sims","Browse profiles, add people quickly, or edit family connections without touching raw IDs.")
 
-    tab_directory,tab_add,tab_edit,tab_family=st.tabs([
-        "👥 Directory","➕ Add Sim","✏️ Edit Sim","🌳 Family & Relationships"
-    ])
+    sim_section=st.segmented_control("Sim section",["Directory","Add Sim","Edit Sim","Family"],default=None,label_visibility="collapsed",key="sim_section") or "Directory"
 
-    with tab_directory:
+    if sim_section=="Directory":
         a,b,c=st.columns([2,1,1])
         search=a.text_input("Search by name or ID",key="sim_dir_search",placeholder="Start typing a name…")
         status_filter=b.selectbox("Status",["All","Living","Deceased"],key="sim_dir_status")
@@ -712,7 +719,7 @@ elif page=="Sims":
         else:
             st.info("No Sims match those filters.")
 
-    with tab_add:
+    if sim_section=="Add Sim":
         st.subheader("Add a Sim")
         st.caption("Only the basics are shown first. Open Advanced details only when you need them.")
         con=connect(); proposed=next_id(con,'sims','sim_id','SIM'); con.close()
@@ -804,7 +811,7 @@ elif page=="Sims":
                         con.close()
                         st.success(f"Added {first} {last} ({sim_id}) and scheduled {scheduled} lifecycle roll(s).")
 
-    with tab_edit:
+    if sim_section=="Edit Sim":
         st.subheader("Edit a Sim")
         sopts=sim_options(blank=False)
         if not sopts:
@@ -927,7 +934,7 @@ elif page=="Sims":
                 con.close()
                 affected=[{"Linked data":label,"Count":count} for label,count in dependencies.items() if count]
                 if affected:
-                    st.dataframe(pd.DataFrame(affected),use_container_width=True,hide_index=True)
+                    friendly_cards(affected,"Linked data",meta=("Count",),limit=30)
                 else:
                     st.caption("No linked records were found.")
                 confirmation=st.text_input(f"Type {selected} to confirm deletion",key=f"sim_delete_confirm_{selected}")
@@ -949,7 +956,7 @@ elif page=="Sims":
                         st.success(f"Deleted {selected} and cleaned up linked records.")
                         st.rerun()
 
-    with tab_family:
+    if sim_section=="Family":
         st.subheader("Family & relationships")
         st.caption("Choose one Sim and manage their parents, children, and partnerships from one place.")
         sopts=sim_options(blank=False)
@@ -983,7 +990,7 @@ elif page=="Sims":
             with children_tab:
                 if children:
                     crows=[{"Sim ID":r[0],"Child":r[1],"Mother ID":r[2],"Father ID":r[3],"Birth GD":r[4]} for r in children]
-                    st.dataframe(pd.DataFrame(crows),use_container_width=True,hide_index=True)
+                    friendly_cards(crows,"Child",meta=(lambda r:("Born",f"GD {r.get('Birth GD')}"),"Mother ID","Father ID"),badge="Sim ID",limit=40)
                 else:
                     st.caption("No recorded children.")
                 st.markdown("**Link an existing Sim as a child**")
@@ -1005,7 +1012,7 @@ elif page=="Sims":
                         other_name=r["partner2_name"] if r["partner1_id"]==focal else r["partner1_name"]
                         rows.append({"Relationship ID":r["relationship_id"],"Partner":other_name or other_id,"Type":r["type"],
                                      "Start GD":r["start_global_day"],"End GD":r["end_global_day"],"Status":r["status"]})
-                    st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+                    friendly_cards(rows,"Partner",meta=("Type",lambda r:("Started",f"GD {r.get('Start GD')}"),"Status"),badge="Relationship ID",limit=40)
                 else:
                     st.caption("No recorded partnerships.")
                 st.markdown("**Add a relationship**")
@@ -1230,7 +1237,8 @@ elif page=="Family Tree":
             with c:
                 st.markdown("**Partners / marriages**")
                 if partners:
-                    st.dataframe(pd.DataFrame(partners),use_container_width=True,hide_index=True)
+                    friendly_cards(partners,lambda r:r.get("name") or r.get("partner_name") or r.get("sim_id") or "Partner",
+                        meta=tuple(key for key in ("type","status","start_global_day") if key in partners[0]),limit=30)
                 else: st.caption("None recorded")
 
 elif page=="Timeline":
@@ -1286,9 +1294,9 @@ elif page=="Timeline":
         b.metric("First visible Global Day",int(view.global_day.min()) if not view.empty else "—")
         c.metric("Last visible Global Day",int(view.global_day.max()) if not view.empty else "—")
 
-        tab_events,tab_lifespans,tab_decades=st.tabs(["Chronicle entries","Lives recorded","By the decade"])
+        timeline_section=st.segmented_control("Timeline section",["Chronicle","Lives","Decades"],default=None,label_visibility="collapsed",key="timeline_section") or "Chronicle"
 
-        with tab_events:
+        if timeline_section=="Chronicle":
             if view.empty:
                 st.info("Nothing matches these filters.")
             else:
@@ -1311,9 +1319,12 @@ elif page=="Timeline":
                     ["global_day","year","category","title","primary_sim","household_id","details","source_id"]
                 ].copy()
                 feed.insert(0,"Chronicle entry",feed.apply(lambda row:timeline_chronicle_entry(row,sy,dpy),axis=1))
-                st.dataframe(feed,use_container_width=True,hide_index=True,height=520)
+                friendly_cards(feed,"title",
+                    meta=(lambda r:("When",f"Year {r.get('year')} · GD {r.get('global_day')}"),
+                          "category","primary_sim","household_id"),
+                    body="Chronicle entry",badge="source_id",limit=80)
 
-        with tab_lifespans:
+        if timeline_section=="Lives":
             simsdf=q("""SELECT sim_id,TRIM(COALESCE(title,'')||' '||COALESCE(first_name,'')||' '||COALESCE(last_name,'')||' '||COALESCE(suffix,'')) name,
                                birth_global_day,death_global_day,generation,current_household_id
                         FROM sims WHERE birth_global_day IS NOT NULL ORDER BY last_name,first_name""")
@@ -1342,11 +1353,14 @@ elif page=="Timeline":
                                   showlegend=False,xaxis_title="Global Day",yaxis_title="")
                 fig.update_xaxes(rangeslider_visible=True)
                 st.plotly_chart(fig,use_container_width=True)
-                st.dataframe(sdf,use_container_width=True,hide_index=True)
+                friendly_cards(sdf,"name",
+                    meta=(lambda r:("Born",f"GD {r.get('birth_global_day')}"),
+                          lambda r:("Died",f"GD {r.get('death_global_day')}" if pd.notna(r.get('death_global_day')) else "Living"),
+                          "generation","current_household_id"),badge="sim_id",limit=30)
             else:
                 st.caption("Choose one or more Sims to compare their lifespans.")
 
-        with tab_decades:
+        if timeline_section=="Decades":
             d=view.copy()
             if d.empty:
                 st.info("No timeline items in this range.")
@@ -1356,14 +1370,17 @@ elif page=="Timeline":
                 st.plotly_chart(fig,use_container_width=True)
                 pivot=summary.pivot_table(index="decade",columns="category",values="events",fill_value=0).reset_index()
                 pivot["Total"]=pivot.drop(columns=["decade"]).sum(axis=1)
-                st.dataframe(pivot,use_container_width=True,hide_index=True)
+                friendly_cards(pivot,lambda r:f"The {int(r.get('decade'))}s",
+                    meta=(lambda r:("Recorded events",int(r.get("Total") or 0)),),
+                    body=lambda r:", ".join(f"{k}: {int(v)}" for k,v in r.items() if k not in ("decade","Total") and pd.notna(v) and int(v)>0),
+                    badge="Total",limit=40)
 
 elif page=="Pregnancies":
     page_header("Pregnancies","Track active pregnancies, deliveries, and outcomes.")
     st.caption("Add pregnancies, record delivery/outcome details, or revise an existing record.")
 
-    tab_browse,tab_add,tab_update=st.tabs(["Pregnancies","➕ Add","✅ Record outcome"])
-    with tab_browse:
+    preg_section=st.segmented_control("Pregnancy section",["Browse","Add","Record outcome"],default=None,label_visibility="collapsed",key="preg_section") or "Browse"
+    if preg_section=="Browse":
         pdf=q("SELECT * FROM pregnancies ORDER BY due_global_day DESC,pregnancy_id")
         active_count=int(pdf.status.fillna("").isin(["Pregnant",""]).sum()) if not pdf.empty else 0
         completed_count=int(pdf.status.fillna("").isin(["Delivered","Complete"]).sum()) if not pdf.empty else 0
@@ -1377,17 +1394,15 @@ elif page=="Pregnancies":
         )
         if status_filter:
             pdf=pdf[pdf.status.fillna("").isin(status_filter)]
-        show=friendly_df(pdf,
-            rename={"pregnancy_id":"ID","mother_name":"Mother","father_name":"Father","conception_global_day":"Conceived GD",
-                    "due_global_day":"Due GD","babies_expected":"Expected","babies_delivered":"Delivered","status":"Status",
-                    "outcome":"Outcome","complication":"Complication"},
-            cols=["pregnancy_id","mother_name","father_name","conception_global_day","due_global_day",
-                  "babies_expected","babies_delivered","status","outcome","complication"])
-        st.dataframe(show,use_container_width=True,hide_index=True,height=500)
-        with st.expander("Show all pregnancy fields"):
-            st.dataframe(pdf,use_container_width=True,hide_index=True,height=320)
+        friendly_cards(pdf,lambda r:r.get("mother_name") or r.get("mother_id") or "Unknown mother",
+            meta=(lambda r:("Father",r.get("father_name") or r.get("father_id")),
+                  lambda r:("Conceived",f"GD {r.get('conception_global_day')}"),
+                  lambda r:("Due",f"GD {r.get('due_global_day')}"),
+                  lambda r:("Babies",r.get("babies_delivered") or r.get("babies_expected"))),
+            body=lambda r:r.get("outcome") or r.get("complication") or r.get("notes"),
+            badge=lambda r:r.get("status") or "Pregnant",limit=60)
 
-    with tab_add:
+    if preg_section=="Add":
         opts=sim_options()
         a,b,c=st.columns(3)
         mother=a.selectbox("Mother",opts,key="preg_add_mother")
@@ -1414,7 +1429,7 @@ elif page=="Pregnancies":
             sync_auto_rolls(show_notice=False)
             st.success(f"Added {pid}; maternal roll schedule refreshed.")
 
-    with tab_update:
+    if preg_section=="Record outcome":
         allp=q("""SELECT pregnancy_id,mother_id,mother_name,father_id,father_name,conception_global_day,due_global_day,status,
                          babies_expected,babies_delivered,delivery_date,outcome,complication,multiple_rule_check,notes
                   FROM pregnancies ORDER BY due_global_day DESC,pregnancy_id""")
@@ -1484,8 +1499,8 @@ elif page=="Rolls":
         "Recorded by those who endured",
         "Each appointed trial is set down in the voice of the person who faced it; unwritten outcomes remain open until fate is decided.",
     )
-    tab_browse,tab_result,tab_add,tab_auto=st.tabs(["Chronicle ledger","✒️ Enter an outcome","➕ Add an entry","🗓️ Appointed trials"])
-    with tab_browse:
+    roll_section=st.segmented_control("Roll section",["Chronicle","Enter outcome","Add roll","Upcoming"],default=None,label_visibility="collapsed",key="roll_section") or "Chronicle"
+    if roll_section=="Chronicle":
         a,b=st.columns([1,1])
         only_open=a.checkbox("Only incomplete",True,key="roll_browse_open")
         cutoff=b.number_input("Due through Global Day",min_value=-10000,max_value=20000,value=current_gd(),key="roll_browse_cutoff")
@@ -1498,15 +1513,14 @@ elif page=="Rolls":
         if not rdf.empty:
             rdf=rdf.copy()
             rdf.insert(0,"Chronicle entry",rdf.apply(lambda row:roll_chronicle_entry(row,roll_sy,roll_dpy),axis=1))
-        show=friendly_df(rdf,
-            rename={"due_global_day":"Due GD","sim_name":"Sim","roll_type":"Roll","die":"Die","bad_results":"Bad results",
-                    "actual_roll":"Actual","outcome":"Outcome","completed":"Done"},
-            cols=["Chronicle entry","due_global_day","sim_name","roll_type","die","bad_results","actual_roll","outcome","completed"])
-        st.dataframe(show,use_container_width=True,hide_index=True,height=520)
-        with st.expander("Show IDs and technical roll fields"):
-            st.dataframe(rdf,use_container_width=True,hide_index=True,height=320)
+        friendly_cards(rdf,lambda r:r.get("roll_type") or "Appointed trial",
+            meta=(lambda r:("Sim",r.get("sim_name") or r.get("sim_id")),
+                  lambda r:("Due",f"GD {r.get('due_global_day')}"),"die",
+                  lambda r:("Result",r.get("actual_roll"))),
+            body=lambda r:r.get("outcome") or r.get("Chronicle entry") or f"Bad results: {r.get('bad_results') or 'Use current rules'}",
+            badge=lambda r:"Complete" if r.get("completed") else "Open",limit=80)
 
-    with tab_result:
+    if roll_section=="Enter outcome":
         rdf=q("SELECT * FROM rolls ORDER BY due_global_day DESC,roll_id")
         if rdf.empty:
             st.info("No rolls recorded.")
@@ -1535,7 +1549,7 @@ elif page=="Rolls":
                             (actual or None,outcome or None,1 if completed else 0,completed_day if completed else None,notes or None,rid))
                 con.commit(); con.close(); st.success(f"Saved {rid}")
 
-    with tab_add:
+    if roll_section=="Add roll":
         opts=sim_options()
         a,b,c=st.columns(3)
         sim=a.selectbox("Sim",opts,key="roll_add_sim")
@@ -1555,7 +1569,7 @@ elif page=="Rolls":
 
 
 
-    with tab_auto:
+    if roll_section=="Upcoming":
         st.subheader("Automatic roll schedule")
         st.caption("Milestone timing comes from Rules Config; die and bad-result values come from the matching year/species roll table. Due rolls are inserted automatically and future rolls stay as previews.")
         a,b,c=st.columns(3)
@@ -1571,10 +1585,12 @@ elif page=="Rolls":
             adf=pd.DataFrame(rows)
             missing=adf[adf["missing"]>0].copy()
             st.metric("Upcoming obligations",len(adf),f"{len(missing)} future roll(s) not inserted yet")
-            st.dataframe(
-                adf[["due_global_day","year","species","era_name","rule_status","sim_id","sim_name","roll_type","die","bad_results","source_id","kind","already_scheduled","missing"]],
-                use_container_width=True,hide_index=True,height=480
-            )
+            friendly_cards(adf,lambda r:r.get("roll_type") or "Upcoming trial",
+                meta=(lambda r:("Sim",r.get("sim_name") or r.get("sim_id")),
+                      lambda r:("When",f"Year {r.get('year')} · GD {r.get('due_global_day')}"),
+                      "die",lambda r:("Kind",r.get("kind"))),
+                body=lambda r:f"Bad results: {r.get('bad_results') or 'Not configured'}",
+                badge=lambda r:r.get("rule_status") or "Scheduled",limit=60)
             if not missing.empty:
                 st.caption("Future rows marked missing are intentional: they will be created automatically when their Global Day arrives.")
         else:
@@ -1601,9 +1617,9 @@ elif page=="Rolls":
 elif page=="Relationships":
     page_header("Relationships","Browse partnerships by name, see both people together, and add or end relationships without editing spouse IDs.")
 
-    tab_browse,tab_add,tab_edit=st.tabs(["💞 Browse","➕ Add relationship","✏️ Edit / end"])
+    relationship_section=st.segmented_control("Relationship section",["Browse","Add","Edit or end"],default=None,label_visibility="collapsed",key="relationship_section") or "Browse"
 
-    with tab_browse:
+    if relationship_section=="Browse":
         rdf=q("SELECT * FROM relationships ORDER BY start_global_day DESC,relationship_id")
         active=int((rdf.status.fillna("").str.lower()=="active").sum()) if not rdf.empty else 0
         a,b,c=st.columns(3)
@@ -1653,7 +1669,7 @@ elif page=="Relationships":
                 else: st.markdown("## 👤")
                 st.markdown(f"**{row.get('partner2_name') or row.get('partner2_id') or 'Unknown'}**")
 
-    with tab_add:
+    if relationship_section=="Add":
         st.subheader("Add a relationship")
         st.caption("Choose the two people by name. Marriage spouse links are updated automatically.")
         opts=sim_options()
@@ -1708,7 +1724,7 @@ elif page=="Relationships":
                     st.success(f"Added {typ.lower()} between {names.get(s1,s1)} and {names.get(s2,s2)}.")
                     st.rerun()
 
-    with tab_edit:
+    if relationship_section=="Edit or end":
         rdf=q("SELECT * FROM relationships ORDER BY start_global_day DESC,relationship_id")
         if rdf.empty:
             st.info("No relationships to edit.")
@@ -1830,9 +1846,9 @@ elif page=="Relationships":
 
 elif page=="Households":
     page_header("Households","Create households, view members, move Sims, and edit household details.")
-    tab_browse,tab_create,tab_assign,tab_edit=st.tabs(["Households","Create household","🚚 Move a Sim","✏️ Edit household"])
+    household_section=st.segmented_control("Household section",["Browse","Create","Move Sim","Edit"],default=None,label_visibility="collapsed",key="household_section") or "Browse"
 
-    with tab_browse:
+    if household_section=="Browse":
         hdf=q("SELECT * FROM households ORDER BY household_name,household_id")
         a,b,c=st.columns(3)
         a.metric("Households",len(hdf))
@@ -1852,11 +1868,12 @@ elif page=="Households":
             else:
                 mem["Name"]=(mem.first_name.fillna("")+" "+mem.last_name.fillna("")).str.strip()
                 mem["Status"]=mem.death_global_day.apply(lambda x:"Deceased" if pd.notna(x) else "Living")
-                st.dataframe(friendly_df(mem,rename={"sim_id":"ID","birth_global_day":"Birth GD","death_global_day":"Death GD"},
-                                         cols=["sim_id","Name","Status","birth_global_day","death_global_day"]),
-                             use_container_width=True,hide_index=True)
+                friendly_cards(mem,"Name",
+                    meta=("Status",lambda r:("Born",f"GD {r.get('birth_global_day')}"),
+                          lambda r:("Died",f"GD {r.get('death_global_day')}" if pd.notna(r.get('death_global_day')) else None)),
+                    badge="sim_id",limit=60)
 
-    with tab_create:
+    if household_section=="Create":
         st.subheader("Create a household")
         con=connect(); proposed=next_id(con,'households','household_id','HH'); con.close()
         sim_choices=sim_options()
@@ -1909,7 +1926,7 @@ elif page=="Households":
                 else:
                     con.close(); st.success(f"Created {name} ({identifier})."); st.rerun()
 
-    with tab_assign:
+    if household_section=="Move Sim":
         opts=sim_options()
         hdf=q("SELECT household_id,household_name FROM households ORDER BY household_id")
         hopts=[""]+[f"{r.household_id} — {r.household_name or ''}" for _,r in hdf.iterrows()]
@@ -1936,7 +1953,7 @@ elif page=="Households":
                 st.success("Household assignment saved.")
                 st.rerun()
 
-    with tab_edit:
+    if household_section=="Edit":
         hdf=q("SELECT * FROM households ORDER BY household_id")
         if hdf.empty:
             st.info("No households.")
@@ -1982,9 +1999,9 @@ elif page=="Challenge Management":
     g=current_gd(); year,_=challenge_year_day(g)
     sims=q("SELECT * FROM sims ORDER BY birth_global_day,sim_id")
     households=q("SELECT * FROM households ORDER BY household_name,household_id")
-    tabs=st.tabs(["Era rules","Succession","Matchmaking","War & conscription"])
+    challenge_section=st.segmented_control("Challenge section",["Era rules","Succession","Matchmaking","War & conscription"],default=None,label_visibility="collapsed",key="challenge_section") or "Era rules"
 
-    with tabs[0]:
+    if challenge_section=="Era rules":
         st.subheader(f"Rules in force — Year {year}")
         locations=["All"]+sorted({str(x) for x in households.location.dropna() if str(x).strip()})
         loc=st.selectbox("Challenge location",locations,key="era_location")
@@ -2034,7 +2051,7 @@ elif page=="Challenge Management":
                 if st.button("Delete selected era rule",key="era_delete"):
                     con=connect(); con.execute("DELETE FROM era_guidance WHERE rule_id=?",(rid,)); con.commit(); con.close(); st.rerun()
 
-    with tabs[1]:
+    if challenge_section=="Succession":
         st.subheader("Line of succession")
         con=connect()
         system=setting(con,"succession_system","Absolute primogeniture")
@@ -2056,7 +2073,7 @@ elif page=="Challenge Management":
             friendly_cards(ranked,lambda r:f"#{r.get('rank')} · {r.get('name') or r.get('sim_id')}",meta=("sex",lambda r:("Born",f"Global Day {r.get('birth_global_day')}"),"generation"),body="succession_note",badge="succession_override")
         st.caption("Use a Sim's Succession Override field to mark them Heir/Priority or Exclude/Disinherit; the ranking updates automatically.")
 
-    with tabs[2]:
+    if challenge_section=="Matchmaking":
         st.subheader("Marriage eligibility & matchmaking")
         con=connect(); min_age=int(float(setting(con,"marriage_min_age_days",72))); con.close()
         new_min=st.number_input("Minimum marriage age (challenge days)",0,10000,min_age,key="match_min_age")
@@ -2092,7 +2109,7 @@ elif page=="Challenge Management":
                 con=connect(); rel_id=next_id(con,"relationships","relationship_id","REL")
                 con.execute("INSERT INTO relationships(relationship_id,partner1_id,partner2_id,partner1_name,partner2_name,type,start_global_day,status,legally_married,children_count,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(rel_id,fid,second_id,cm.sim_name(p1),cm.sim_name(p2),"Courtship",g,"Active",0,0,"Created by Matchmaking")); con.commit(); con.close(); st.success(f"Created {rel_id}."); st.rerun()
 
-    with tabs[3]:
+    if challenge_section=="War & conscription":
         st.subheader("War & conscription")
         campaigns=q("SELECT * FROM military_campaigns ORDER BY start_global_day DESC,campaign_id")
         services=q("SELECT * FROM military_service ORDER BY enlisted_global_day DESC,service_id")
@@ -2144,9 +2161,9 @@ elif page=="Illnesses":
     a,b,c=st.columns(3)
     a.metric("Recorded illnesses",len(idf)); b.metric("Currently active",int(active_mask.sum()) if not idf.empty else 0)
     c.metric("Contagious and active",int((active_mask & (idf.contagious.fillna(0)==1)).sum()) if not idf.empty else 0)
-    tab_current,tab_add,tab_edit=st.tabs(["Illness register","➕ Add illness","✏️ Update or resolve"])
+    illness_section=st.segmented_control("Illness section",["Register","Add","Update or resolve"],default=None,label_visibility="collapsed",key="illness_section") or "Register"
 
-    with tab_current:
+    if illness_section=="Register":
         if idf.empty:
             st.info("No illnesses have been recorded in this save.")
         else:
@@ -2162,7 +2179,7 @@ elif page=="Illnesses":
                 meta=(lambda r:("Began",f"Global Day {r.get('onset_global_day')}"),"status",lambda r:("Contagious","Yes" if r.get("contagious") else "No")),
                 body=lambda r:r.get("outcome") or r.get("treatment") or r.get("notes"),badge="severity",empty="No illnesses match these filters.")
 
-    with tab_add:
+    if illness_section=="Add":
         opts=sim_options(blank=False)
         if not opts:
             st.info("Add a Sim before recording an illness.")
@@ -2187,7 +2204,7 @@ elif page=="Illnesses":
                                  1 if contagious else 0,treatment.strip() or None,notes.strip() or None))
                     con.commit(); con.close(); st.success(f"Added {iid}."); st.rerun()
 
-    with tab_edit:
+    if illness_section=="Update or resolve":
         if idf.empty:
             st.info("No illnesses to update.")
         else:
@@ -2231,9 +2248,9 @@ elif page=="Events":
     page_header("Historical Events","Manage challenge-wide events and record their effects.")
     g=current_gd()
     st.caption(f"Current Global Day: {g} — {gd_caption(g)}")
-    tab_browse,tab_add,tab_result,tab_edit=st.tabs(["Events","➕ Add","✅ Record effect","✏️ Edit"])
+    event_section=st.segmented_control("Event section",["Browse","Add","Record effect","Edit"],default=None,label_visibility="collapsed",key="event_section") or "Browse"
 
-    with tab_browse:
+    if event_section=="Browse":
         edf=q("SELECT * FROM events ORDER BY start_global_day,event_name")
         active_now=edf[(edf.start_global_day<=g)&(edf.end_global_day>=g)] if not edf.empty else edf
         a,b,c=st.columns(3)
@@ -2251,10 +2268,9 @@ elif page=="Events":
             section_heading("Recorded effects")
             friendly_cards(results,lambda r:r.get("outcome") or r.get("cause_effect") or "Recorded effect",
                 meta=(lambda r:("When",f"Global Day {r.get('global_day')}"),"sim_id","household_id"),body="notes",badge=lambda r:"Death" if r.get("death") else (r.get("status") or "Recorded"),limit=20)
-        with st.expander("Show event IDs and technical fields"):
-            st.dataframe(edf,use_container_width=True,hide_index=True,height=280)
+        st.caption("Choose Edit to inspect or change an event's technical fields.")
 
-    with tab_add:
+    if event_section=="Add":
         a,b,c=st.columns(3)
         start=a.number_input("Start Global Day",-10000,20000,g,key='evs')
         end=b.number_input("End Global Day",-10000,20000,g,key='eve')
@@ -2272,7 +2288,7 @@ elif page=="Events":
                         (eid,start,end,name,scope,location,1 if roll_required else 0,affected,1,'App entry',notes or None))
             con.commit(); con.close(); st.success(f"Added {eid}")
 
-    with tab_result:
+    if event_section=="Record effect":
         edf=q("SELECT event_id,event_name,start_global_day,end_global_day FROM events ORDER BY start_global_day DESC,event_id")
         if edf.empty:
             st.info("No events.")
@@ -2308,7 +2324,7 @@ elif page=="Events":
                                    WHERE sim_id=?""",(gd,cause or "",cause or "",sid(sim)))
                 con.commit(); con.close(); st.success(f"Saved {rid}")
 
-    with tab_edit:
+    if event_section=="Edit":
         edf=q("SELECT * FROM events ORDER BY start_global_day DESC,event_id")
         if edf.empty:
             st.info("No events.")
@@ -2347,12 +2363,12 @@ elif page=="Statistics":
     born_to_date=sims[sims.birth_global_day.notna() & (sims.birth_global_day<=cg)].copy()
     deceased_to_date=sims[sims.death_global_day.notna() & (sims.death_global_day<=cg)].copy()
     not_yet_born=sims[sims.birth_global_day.notna() & (sims.birth_global_day>cg)].copy()
-    yearly=se.population_yearly(ctx); decades=se.decade_summary(ctx)
-    births,parent_counts,mothers,fathers,sibling_gaps=se.births_stats(ctx)
-    siblings,full_groups=se.sibling_table(ctx)
-    lineage=se.lineage_table(ctx)
-    rel,marr_counts=se.relationship_stats(ctx)
-    hhstats=se.household_stats(ctx)
+    yearly=ctx["_yearly"]; decades=ctx["_decades"]
+    births,parent_counts,mothers,fathers,sibling_gaps=ctx["_birth_bundle"]
+    siblings,full_groups=ctx["_sibling_bundle"]
+    lineage=ctx["_lineage"]
+    rel,marr_counts=ctx["_relationship_bundle"]
+    hhstats=ctx["_household_stats"]
     names=ctx["name"]
 
     def fnum(v,d=1):
@@ -2382,13 +2398,12 @@ elif page=="Statistics":
     def sim_label(sid_):
         return f"{sid_} — {names.get(sid_,sid_)}" if sid_ else "—"
 
-    tabs=st.tabs([
-        "Overview","Population","Births & Fertility","Mortality","Age & Longevity",
-        "Generations & Dynasty","Family Structure","Gender","Households","Relationships",
-        "Decades","Events","Individual Sims","Records"
-    ])
+    stats_sections=["Overview","Population","Births & Fertility","Mortality","Age & Longevity",
+                    "Generations & Dynasty","Family Structure","Gender","Households","Relationships",
+                    "Decades","Events","Individual Sims","Records"]
+    stats_section=st.selectbox("Statistics section",stats_sections,key="stats_section")
 
-    with tabs[0]:
+    if stats_section=="Overview":
         st.subheader("Challenge snapshot")
         a,b,c1,d=st.columns(4)
         a.metric("Total Sims ever recorded",fint(len(sims)))
@@ -2415,7 +2430,7 @@ elif page=="Statistics":
             d.metric("Fastest growth year",fpct(growth.growth_rate_pct),f"Year {int(growth.year)}")
             st.plotly_chart(px.line(yearly,x="year",y="population_end",title="Population over time",labels={"population_end":"Population"}),use_container_width=True)
 
-    with tabs[1]:
+    if stats_section=="Population":
         st.subheader("Population")
         total=len(sims); live=len(living); dead=len(deceased_to_date); born_now=len(born_to_date)
         a,b,c1,d=st.columns(4)
@@ -2437,7 +2452,7 @@ elif page=="Statistics":
             st.dataframe(decades[["decade","population_start","population_end","population_change","avg_population","births","deaths","natural_increase"]],use_container_width=True,hide_index=True)
             st.plotly_chart(px.bar(decades,x="decade",y="avg_population",title="Average population by decade"),use_container_width=True)
 
-    with tabs[2]:
+    if stats_section=="Births & Fertility":
         st.subheader("Births & fertility")
         multiples=births[births.multiple_birth.fillna("").str.lower()!="single"].copy()
         mult_groups=births[births.multiple_birth.fillna("").str.lower().isin(["twin","triplet","quadruplet","sextuplet"])].dropna(subset=["birth_global_day"]).groupby(["mother_id","birth_global_day","multiple_birth"],dropna=False).size().reset_index(name="babies")
@@ -2499,7 +2514,7 @@ elif page=="Statistics":
         st.subheader("Births per generation")
         st.dataframe(genbirth,use_container_width=True,hide_index=True)
 
-    with tabs[3]:
+    if stats_section=="Mortality":
         st.subheader("Deaths & mortality")
         a,b,c1,d=st.columns(4)
         a.metric("Deaths through current day",fint(len(deceased_to_date)))
@@ -2541,7 +2556,7 @@ elif page=="Statistics":
         with a: st.subheader("Average age at death by decade"); st.dataframe(age_dec,use_container_width=True,hide_index=True)
         with b: st.subheader("Average age at death by generation"); st.dataframe(age_gen,use_container_width=True,hide_index=True)
 
-    with tabs[4]:
+    if stats_section=="Age & Longevity":
         st.subheader("Age & longevity")
         ages=living.age_years.dropna()
         lif=deceased.lifespan_years.dropna()
@@ -2582,7 +2597,7 @@ elif page=="Statistics":
             st.subheader("Average living age by decade")
             st.dataframe(pd.DataFrame(avg_age_dec),use_container_width=True,hide_index=True)
 
-    with tabs[5]:
+    if stats_section=="Generations & Dynasty":
         st.subheader("Generations & dynasty")
         gens=sims.dropna(subset=["generation"]).copy()
         if not gens.empty:
@@ -2623,7 +2638,7 @@ elif page=="Statistics":
                     intervals.append((cgrow.iloc[0].birth_global_day-r.birth_global_day)/4)
         if intervals: st.metric("Average generation interval",f"{sum(intervals)/len(intervals):.2f} years")
 
-    with tabs[6]:
+    if stats_section=="Family Structure":
         st.subheader("Siblings & family structure")
         only=int((siblings.siblings==0).sum()) if not siblings.empty else 0
         a,b,c1,d=st.columns(4)
@@ -2653,7 +2668,7 @@ elif page=="Statistics":
             st.subheader("Parents with the largest families")
             st.dataframe(fam.head(30),use_container_width=True,hide_index=True)
 
-    with tabs[7]:
+    if stats_section=="Gender":
         st.subheader("Gender demographics")
         gender=sims.groupby("sex").agg(total=("sim_id","count"),living=("living","sum")).reset_index()
         gender["deceased"]=gender.total-gender.living
@@ -2678,7 +2693,7 @@ elif page=="Statistics":
         st.subheader("Life-stage distribution by gender")
         st.dataframe(lsg,use_container_width=True,hide_index=True)
 
-    with tabs[8]:
+    if stats_section=="Households":
         st.subheader("Households")
         active=hhstats[hhstats.active_now]
         sizes=active.living_population
@@ -2705,7 +2720,7 @@ elif page=="Statistics":
             st.dataframe(created.groupby("year").size().reset_index(name="households_created"),use_container_width=True,hide_index=True)
         st.info("Historical household-size, household-move, origin/destination, and 'lived in multiple households' statistics are not treated as exact because the migrated Sim records store current household assignment rather than a complete household-membership history.")
 
-    with tabs[9]:
+    if stats_section=="Relationships":
         st.subheader("Relationships & marriage")
         if rel.empty:
             st.info("No relationship records.")
@@ -2768,7 +2783,7 @@ elif page=="Statistics":
                 st.dataframe(cpf.sort_values("children",ascending=False).head(50),use_container_width=True,hide_index=True)
             st.info("The imported relationship table contains marriages only and records ended marriages as 'Ended by death'. Divorce/separation rates therefore remain zero/unavailable unless those relationship types are added later.")
 
-    with tabs[10]:
+    if stats_section=="Decades":
         st.subheader("Historical time / Decades progression")
         cur_year,_=challenge_year_day(cg); cur_dec=(cur_year//10)*10
         first_year=int(sims.birth_year.dropna().min()) if sims.birth_year.notna().any() else sy
@@ -2788,7 +2803,7 @@ elif page=="Statistics":
             a.metric("Fastest-growing decade",fint(fast.population_change),f"{int(fast.decade)}s")
             b.metric("Fastest-declining decade",fint(decline.population_change),f"{int(decline.decade)}s")
 
-    with tabs[11]:
+    if stats_section=="Events":
         st.subheader("Event statistics")
         ev=ctx["events"].copy(); evr=ctx["event_results"].copy()
         a,b,c1,d=st.columns(4)
@@ -2822,7 +2837,7 @@ elif page=="Statistics":
             st.dataframe(byhh,use_container_width=True,hide_index=True)
         st.info("The migrated `events` table contains historical world/challenge event definitions (famines, wars, epidemics, etc.), not a standardized personal-life event log. Birth/death/marriage/move/career/graduation event-category counts are therefore not inferred from free text.")
 
-    with tabs[12]:
+    if stats_section=="Individual Sims":
         st.subheader("Individual Sim statistics")
         opts=sim_options(blank=False)
         sel=st.selectbox("Sim",opts,key="stats_sim")
@@ -2857,7 +2872,7 @@ elif page=="Statistics":
                 st.subheader("Recorded events affecting this Sim")
                 st.dataframe(evs,use_container_width=True,hide_index=True)
 
-    with tabs[13]:
+    if stats_section=="Records":
         st.subheader("Records & fun stats")
         cards=[]
         if not deceased.empty and deceased.lifespan_years.notna().any():
@@ -2931,9 +2946,9 @@ elif page=="Notes":
     page_header("Notes","A private notebook for the active save: plans, research, reminders, and family chronicles.")
     notes=q("""SELECT note_id,title,category,body,pinned,created_at,updated_at
                FROM notebook_entries ORDER BY pinned DESC,updated_at DESC,title""")
-    tab_read,tab_new,tab_edit=st.tabs(["Notebook","New note","Edit or delete"])
+    notes_section=st.segmented_control("Notes section",["Notebook","New note","Edit or delete"],default=None,label_visibility="collapsed",key="notes_section") or "Notebook"
 
-    with tab_read:
+    if notes_section=="Notebook":
         if notes.empty:
             st.info("No notes yet. Use New note to begin this save's notebook.")
         else:
@@ -2954,7 +2969,7 @@ elif page=="Notes":
                     st.markdown(row.body or "*Empty note*")
                     st.caption(f"Updated {row.updated_at or row.created_at or '—'} · {row.note_id}")
 
-    with tab_new:
+    if notes_section=="New note":
         with st.form("new_notebook_note",clear_on_submit=True):
             title=st.text_input("Title")
             a,b=st.columns([2,1])
@@ -2971,7 +2986,7 @@ elif page=="Notes":
                             (nid,title.strip(),category.strip() or None,body.strip() or None,1 if pinned else 0,now,now))
                 con.commit(); con.close(); st.success(f"Saved {title.strip()}."); st.rerun()
 
-    with tab_edit:
+    if notes_section=="Edit or delete":
         if notes.empty:
             st.info("Create a note first.")
         else:
@@ -3036,7 +3051,11 @@ elif page=="Planting Reference":
     if season!="Any":
         shown=shown[shown["Sims outdoor season"].str.contains(season,case=False,na=False)]
     st.caption(f"{len(shown):,} plants shown")
-    st.dataframe(shown.sort_values("Plant"),use_container_width=True,hide_index=True,height=620)
+    friendly_cards(shown.sort_values("Plant"),"Plant",
+        meta=("Sims outdoor season","Pack","Origin",
+              lambda r:("Historical cutoff",r.get("Historical cutoff"))),
+        body="Historical note",
+        badge="Status",limit=100)
     st.warning("Historical cutoffs are conservative gameplay guidelines. A plant may have existed earlier as an imported luxury, wild species, medicine, or ornamental before it became a practical household crop.")
     st.caption("Research basis: English Heritage's British food timeline, the Royal Horticultural Society's crop histories, Nature's tomato history, and scholarship on the Columbian Exchange. Sims seasons come from EA's gardening guide.")
     st.markdown("[English Heritage food timeline](https://www.english-heritage.org.uk/visit/places/stonehenge/history-and-stories/history/food-timeline/) · [RHS crop facts](https://www.rhs.org.uk/advice/grow-your-own/features/fascinating-facts-and-figures/) · [Columbian Exchange research](https://pubs.aeaweb.org/doi/10.1257/jep.24.2.163) · [EA gardening guide](https://help.ea.com/en/help/the-sims/the-sims-4/the-sims-4-gardening-guide/)")
@@ -3075,13 +3094,14 @@ elif page=="Saves":
             "Save":s["name"],"Historical year":year,"Global Day":gd,"Sims":sims_count,"Save ID":s["save_id"]
         })
     save_manager.set_active(active["save_id"])
-    st.dataframe(pd.DataFrame(summary_rows),use_container_width=True,hide_index=True)
+    friendly_cards(summary_rows,"Save",
+        meta=("Historical year",lambda r:("Global Day",r.get("Global Day")),"Sims"),
+        body=lambda r:f"Save ID: {r.get('Save ID')}",
+        badge=lambda r:"Active" if r.get("Active") else "Available",limit=30)
 
-    create_tab,duplicate_tab,manage_tab,import_tab=st.tabs([
-        "➕ New blank save","📑 Duplicate save","✏️ Manage saves","📥 Import save"
-    ])
+    save_section=st.segmented_control("Save section",["New save","Duplicate","Manage","Import"],default=None,label_visibility="collapsed",key="save_section") or "New save"
 
-    with create_tab:
+    if save_section=="New save":
         st.subheader("Create a completely new save")
         st.caption("The new save starts with no Sims or gameplay history. Your challenge rules and roll-table configuration are copied so you do not have to rebuild them.")
         a,b=st.columns(2)
@@ -3102,7 +3122,7 @@ elif page=="Saves":
                 st.success("Save created.")
                 st.rerun()
 
-    with duplicate_tab:
+    if save_section=="Duplicate":
         st.subheader("Duplicate an existing save")
         st.caption("This makes a full independent copy, including Sims, photos, relationships, rolls, and current time.")
         labels=[f"{s['name']} — {s['save_id']}" for s in saves]
@@ -3118,7 +3138,7 @@ elif page=="Saves":
                 st.success("Save duplicated.")
                 st.rerun()
 
-    with manage_tab:
+    if save_section=="Manage":
         st.subheader("Rename, export, or delete")
         labels=[f"{s['name']} — {s['save_id']}" for s in saves]
         selected=st.selectbox("Save",labels,index=next((i for i,s in enumerate(saves) if s["save_id"]==active["save_id"]),0),key="save_manage_select")
@@ -3154,7 +3174,7 @@ elif page=="Saves":
                 st.success("Save deleted.")
                 st.rerun()
 
-    with import_tab:
+    if save_section=="Import":
         st.subheader("Import a shared save")
         st.caption("Import a `.decades-save` file from another player. Older raw `.db` backups are supported too.")
         imported=st.file_uploader("Save file",type=["decades-save","db","sqlite","sqlite3"],key="save_import_file")
