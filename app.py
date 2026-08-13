@@ -251,7 +251,8 @@ def add_applicable_events(rows):
             if not (int(event.start_global_day)<=due<=int(event.end_global_day)):
                 continue
             scope="" if event.get("scope") is None or pd.isna(event.get("scope")) else str(event.get("scope")).strip().casefold()
-            global_scope=scope.startswith("global") or scope in {"world","worldwide","all","everyone","all sims"}
+            location="" if event.get("location") is None or pd.isna(event.get("location")) else str(event.get("location")).strip().casefold()
+            global_scope=scope.startswith("global") or location.startswith("global") or scope in {"world","worldwide","all","everyone","all sims"}
             if sim is not None:
                 if not global_scope and not _event_applies(event.location,[sim.get("household_location"),sim.get("birthplace")]):
                     continue

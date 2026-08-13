@@ -226,7 +226,8 @@ def preview(con, current_gd, due_from=None, due_to=None, event_due_from=None):
         if not event_in_window(due):
             continue
         scope=(event["scope"] or "").strip().casefold()
-        global_scope=scope.startswith("global") or scope in {
+        location=(event["location"] or "").strip().casefold()
+        global_scope=scope.startswith("global") or location.startswith("global") or scope in {
             "world","worldwide","all","everyone","all sims"
         }
         for sim in event_sims:
@@ -262,7 +263,7 @@ def sync_rolls(con,current_gd):
     # Reconcile all reached event dates every time. Event libraries can be
     # imported or enabled after the calendar has already passed their date;
     # lifecycle rolls still use the lightweight incremental window.
-    obligations=preview(con,current_gd,due_from=due_from,due_to=current_gd,event_due_from=1)
+    obligations=preview(con,current_gd,due_from=due_from,due_to=current_gd,event_due_from=-10**9)
     existing_counts=Counter()
     max_roll_number=0
     for row in con.execute("SELECT source_id,sim_id,due_global_day,roll_type,roll_id FROM rolls"):
