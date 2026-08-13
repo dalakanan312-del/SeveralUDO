@@ -32,6 +32,7 @@ import plant_reference
 import illnesses
 import challenge_management as cm
 import event_library
+import action_queue
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -217,7 +218,7 @@ def _cached_today_counts(global_day,workspace_key,save_id,revision):
     con=connect()
     try:
         row=con.execute("""SELECT
-            (SELECT COUNT(*) FROM rolls WHERE COALESCE(completed,0)=0 AND due_global_day<=?) AS rolls_due,
+            (SELECT COUNT(*) FROM action_queue WHERE status='open' AND source_type='roll' AND due_global_day<=?) AS rolls_due,
             (SELECT COUNT(*) FROM pregnancies WHERE due_global_day<=? AND COALESCE(status,'') NOT IN
                 ('Delivered','Cancelled','Complete','Miscarriage','Stillbirth')) AS pregnancies_due,
             (SELECT COUNT(*) FROM events WHERE start_global_day<=? AND end_global_day>=?) AS active_events,
@@ -231,7 +232,7 @@ def _cached_today_counts(global_day,workspace_key,save_id,revision):
 
 def today_counts(global_day):
     return _cached_today_counts(global_day,*_query_revision(
-        tables=("rolls","pregnancies","events","illnesses")))
+        tables=("action_queue","rolls","pregnancies","events","illnesses")))
 
 def is_death_outcome(outcome):
     return bool(re.search(r"\b(death|dead|dies|died|killed|fatal)\b",str(outcome or ""),re.I))
@@ -390,6 +391,7 @@ def sync_auto_rolls(show_notice=False):
     con=connect()
     try:
         result=autorolls.sync_rolls(con,current_gd())
+        action_queue.sync(con,current_gd())
     finally:
         con.close()
     if show_notice:
@@ -522,10 +524,13 @@ def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-li
         illnesses.ensure_schema(con)
         cm.ensure_schema(con)
         event_library.ensure_event_library(con)
+        action_queue.ensure_schema(con)
+        action_queue.seed_event_configs(con)
         autorolls.repair_generated_roll_dice(con)
         # Reconcile imported/approved event rolls once for each save on every
         # deployment, even when the player has not advanced the calendar yet.
         autorolls.sync_rolls(con,int(float(setting(con,"current_global_day",1))))
+        action_queue.sync(con,int(float(setting(con,"current_global_day",1))))
     finally:
         con.close()
     return True
@@ -567,6 +572,7 @@ with st.sidebar:
         "🌿 Planting Reference":"Planting Reference",
         "💾 Saves":"Saves",
         "⚙️ Rules & Data":"Rules & Data",
+        "✅ Rules Health":"Rules Health",
     }
     nav_labels["Challenge Management"]="Challenge Management"
     nav=st.radio("Navigate",list(nav_labels),label_visibility="collapsed")
@@ -644,13 +650,18 @@ if page=="Today":
     ],default=None,label_visibility="collapsed",key="today_task_view") or "Rolls due"
 
     if "Rolls due" in task_view:
+        roll_kind=st.selectbox("Roll filter",["All","Event","Aging","Pregnancy"],key="today_roll_kind")
         roll_page_size=50
-        roll_pages=max(1,(rolls_count+roll_page_size-1)//roll_page_size)
+        filtered_count=rolls_count if roll_kind=="All" else scalar("SELECT COUNT(*) FROM action_queue WHERE status='open' AND source_type='roll' AND due_global_day<=? AND category=?",(g,roll_kind))
+        roll_pages=max(1,(filtered_count+roll_page_size-1)//roll_page_size)
         roll_page=st.number_input("Roll page",1,roll_pages,1,key="today_roll_page") if roll_pages>1 else 1
-        due=q("""SELECT roll_id,due_global_day,sim_id,sim_name,source_id,roll_type,die,bad_results,actual_roll,outcome
-                 FROM rolls WHERE COALESCE(completed,0)=0 AND due_global_day<=?
-                 ORDER BY due_global_day,sim_name,roll_type LIMIT ? OFFSET ?""",
-              (g,roll_page_size,(int(roll_page)-1)*roll_page_size))
+        due=q("""SELECT r.roll_id,r.due_global_day,r.sim_id,r.sim_name,r.source_id,r.roll_type,r.die,
+                        r.bad_results,r.actual_roll,r.outcome
+                 FROM action_queue a JOIN rolls r ON r.roll_id=a.roll_id
+                 WHERE a.status='open' AND a.source_type='roll' AND a.due_global_day<=?
+                   AND (?='All' OR a.category=?)
+                 ORDER BY a.priority,a.due_global_day,r.sim_name,r.roll_type LIMIT ? OFFSET ?""",
+              (g,roll_kind,roll_kind,roll_page_size,(int(roll_page)-1)*roll_page_size))
         due=add_applicable_events(due)
         if roll_pages>1:
             st.caption(f"Showing page {int(roll_page)} of {roll_pages}. Every due roll remains available without loading the entire backlog at once.")
@@ -682,6 +693,8 @@ if page=="Today":
                 con=connect()
                 con.execute("UPDATE rolls SET actual_roll=?,outcome=?,completed=1,completed_global_day=? WHERE roll_id=?",
                             (actual or None,outcome or None,g,rid))
+                con.execute("UPDATE action_queue SET status='complete',updated_at=? WHERE roll_id=?",
+                            (str(pd.Timestamp.utcnow()),rid))
                 death_record=None
                 if rr.get("sim_id") and is_death_outcome(outcome):
                     death_record=random_death_for_roll(rr,actual)
@@ -2398,7 +2411,7 @@ elif page=="Events":
     page_header("Historical Events","Manage challenge-wide events and record their effects.")
     g=current_gd()
     st.caption(f"Current Global Day: {g} — {gd_caption(g)}")
-    event_section=st.segmented_control("Event section",["Browse","Add","Record effect","Edit"],default=None,label_visibility="collapsed",key="event_section") or "Browse"
+    event_section=st.segmented_control("Event section",["Browse","Batch resolve","Structured rules","Add","Record effect","Edit"],default=None,label_visibility="collapsed",key="event_section") or "Browse"
 
     if event_section=="Browse":
         edf=q("SELECT * FROM events ORDER BY start_global_day,event_name")
@@ -2419,6 +2432,76 @@ elif page=="Events":
             friendly_cards(results,lambda r:r.get("outcome") or r.get("cause_effect") or "Recorded effect",
                 meta=(lambda r:("When",f"Global Day {r.get('global_day')}"),"sim_id","household_id"),body="notes",badge=lambda r:"Death" if r.get("death") else (r.get("status") or "Recorded"),limit=20)
         st.caption("Choose Edit to inspect or change an event's technical fields.")
+
+    if event_section=="Batch resolve":
+        batches=q("""SELECT e.event_id,e.event_name,e.start_global_day,e.end_global_day,COUNT(*) AS open_rolls
+                     FROM events e JOIN rolls r ON r.source_id=e.event_id
+                     WHERE COALESCE(r.completed,0)=0 AND COALESCE(r.roll_type,'') LIKE 'Event%'
+                     GROUP BY e.event_id,e.event_name,e.start_global_day,e.end_global_day
+                     ORDER BY e.start_global_day,e.event_name""")
+        if batches.empty:
+            st.success("No open event-roll batches.")
+        else:
+            batch_labels=[f"{r.event_id} — {r.event_name} ({int(r.open_rolls)} remaining)" for _,r in batches.iterrows()]
+            batch_choice=st.selectbox("Event batch",batch_labels,key="event_batch_choice")
+            batch_event=batch_choice.split(" — ",1)[0]
+            batch=q("""SELECT roll_id,sim_id,sim_name,die,bad_results,actual_roll,outcome
+                       FROM rolls WHERE source_id=? AND COALESCE(completed,0)=0 ORDER BY sim_name,roll_id""",(batch_event,))
+            event_row=q("SELECT * FROM events WHERE event_id=?",(batch_event,)).iloc[0]
+            st.caption(f"GD {event_row.start_global_day}–{event_row.end_global_day} · progress {int(event_row.get('start_global_day') is not None)} · {len(batch)} remaining")
+            for index,row in batch.iterrows():
+                if f"batch_{row.roll_id}" in st.session_state:
+                    batch.at[index,"actual_roll"]=str(st.session_state[f"batch_{row.roll_id}"])
+                    batch.at[index,"outcome"]=roll_outcomes.automatic_outcome(batch.at[index,"actual_roll"],row.bad_results,"Event",row.die)
+            edited=st.data_editor(batch,hide_index=True,use_container_width=True,
+                                  disabled=["roll_id","sim_id","sim_name","die","bad_results"],key=f"event_batch_editor_{batch_event}")
+            a,b=st.columns(2)
+            roll_all=a.button("Roll all remaining dice",key=f"event_batch_roll_all_{batch_event}",use_container_width=True)
+            save_batch=b.button("Save completed entries",type="primary",key=f"event_batch_save_{batch_event}",use_container_width=True)
+            if roll_all:
+                for _,row in batch.iterrows():
+                    spec=dice_roller.parse(row.die)
+                    if spec:
+                        result=dice_roller.roll(row.die)
+                        st.session_state[f"batch_{row.roll_id}"]=result["total"]
+                st.rerun()
+            if save_batch:
+                con=connect(); completed_count=0
+                for _,row in edited.iterrows():
+                    actual=str(row.get("actual_roll") or "").strip()
+                    if not actual: continue
+                    outcome=roll_outcomes.automatic_outcome(actual,row.get("bad_results"),"Event",row.get("die")) or str(row.get("outcome") or "")
+                    con.execute("UPDATE rolls SET actual_roll=?,outcome=?,completed=1,completed_global_day=? WHERE roll_id=?",
+                                (actual,outcome,g,row.roll_id)); completed_count+=1
+                    if row.get("sim_id") and is_death_outcome(outcome):
+                        death=random_death_for_roll({**row.to_dict(),"source_id":batch_event,"due_global_day":int(event_row.start_global_day)},actual)
+                        con.execute("UPDATE sims SET death_global_day=COALESCE(death_global_day,?),death_date=COALESCE(death_date,?),cause_of_death=COALESCE(cause_of_death,?) WHERE sim_id=?",(*death,row.sim_id))
+                con.commit(); action_queue.sync(con,g); con.close(); st.success(f"Completed {completed_count} event rolls."); st.rerun()
+
+    if event_section=="Structured rules":
+        events_with_rules=q("""SELECT e.event_id,e.event_name,e.affected_class,e.notes,c.die,c.bad_results,c.eligibility,
+                               c.min_age_days,c.max_age_days,c.eligible_sexes,c.frequency,c.followup_die,c.followup_results
+                               FROM events e LEFT JOIN event_rule_configs c ON c.event_id=e.event_id
+                               WHERE COALESCE(e.roll_required,0)=1 ORDER BY e.start_global_day,e.event_name""")
+        labels=[f"{r.event_id} — {r.event_name}" for _,r in events_with_rules.iterrows()]
+        if not labels: st.info("No roll-required events.")
+        else:
+            choice=st.selectbox("Event rule",labels,key="structured_event_choice"); eid=choice.split(" — ",1)[0]
+            row=events_with_rules[events_with_rules.event_id==eid].iloc[0]
+            parsed=autorolls.event_roll_spec(row.notes)
+            a,b=st.columns(2)
+            die=a.text_input("Primary die",value=row.die or parsed["die"],key=f"structured_die_{eid}")
+            frequency=b.selectbox("Frequency",["once","daily","yearly","per household"],index=["once","daily","yearly","per household"].index(row.frequency) if row.frequency in ["once","daily","yearly","per household"] else 0,key=f"structured_frequency_{eid}")
+            bad=st.text_area("Numbered outcomes",value=row.bad_results or parsed["bad_results"] or "",key=f"structured_bad_{eid}")
+            eligibility=st.text_input("Eligibility summary",value=row.eligibility or row.affected_class or "All Sims",key=f"structured_eligibility_{eid}")
+            a,b,c=st.columns(3)
+            min_age=a.number_input("Minimum age (days)",0,10000,int(row.min_age_days or 0),key=f"structured_min_{eid}")
+            max_age=b.number_input("Maximum age (days)",0,10000,int(row.max_age_days or 10000),key=f"structured_max_{eid}")
+            sexes=c.text_input("Eligible sexes",value=row.eligible_sexes or "All",key=f"structured_sexes_{eid}")
+            a,b=st.columns(2); follow_die=a.text_input("Follow-up die",value=row.followup_die or "",key=f"structured_follow_die_{eid}"); follow_results=b.text_input("Follow-up outcomes",value=row.followup_results or "",key=f"structured_follow_results_{eid}")
+            st.caption(f"Original library rule: {row.notes or 'No prose rule provided.'}")
+            if st.button("Save structured event rule",type="primary",key=f"structured_save_{eid}"):
+                con=connect(); action_queue.save_event_config(con,eid,die,bad,eligibility,min_age,max_age,sexes,frequency,follow_die,follow_results); con.close(); st.success("Structured rule saved and open rolls updated.")
 
     if event_section=="Add":
         a,b,c=st.columns(3)
@@ -3343,6 +3426,24 @@ elif page=="Saves":
                     st.error(f"Could not import that save: {e}")
 
     st.info("Share saves using `.decades-save` files. They contain the complete selected world—including Sims, portraits, relationships, households, pregnancies, rolls, events, statistics source data, calendar state, and that save's roll-table configuration. Your original `decades.db` remains a legacy safety copy.")
+
+elif page=="Rules Health":
+    page_header("Rules Health","Validate schedules and rule coverage, and run expensive maintenance only when you choose.")
+    con=connect(); action_queue.ensure_schema(con); checks=action_queue.validation(con,current_gd()); con.close()
+    health=pd.DataFrame(checks)
+    errors=sum(row["count"] for row in checks if row["severity"]=="Error")
+    warnings=sum(row["count"] for row in checks if row["severity"]=="Warning")
+    a,b,c=st.columns(3); a.metric("Errors",errors); b.metric("Warnings",warnings); c.metric("Checks",len(checks))
+    friendly_cards(health,"check",meta=("severity","count"),body="detail",badge="severity")
+    section_heading("Maintenance","Ordinary page loads use incremental queue updates; full repairs run only here")
+    a,b=st.columns(2)
+    if a.button("Run lightweight reconciliation",type="primary",use_container_width=True,key="maintenance_incremental"):
+        con=connect(); summary=action_queue.run_maintenance(con,current_gd(),full=False); con.close(); st.success(summary); st.rerun()
+    full_confirm=b.checkbox("Enable full maintenance",False,key="maintenance_full_confirm")
+    if b.button("Run full rules repair",disabled=not full_confirm,use_container_width=True,key="maintenance_full"):
+        con=connect(); summary=action_queue.run_maintenance(con,current_gd(),full=True); con.close(); st.success(summary); st.rerun()
+    jobs=q("SELECT job_key,status,last_run_at,summary FROM maintenance_jobs ORDER BY last_run_at DESC")
+    if not jobs.empty: friendly_cards(jobs,"job_key",meta=("status","last_run_at"),body="summary")
 
 elif page=="Rules & Data":
     page_header("Rules & Data","Configure era roll tables, inspect imported rules, and back up your database.")

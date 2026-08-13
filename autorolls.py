@@ -259,11 +259,13 @@ def preview(con, current_gd, due_from=None, due_to=None, event_due_from=None):
             "era_name":spec["era_name"],"rule_status":spec["rule_status"]
         })
 
-    events=con.execute("""SELECT event_id,event_name,start_global_day,scope,location,affected_class,notes
-                          FROM events
-                          WHERE COALESCE(active,1)=1 AND COALESCE(roll_required,0)=1
-                            AND start_global_day IS NOT NULL""").fetchall()
-    event_sims=con.execute("""SELECT s.sim_id,s.title,s.first_name,s.last_name,s.suffix,
+    events=con.execute("""SELECT e.event_id,e.event_name,e.start_global_day,e.scope,e.location,e.affected_class,e.notes,
+                                 c.die AS configured_die,c.bad_results AS configured_bad_results,
+                                 c.min_age_days,c.max_age_days,c.eligible_sexes
+                          FROM events e LEFT JOIN event_rule_configs c ON c.event_id=e.event_id
+                          WHERE COALESCE(e.active,1)=1 AND COALESCE(e.roll_required,0)=1
+                            AND e.start_global_day IS NOT NULL""").fetchall()
+    event_sims=con.execute("""SELECT s.sim_id,s.title,s.first_name,s.last_name,s.suffix,s.sex,
                                      s.birth_global_day,s.death_global_day,s.birthplace,s.species_occult,
                                      h.location AS household_location,h.social_class
                               FROM sims s LEFT JOIN households h ON h.household_id=s.current_household_id
@@ -283,16 +285,24 @@ def preview(con, current_gd, due_from=None, due_to=None, event_due_from=None):
                 continue
             if sim["death_global_day"] is not None and int(sim["death_global_day"])<due:
                 continue
+            age=due-int(sim["birth_global_day"]) if sim["birth_global_day"] is not None else None
+            if age is not None and event["min_age_days"] is not None and age<int(event["min_age_days"]): continue
+            if age is not None and event["max_age_days"] is not None and age>int(event["max_age_days"]): continue
+            eligible_sexes=(event["eligible_sexes"] or "All").strip().casefold()
+            if eligible_sexes not in ("","all","any") and (sim["sex"] or "").strip().casefold() not in eligible_sexes:
+                continue
             if not global_scope and not _applies(event["location"],[sim["household_location"],sim["birthplace"]]):
                 continue
             if not global_scope and not _applies(event["affected_class"],[sim["social_class"]]):
                 continue
             event_spec=event_roll_spec(event["notes"])
+            event_die=event["configured_die"] or event_spec["die"]
+            event_bad=event["configured_bad_results"] or event_spec["bad_results"]
             obligations.append({
                 "source_id":event["event_id"],"sim_id":sim["sim_id"],"sim_name":_name(sim),
                 "species":(sim["species_occult"] or "Human").strip() or "Human",
                 "due_global_day":due,"roll_type":f"Event — {event['event_name'] or event['event_id']}",
-                "die":event_spec["die"],"bad_results":event_spec["bad_results"],
+                "die":event_die,"bad_results":event_bad,
                 "quantity":1,"kind":"Event",
                 "year":start_year+(due-1)//days_per_year,"era_id":None,
                 "era_name":None,"rule_status":"Event-defined",
