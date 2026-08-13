@@ -237,6 +237,17 @@ def today_counts(global_day):
 def is_death_outcome(outcome):
     return bool(re.search(r"\b(death|dead|dies|died|killed|fatal)\b",str(outcome or ""),re.I))
 
+def should_record_roll_death(roll,outcome):
+    """Event rolls require an explicit fatal result; failed aging rolls are fatal."""
+    if is_death_outcome(outcome):
+        return True
+    roll_type=str(roll.get("roll_type") or "").strip().casefold()
+    if roll_type.startswith("event") or roll_type.startswith("maternal"):
+        return False
+    aging_types={str(rule["roll_type"]).strip().casefold() for rule in autorolls.DEFAULT_AGING_RULES}
+    aging_types.update({"being born","newborn","infant","toddler","child","preteen","teen","young adult","adult","elder death-age rng"})
+    return roll_type in aging_types and str(outcome or "").strip().casefold() in {"bad result","dies","death"}
+
 def random_death_for_roll(roll,actual_roll=None):
     """Choose a stable valid date inside an event span or the roll's quarter."""
     due=int(roll.get("due_global_day") or current_gd())
@@ -696,7 +707,7 @@ if page=="Today":
                 con.execute("UPDATE action_queue SET status='complete',updated_at=? WHERE roll_id=?",
                             (str(pd.Timestamp.utcnow()),rid))
                 death_record=None
-                if rr.get("sim_id") and is_death_outcome(outcome):
+                if rr.get("sim_id") and should_record_roll_death(rr,outcome):
                     death_record=random_death_for_roll(rr,actual)
                     con.execute("""UPDATE sims SET death_global_day=COALESCE(death_global_day,?),
                                    death_date=COALESCE(death_date,?),cause_of_death=COALESCE(cause_of_death,?)
@@ -1710,7 +1721,14 @@ elif page=="Rolls":
                 con.execute("""UPDATE rolls SET actual_roll=?,outcome=?,completed=?,completed_global_day=?,notes=?
                                WHERE roll_id=?""",
                             (actual or None,outcome or None,1 if completed else 0,completed_day if completed else None,notes or None,rid))
-                con.commit(); con.close(); st.success(f"Saved {rid}")
+                death_record=None
+                if completed and row.get("sim_id") and should_record_roll_death(row,outcome):
+                    death_record=random_death_for_roll(row,actual)
+                    con.execute("""UPDATE sims SET death_global_day=COALESCE(death_global_day,?),
+                                   death_date=COALESCE(death_date,?),cause_of_death=COALESCE(cause_of_death,?)
+                                   WHERE sim_id=?""",(*death_record,row.get("sim_id")))
+                con.commit(); con.close()
+                st.success(f"Saved {rid}."+(f" Death recorded as {death_record[1]} (GD {death_record[0]})." if death_record else ""))
 
     if roll_section=="Add roll":
         opts=sim_options()
