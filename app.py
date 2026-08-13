@@ -35,6 +35,17 @@ import event_library
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
+
+# Railway currently runs a Streamlit release from before segmented_control.
+# Keep the focused, one-section-at-a-time pages while presenting a compatible
+# horizontal selector on older releases.
+if not hasattr(st,"segmented_control"):
+    def _segmented_control_compat(label,options,default=None,**kwargs):
+        choices=list(options)
+        index=choices.index(default) if default in choices else 0
+        return st.radio(label,choices,index=index,horizontal=True,**kwargs)
+    st.segmented_control=_segmented_control_compat
+
 if not storage.configured():
     neon_ui.render_connection_setup(st)
     st.stop()
