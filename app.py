@@ -212,6 +212,27 @@ def cached_relationship_photo(relationship_id):
 def cached_upcoming_rolls(global_day,horizon):
     return _cached_upcoming_rolls(global_day,horizon,*_query_revision(tables=("rolls","sims","pregnancies","events","households","rules","roll_rule_eras","roll_rule_values","settings")))
 
+@st.cache_data(ttl=30,show_spinner=False)
+def _cached_today_counts(global_day,workspace_key,save_id,revision):
+    con=connect()
+    try:
+        row=con.execute("""SELECT
+            (SELECT COUNT(*) FROM rolls WHERE COALESCE(completed,0)=0 AND due_global_day<=?) AS rolls_due,
+            (SELECT COUNT(*) FROM pregnancies WHERE due_global_day<=? AND COALESCE(status,'') NOT IN
+                ('Delivered','Cancelled','Complete','Miscarriage','Stillbirth')) AS pregnancies_due,
+            (SELECT COUNT(*) FROM events WHERE start_global_day<=? AND end_global_day>=?) AS active_events,
+            (SELECT COUNT(*) FROM illnesses WHERE onset_global_day<=?
+                AND COALESCE(status,'Active') IN ('Active','Improving','Worsening','Chronic')
+                AND (end_global_day IS NULL OR end_global_day>=?)) AS active_illnesses""",
+            (global_day,global_day,global_day,global_day,global_day,global_day)).fetchone()
+        return tuple(int(value or 0) for value in row)
+    finally:
+        con.close()
+
+def today_counts(global_day):
+    return _cached_today_counts(global_day,*_query_revision(
+        tables=("rolls","pregnancies","events","illnesses")))
+
 def _event_applies(value,candidates,universal=("all","global","any","everywhere","everyone","all countries","all classes")):
     target="" if value is None or pd.isna(value) else str(value).strip().casefold()
     if not target or target in universal:
@@ -549,8 +570,10 @@ if page=="Today":
             st.success("Time advanced and the automatic roll schedule was refreshed.")
             st.rerun()
 
-    # Current household/heir are useful but secondary.
-    with st.expander("Current household & heir"):
+    # Collapsed expanders still execute on every Streamlit rerun, so keep this
+    # secondary editor out of the hot path until it is requested.
+    edit_focus=st.checkbox("Edit current household & heir",False,key="today_edit_focus")
+    if edit_focus:
         cdb=connect(); heir=setting(cdb,'current_heir_id','SIM-0181'); hh=setting(cdb,'main_household_id','HH-0035'); cdb.close()
         opts=sim_options(); hhs=q("SELECT household_id,household_name FROM households ORDER BY household_name,household_id")
         a,b=st.columns(2)
@@ -565,40 +588,33 @@ if page=="Today":
             if st.button("Save household",use_container_width=True):
                 cdb=connect(); set_setting(cdb,'main_household_id',sid(nvhh)); cdb.close(); st.success("Household saved.")
 
-    due=q("""SELECT roll_id,due_global_day,sim_id,sim_name,roll_type,die,bad_results,actual_roll,outcome
-             FROM rolls WHERE COALESCE(completed,0)=0 AND due_global_day<=?
-             ORDER BY due_global_day,sim_name,roll_type""",(g,))
-    due=add_applicable_events(due)
-    preg=q("""SELECT pregnancy_id,mother_id,mother_name,father_name,conception_global_day,due_global_day,
-                     babies_expected,status,outcome
-              FROM pregnancies WHERE due_global_day<=?
-                AND COALESCE(status,'') NOT IN ('Delivered','Cancelled','Complete','Miscarriage','Stillbirth')
-              ORDER BY due_global_day,mother_name""",(g,))
-    active=q("""SELECT event_id,event_name,scope,location,roll_required,affected_class
-                FROM events WHERE start_global_day<=? AND end_global_day>=?
-                ORDER BY event_name""",(g,g))
-    sick=q("""SELECT illness_id,sim_id,sim_name,illness_name,onset_global_day,status,severity,contagious,treatment
-              FROM illnesses WHERE onset_global_day<=?
-                AND COALESCE(status,'Active') IN ('Active','Improving','Worsening','Chronic')
-                AND (end_global_day IS NULL OR end_global_day>=?)
-              ORDER BY CASE severity WHEN 'Critical' THEN 1 WHEN 'Severe' THEN 2 WHEN 'Moderate' THEN 3 ELSE 4 END,
-                       onset_global_day,sim_name""",(g,g))
+    rolls_count,preg_count,event_count,sick_count=today_counts(g)
 
     section_heading("What needs you now","Choose a category and complete one task at a time")
     a,b,c,d=st.columns(4)
-    a.metric("Rolls due",len(due))
-    b.metric("Pregnancies due",len(preg))
-    c.metric("Active historical events",len(active))
-    d.metric("Active illnesses",len(sick))
+    a.metric("Rolls due",rolls_count)
+    b.metric("Pregnancies due",preg_count)
+    c.metric("Active historical events",event_count)
+    d.metric("Active illnesses",sick_count)
 
     task_view=st.segmented_control("Today task",[
-        f"🎲 Rolls due ({len(due)})",
-        f"🤰 Pregnancies due ({len(preg)})",
-        f"📜 Active events ({len(active)})",
-        f"🩺 Illnesses ({len(sick)})"
+        f"🎲 Rolls due ({rolls_count})",
+        f"🤰 Pregnancies due ({preg_count})",
+        f"📜 Active events ({event_count})",
+        f"🩺 Illnesses ({sick_count})"
     ],default=None,label_visibility="collapsed",key="today_task_view") or "Rolls due"
 
     if "Rolls due" in task_view:
+        roll_page_size=50
+        roll_pages=max(1,(rolls_count+roll_page_size-1)//roll_page_size)
+        roll_page=st.number_input("Roll page",1,roll_pages,1,key="today_roll_page") if roll_pages>1 else 1
+        due=q("""SELECT roll_id,due_global_day,sim_id,sim_name,roll_type,die,bad_results,actual_roll,outcome
+                 FROM rolls WHERE COALESCE(completed,0)=0 AND due_global_day<=?
+                 ORDER BY due_global_day,sim_name,roll_type LIMIT ? OFFSET ?""",
+              (g,roll_page_size,(int(roll_page)-1)*roll_page_size))
+        due=add_applicable_events(due)
+        if roll_pages>1:
+            st.caption(f"Showing page {int(roll_page)} of {roll_pages}. Every due roll remains available without loading the entire backlog at once.")
         if due.empty:
             st.success("No rolls are due right now.")
         else:
@@ -632,6 +648,10 @@ if page=="Today":
                 st.rerun()
 
     if "Pregnancies due" in task_view:
+        preg=q("""SELECT pregnancy_id,mother_id,mother_name,father_name,conception_global_day,due_global_day,
+                         babies_expected,status,outcome FROM pregnancies WHERE due_global_day<=?
+                  AND COALESCE(status,'') NOT IN ('Delivered','Cancelled','Complete','Miscarriage','Stillbirth')
+                  ORDER BY due_global_day,mother_name""",(g,))
         if preg.empty:
             st.success("No pregnancies are due right now.")
         else:
@@ -659,6 +679,8 @@ if page=="Today":
                 st.rerun()
 
     if "Active events" in task_view:
+        active=q("""SELECT event_id,event_name,scope,location,roll_required,affected_class FROM events
+                    WHERE start_global_day<=? AND end_global_day>=? ORDER BY event_name""",(g,g))
         if active.empty:
             st.success("No historical events are active today.")
         else:
@@ -666,6 +688,12 @@ if page=="Today":
                 badge=lambda r:"Roll required" if r.get("roll_required") else "In effect")
 
     if "Illnesses" in task_view:
+        sick=q("""SELECT illness_id,sim_id,sim_name,illness_name,onset_global_day,status,severity,contagious,treatment
+                  FROM illnesses WHERE onset_global_day<=?
+                    AND COALESCE(status,'Active') IN ('Active','Improving','Worsening','Chronic')
+                    AND (end_global_day IS NULL OR end_global_day>=?)
+                  ORDER BY CASE severity WHEN 'Critical' THEN 1 WHEN 'Severe' THEN 2 WHEN 'Moderate' THEN 3 ELSE 4 END,
+                           onset_global_day,sim_name""",(g,g))
         if sick.empty:
             st.success("No active illnesses today.")
         else:
