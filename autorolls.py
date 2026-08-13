@@ -27,7 +27,7 @@ def default_die(roll_type):
 def event_roll_spec(notes):
     """Extract the first actionable die and result clauses from library prose."""
     text=str(notes or "").replace(";",". ")
-    match=re.search(r"\broll\s+(?:an?\s+)?(?:the\s+)?d(\d+)\b",text,re.I)
+    match=re.search(r"(?:\broll\s+(?:an?\s+)?(?:the\s+)?)?\bd(\d+)\b",text,re.I)
     if not match:
         return {"die":"d20","bad_results":None}
     die=f"d{match.group(1)}"
