@@ -236,7 +236,7 @@ def today_counts(global_day):
 def is_death_outcome(outcome):
     return bool(re.search(r"\b(death|dead|dies|died|killed|fatal)\b",str(outcome or ""),re.I))
 
-def random_death_for_roll(roll):
+def random_death_for_roll(roll,actual_roll=None):
     """Choose a stable valid date inside an event span or the roll's quarter."""
     due=int(roll.get("due_global_day") or current_gd())
     low=high=due
@@ -252,6 +252,13 @@ def random_death_for_roll(roll):
         low=int(event[0] if event[0] is not None else due)
         high=int(event[1] if event[1] is not None else low)
         cause=str(event[2] or cause)
+    else:
+        con=connect()
+        try:
+            low,high=autorolls.aging_death_window(
+                con,roll.get("sim_id"),due,roll.get("roll_type"),actual_roll)
+        finally:
+            con.close()
     low,high=sorted((low,high))
     if sim and sim[0] is not None:
         low=max(low,int(sim[0]))
@@ -677,7 +684,7 @@ if page=="Today":
                             (actual or None,outcome or None,g,rid))
                 death_record=None
                 if rr.get("sim_id") and is_death_outcome(outcome):
-                    death_record=random_death_for_roll(rr)
+                    death_record=random_death_for_roll(rr,actual)
                     con.execute("""UPDATE sims SET death_global_day=COALESCE(death_global_day,?),
                                    death_date=COALESCE(death_date,?),cause_of_death=COALESCE(cause_of_death,?)
                                    WHERE sim_id=?""",(*death_record,rr.get("sim_id")))

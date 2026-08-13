@@ -76,6 +76,29 @@ def _aging_rules(con):
         aging.append({"label":r["row_label"],"offset":offset,"roll_type":rtype,"qty":qty})
     return aging or [dict(rule) for rule in DEFAULT_AGING_RULES]
 
+def aging_death_window(con,sim_id,due_global_day,roll_type,actual_roll=None):
+    """Return the full stage interval for a failed lifecycle/aging roll."""
+    sim=con.execute("SELECT birth_global_day FROM sims WHERE sim_id=?",(sim_id,)).fetchone()
+    if not sim or sim[0] is None:
+        return int(due_global_day),int(due_global_day)
+    birth=int(sim[0]); due=int(due_global_day)
+    rules=sorted(_aging_rules(con),key=lambda rule:int(rule["offset"]))
+    index=next((i for i,rule in enumerate(rules)
+                if birth+int(rule["offset"])==due or str(rule["roll_type"]).casefold()==str(roll_type or "").casefold()),None)
+    if index is None:
+        return due,due
+    if index+1<len(rules):
+        return due,max(due,birth+int(rules[index+1]["offset"])-1)
+    # The final death-age RNG names an age in historical years. Randomize the
+    # exact date anywhere inside that rolled year.
+    values=re.findall(r"-?\d+",str(actual_roll or ""))
+    if values:
+        age=max(0,int(values[-1])); days_per_year=_setting_int(con,"days_per_year",4)
+        start=birth+age*days_per_year
+        return start,start+days_per_year-1
+    days_per_year=_setting_int(con,"days_per_year",4)
+    return due,due+days_per_year-1
+
 def _maternal_stage(age_days):
     if age_days is None: return None
     if age_days < 52: return "Preteen"
