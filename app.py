@@ -230,7 +230,7 @@ def add_applicable_events(rows):
     days=pd.to_numeric(frame["due_global_day"],errors="coerce").dropna()
     if days.empty:
         return rows
-    events=q("""SELECT event_id,event_name,start_global_day,end_global_day,location,affected_class
+    events=q("""SELECT event_id,event_name,start_global_day,end_global_day,scope,location,affected_class
                 FROM events WHERE COALESCE(active,1)=1 AND start_global_day<=? AND end_global_day>=?
                 ORDER BY start_global_day,event_name""",(int(days.max()),int(days.min())))
     sim_ids=[str(value) for value in frame.get("sim_id",pd.Series(dtype=str)).dropna().unique() if str(value).strip()]
@@ -250,12 +250,14 @@ def add_applicable_events(rows):
         for _,event in events.iterrows():
             if not (int(event.start_global_day)<=due<=int(event.end_global_day)):
                 continue
+            scope="" if event.get("scope") is None or pd.isna(event.get("scope")) else str(event.get("scope")).strip().casefold()
+            global_scope=scope.startswith("global") or scope in {"world","worldwide","all","everyone","all sims"}
             if sim is not None:
-                if not _event_applies(event.location,[sim.get("household_location"),sim.get("birthplace")]):
+                if not global_scope and not _event_applies(event.location,[sim.get("household_location"),sim.get("birthplace")]):
                     continue
-                if not _event_applies(event.affected_class,[sim.get("social_class")]):
+                if not global_scope and not _event_applies(event.affected_class,[sim.get("social_class")]):
                     continue
-            elif not (_event_applies(event.location,[]) and _event_applies(event.affected_class,[])):
+            elif not global_scope and not (_event_applies(event.location,[]) and _event_applies(event.affected_class,[])):
                 continue
             event_name=event.get("event_name")
             names.append(str(event.get("event_id") if event_name is None or pd.isna(event_name) or not str(event_name).strip() else event_name))
@@ -460,6 +462,9 @@ def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-li
         cm.ensure_schema(con)
         event_library.ensure_event_library(con)
         autorolls.repair_generated_roll_dice(con)
+        # Reconcile imported/approved event rolls once for each save on every
+        # deployment, even when the player has not advanced the calendar yet.
+        autorolls.sync_rolls(con,int(float(setting(con,"current_global_day",1))))
     finally:
         con.close()
     return True

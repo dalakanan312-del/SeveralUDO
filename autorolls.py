@@ -146,7 +146,7 @@ def repair_generated_roll_dice(con):
         _DICE_REPAIRED_SCHEMAS.add(schema_key)
     return changed
 
-def preview(con, current_gd, due_from=None, due_to=None):
+def preview(con, current_gd, due_from=None, due_to=None, event_due_from=None):
     """Return all rule-driven obligations through/future based on known Sims/pregnancies."""
     era_rules.ensure_schema(con)
     aging=_aging_rules(con)
@@ -156,8 +156,11 @@ def preview(con, current_gd, due_from=None, due_to=None):
     obligations=[]
     due_from=tracking if due_from is None else int(due_from)
     due_to=None if due_to is None else int(due_to)
+    event_due_from=due_from if event_due_from is None else int(event_due_from)
     def in_window(due):
         return int(due)>=due_from and (due_to is None or int(due)<=due_to)
+    def event_in_window(due):
+        return int(due)>=event_due_from and (due_to is None or int(due)<=due_to)
 
     sims=con.execute("""SELECT sim_id,title,first_name,last_name,suffix,birth_global_day,death_global_day,species_occult
                         FROM sims WHERE birth_global_day IS NOT NULL AND birth_global_day<=?
@@ -208,7 +211,7 @@ def preview(con, current_gd, due_from=None, due_to=None):
             "era_name":spec["era_name"],"rule_status":spec["rule_status"]
         })
 
-    events=con.execute("""SELECT event_id,event_name,start_global_day,location,affected_class,notes
+    events=con.execute("""SELECT event_id,event_name,start_global_day,scope,location,affected_class,notes
                           FROM events
                           WHERE COALESCE(active,1)=1 AND COALESCE(roll_required,0)=1
                             AND start_global_day IS NOT NULL""").fetchall()
@@ -217,19 +220,23 @@ def preview(con, current_gd, due_from=None, due_to=None):
                                      h.location AS household_location,h.social_class
                               FROM sims s LEFT JOIN households h ON h.household_id=s.current_household_id
                               WHERE s.death_global_day IS NULL OR s.death_global_day>=?""",
-                           (due_from,)).fetchall()
+                           (event_due_from,)).fetchall()
     for event in events:
         due=int(event["start_global_day"])
-        if not in_window(due):
+        if not event_in_window(due):
             continue
+        scope=(event["scope"] or "").strip().casefold()
+        global_scope=scope.startswith("global") or scope in {
+            "world","worldwide","all","everyone","all sims"
+        }
         for sim in event_sims:
             if sim["birth_global_day"] is not None and int(sim["birth_global_day"])>due:
                 continue
             if sim["death_global_day"] is not None and int(sim["death_global_day"])<due:
                 continue
-            if not _applies(event["location"],[sim["household_location"],sim["birthplace"]]):
+            if not global_scope and not _applies(event["location"],[sim["household_location"],sim["birthplace"]]):
                 continue
-            if not _applies(event["affected_class"],[sim["social_class"]]):
+            if not global_scope and not _applies(event["affected_class"],[sim["social_class"]]):
                 continue
             obligations.append({
                 "source_id":event["event_id"],"sim_id":sim["sim_id"],"sim_name":_name(sim),
@@ -252,7 +259,10 @@ def sync_rolls(con,current_gd):
         WHERE COALESCE(r.completed,0)=0 AND r.notes LIKE ?
           AND s.death_global_day IS NOT NULL AND r.due_global_day>s.death_global_day
     )""",("Auto-generated%",)).rowcount
-    obligations=preview(con,current_gd,due_from=due_from,due_to=current_gd)
+    # Reconcile all reached event dates every time. Event libraries can be
+    # imported or enabled after the calendar has already passed their date;
+    # lifecycle rolls still use the lightweight incremental window.
+    obligations=preview(con,current_gd,due_from=due_from,due_to=current_gd,event_due_from=1)
     existing_counts=Counter()
     max_roll_number=0
     for row in con.execute("SELECT source_id,sim_id,due_global_day,roll_type,roll_id FROM rolls"):
