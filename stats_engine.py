@@ -57,6 +57,32 @@ def format_year_span_days(days):
     if days is None or pd.isna(days): return None
     return float(days)/4.0
 
+
+def attach_graph_helpers(ctx):
+    """Attach runtime graph callables that must not be stored in Streamlit's cache."""
+    children=ctx["children"]
+    parents=ctx["parents"]
+
+    def descendants(sid):
+        seen=set(); dq=deque(children.get(sid,[]))
+        while dq:
+            node=dq.popleft()
+            if node in seen: continue
+            seen.add(node); dq.extend(children.get(node,[]))
+        return seen
+
+    def ancestors(sid):
+        seen=set(); dq=deque(parents.get(sid,[]))
+        while dq:
+            node=dq.popleft()
+            if node in seen: continue
+            seen.add(node); dq.extend(parents.get(node,[]))
+        return seen
+
+    ctx["descendants"]=descendants
+    ctx["ancestors"]=ancestors
+    return ctx
+
 def prepare(con, current_gd:int, start_year:int=1200):
     sims=pd.read_sql_query("SELECT * FROM sims",con)
     households=pd.read_sql_query("SELECT * FROM households",con)
@@ -106,27 +132,11 @@ def prepare(con, current_gd:int, start_year:int=1200):
                 children[p].append(r.sim_id)
                 parents[r.sim_id].append(p)
 
-    def descendants(sid):
-        seen=set(); dq=deque(children.get(sid,[]))
-        while dq:
-            n=dq.popleft()
-            if n in seen: continue
-            seen.add(n); dq.extend(children.get(n,[]))
-        return seen
-
-    def ancestors(sid):
-        seen=set(); dq=deque(parents.get(sid,[]))
-        while dq:
-            n=dq.popleft()
-            if n in seen: continue
-            seen.add(n); dq.extend(parents.get(n,[]))
-        return seen
-
-    return {
+    return attach_graph_helpers({
         "sims":sims,"households":households,"pregnancies":pregnancies,"relationships":relationships,
         "events":events,"event_results":event_results,"rolls":rolls,"children":children,"parents":parents,
-        "descendants":descendants,"ancestors":ancestors,"name":name,"current_gd":current_gd,"start_year":start_year
-    }
+        "name":name,"current_gd":current_gd,"start_year":start_year
+    })
 
 def population_yearly(ctx):
     sims=ctx["sims"]; start_year=ctx["start_year"]; current_gd=ctx["current_gd"]

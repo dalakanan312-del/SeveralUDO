@@ -204,6 +204,10 @@ def _cached_statistics(global_day,start_year,workspace_key,save_id,revision):
     ctx["_lineage"]=se.lineage_table(ctx)
     ctx["_relationship_bundle"]=se.relationship_stats(ctx)
     ctx["_household_stats"]=se.household_stats(ctx)
+    # Nested graph functions cannot be serialized by Streamlit's data cache.
+    # Their derived tables are cached above; recreate the helpers after load.
+    ctx.pop("descendants",None)
+    ctx.pop("ancestors",None)
     return ctx
 
 def cached_sim_photo(sim_id):
@@ -2711,6 +2715,7 @@ elif page=="Statistics":
     cg=current_gd()
     sy,_=calendar_settings()
     ctx=_cached_statistics(cg,sy,*_query_revision(tables=("sims","households","pregnancies","relationships","rolls","events","event_results","settings")))
+    se.attach_graph_helpers(ctx)
 
     sims=ctx["sims"]; living=sims[sims.living].copy(); deceased=sims[sims.death_global_day.notna()].copy()
     born_to_date=sims[sims.birth_global_day.notna() & (sims.birth_global_day<=cg)].copy()
