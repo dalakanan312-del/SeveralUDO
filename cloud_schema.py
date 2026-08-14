@@ -24,13 +24,14 @@ TABLE_DDLS = [
     "CREATE TABLE IF NOT EXISTS event_rule_configs(event_id TEXT PRIMARY KEY,die TEXT,bad_results TEXT,eligibility TEXT,min_age_days INTEGER,max_age_days INTEGER,eligible_sexes TEXT,frequency TEXT,followup_die TEXT,followup_results TEXT,effects_json TEXT,updated_at TEXT)",
     "CREATE TABLE IF NOT EXISTS action_queue(action_id TEXT PRIMARY KEY,source_type TEXT NOT NULL,source_id TEXT,roll_id TEXT UNIQUE,sim_id TEXT,household_id TEXT,due_global_day INTEGER,title TEXT,category TEXT,status TEXT NOT NULL,priority INTEGER NOT NULL DEFAULT 100,payload_json TEXT,created_at TEXT,updated_at TEXT)",
     "CREATE TABLE IF NOT EXISTS maintenance_jobs(job_key TEXT PRIMARY KEY,status TEXT,last_run_at TEXT,summary TEXT)",
+    "CREATE TABLE IF NOT EXISTS death_cause_pools(death_group TEXT NOT NULL,cause TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(death_group,cause))",
 ]
 
 TABLES = [
     "settings", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "rules", "calendar_rows",
     "raw_import_rows", "sim_photos", "relationship_photos", "roll_rule_eras", "roll_rule_values", "notebook_entries", "illnesses",
-    "era_guidance", "military_campaigns", "military_service", "event_rule_configs", "action_queue", "maintenance_jobs",
+    "era_guidance", "military_campaigns", "military_service", "event_rule_configs", "action_queue", "maintenance_jobs", "death_cause_pools",
 ]
 
 

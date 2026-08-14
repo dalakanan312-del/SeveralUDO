@@ -33,6 +33,7 @@ import illnesses
 import challenge_management as cm
 import event_library
 import action_queue
+import death_causes
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -259,16 +260,21 @@ def random_death_for_roll(roll,actual_roll=None):
         sim=con.execute("SELECT birth_global_day,death_global_day FROM sims WHERE sim_id=?",(roll.get("sim_id"),)).fetchone()
     finally:
         con.close()
-    cause=str(roll.get("roll_type") or "Roll outcome")
+    cause=None
     if event:
         low=int(event[0] if event[0] is not None else due)
         high=int(event[1] if event[1] is not None else low)
-        cause=str(event[2] or cause)
+        con=connect()
+        try:
+            cause=str(event[2]) if death_causes.enabled(con) and event[2] else None
+        finally:
+            con.close()
     else:
         con=connect()
         try:
             low,high=autorolls.aging_death_window(
                 con,roll.get("sim_id"),due,roll.get("roll_type"),actual_roll)
+            cause=death_causes.choose(con,roll.get("roll_type"))
         finally:
             con.close()
     low,high=sorted((low,high))
@@ -536,6 +542,7 @@ def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-li
         cm.ensure_schema(con)
         event_library.ensure_event_library(con)
         action_queue.ensure_schema(con)
+        death_causes.ensure_schema(con)
         action_queue.seed_event_configs(con)
         autorolls.repair_generated_roll_dice(con)
         # Reconcile imported/approved event rolls once for each save on every
@@ -3499,7 +3506,7 @@ elif page=="Rules & Data":
         st.caption("The tracker works immediately with its built-in defaults. Change these values only when your challenge rules call for it.")
         con=connect()
         setting_rows=dict(con.execute(
-            "SELECT key,value FROM settings WHERE key IN ('start_year','days_per_year','current_global_day')"
+            "SELECT key,value FROM settings WHERE key IN ('start_year','days_per_year','current_global_day','automatic_death_causes')"
         ).fetchall())
         pregnancy_row=con.execute(
             "SELECT source_row,col_b FROM rules WHERE row_label=? ORDER BY source_row DESC LIMIT 1",
@@ -3511,6 +3518,7 @@ elif page=="Rules & Data":
         saved_gd=int(float(setting_rows.get("current_global_day",1)))
         saved_year,saved_day=global_day_to_year_day(saved_gd,saved_start,saved_dpy)
         saved_pregnancy=max(1,int(float(pregnancy_row["col_b"] if pregnancy_row and pregnancy_row["col_b"] else 3)))
+        saved_auto_causes=str(setting_rows.get("automatic_death_causes","1"))!="0"
         chronicle_note(
             "The steward's calendar",
             "Recommended defaults are Start Year 1200, four challenge days per year, and a three-day pregnancy. All may be amended without editing raw tables.",
@@ -3525,6 +3533,8 @@ elif page=="Rules & Data":
             current_day_input=b.number_input(
                 "Current challenge day within year",1,int(days_year),min(saved_day,int(days_year)),step=1
             )
+            automatic_causes=st.checkbox("Automatically choose causes of death",value=saved_auto_causes,
+                                         help="Event deaths use the event name. Aging deaths draw from the editable life-stage lists below.")
             st.warning("Changing the calendar start or days per year changes how every existing Global Day is displayed; records themselves are not deleted.")
             save_challenge_settings=st.form_submit_button("Save challenge settings",type="primary",use_container_width=True)
         if save_challenge_settings:
@@ -3532,7 +3542,8 @@ elif page=="Rules & Data":
             con=connect()
             try:
                 for key,value in (
-                    ("start_year",calendar_start),("days_per_year",days_year),("current_global_day",new_gd)
+                    ("start_year",calendar_start),("days_per_year",days_year),("current_global_day",new_gd),
+                    ("automatic_death_causes",1 if automatic_causes else 0)
                 ):
                     con.execute(
                         "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -3553,6 +3564,20 @@ elif page=="Rules & Data":
                 con.close(); _cached_clock_settings.clear(); sync_auto_rolls(show_notice=False)
                 st.success("Challenge settings saved and the automatic roll schedule refreshed.")
                 st.rerun()
+
+        st.subheader("Cause-of-death lists")
+        st.caption("A fatal aging roll randomly chooses an active cause from its life-stage group. Add, edit, disable, or remove entries here.")
+        cause_rows=q("SELECT death_group,cause,active FROM death_cause_pools ORDER BY death_group,cause")
+        edited_causes=st.data_editor(cause_rows,num_rows="dynamic",hide_index=True,use_container_width=True,
+                                     column_config={"active":st.column_config.CheckboxColumn("Active")},key="death_cause_editor")
+        if st.button("Save cause-of-death lists",type="primary",key="death_cause_save"):
+            con=connect(); con.execute("DELETE FROM death_cause_pools")
+            for _,cause_row in edited_causes.iterrows():
+                group=str(cause_row.get("death_group") or "").strip(); cause_text=str(cause_row.get("cause") or "").strip()
+                if group and cause_text:
+                    con.execute("INSERT INTO death_cause_pools(death_group,cause,active) VALUES(?,?,?) ON CONFLICT DO NOTHING",
+                                (group,cause_text,1 if bool(cause_row.get("active")) else 0))
+            con.commit(); con.close(); st.success("Cause-of-death lists saved."); st.rerun()
 
         with st.expander("Try the complete carved dice set",expanded=False):
             st.caption("A practice tray only; these casts are not written to the roll ledger.")
