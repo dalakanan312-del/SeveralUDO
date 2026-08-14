@@ -226,15 +226,16 @@ def _cached_today_counts(global_day,workspace_key,save_id,revision):
             (SELECT COUNT(*) FROM events WHERE start_global_day<=? AND end_global_day>=?) AS active_events,
             (SELECT COUNT(*) FROM illnesses WHERE onset_global_day<=?
                 AND COALESCE(status,'Active') IN ('Active','Improving','Worsening','Chronic')
-                AND (end_global_day IS NULL OR end_global_day>=?)) AS active_illnesses""",
-            (global_day,global_day,global_day,global_day,global_day,global_day)).fetchone()
+                AND (end_global_day IS NULL OR end_global_day>=?)) AS active_illnesses,
+            (SELECT COUNT(*) FROM sims WHERE death_global_day=?) AS deaths_today""",
+            (global_day,global_day,global_day,global_day,global_day,global_day,global_day)).fetchone()
         return tuple(int(value or 0) for value in row)
     finally:
         con.close()
 
 def today_counts(global_day):
     return _cached_today_counts(global_day,*_query_revision(
-        tables=("action_queue","rolls","pregnancies","events","illnesses")))
+        tables=("action_queue","rolls","pregnancies","events","illnesses","sims")))
 
 def is_death_outcome(outcome):
     return bool(re.search(r"\b(death|dead|dies|died|killed|fatal)\b",str(outcome or ""),re.I))
@@ -502,6 +503,12 @@ def historical_dice_tray(required_die,key_prefix,result_key,bad_results=None):
         choices=[]
     else:
         choices=[spec["sides"]] if spec else list(dice_roller.SUPPORTED_DICE)
+    # Range-based RNG rolls render their own control above and intentionally
+    # have no dice buttons. Streamlit rejects st.columns(0).
+    if not choices:
+        if st.session_state.get(f"{key_prefix}_detail"):
+            st.success(f"Cast result â€” {st.session_state[f'{key_prefix}_detail']}")
+        return
     columns=st.columns(len(choices))
     for column,sides in zip(columns,choices):
         roll_notation=notation if spec else f"d{sides}"
@@ -653,20 +660,22 @@ if page=="Today":
             if st.button("Save household",use_container_width=True):
                 cdb=connect(); set_setting(cdb,'main_household_id',sid(nvhh)); cdb.close(); st.success("Household saved.")
 
-    rolls_count,preg_count,event_count,sick_count=today_counts(g)
+    rolls_count,preg_count,event_count,sick_count,death_count=today_counts(g)
 
     section_heading("What needs you now","Choose a category and complete one task at a time")
-    a,b,c,d=st.columns(4)
+    a,b,c,d,e=st.columns(5)
     a.metric("Rolls due",rolls_count)
     b.metric("Pregnancies due",preg_count)
     c.metric("Active historical events",event_count)
     d.metric("Active illnesses",sick_count)
+    e.metric("Deaths today",death_count)
 
     task_view=st.segmented_control("Today task",[
         f"🎲 Rolls due ({rolls_count})",
         f"🤰 Pregnancies due ({preg_count})",
         f"📜 Active events ({event_count})",
-        f"🩺 Illnesses ({sick_count})"
+        f"🩺 Illnesses ({sick_count})",
+        f"⚰ Deaths ({death_count})"
     ],default=None,label_visibility="collapsed",key="today_task_view") or "Rolls due"
 
     if "Rolls due" in task_view:
@@ -804,6 +813,40 @@ if page=="Today":
                             (iid,sid(ill_sim),ill_sim.split(" — ",1)[1],ill_name.strip(),g,status,severity,
                              1 if contagious else 0,treatment.strip() or None,notes.strip() or None))
                 con.commit(); con.close(); st.success(f"Recorded {ill_name.strip()} for {ill_sim.split(' — ',1)[1]}."); st.rerun()
+
+    if "Deaths" in task_view:
+        deaths=q("""SELECT sim_id,title,first_name,last_name,suffix,death_global_day,death_date,
+                            death_place,cause_of_death
+                     FROM sims WHERE death_global_day=?
+                     ORDER BY last_name,first_name,sim_id""",(g,))
+        if deaths.empty:
+            st.success("No Sims are scheduled to die today.")
+        else:
+            deaths=deaths.copy()
+            deaths["Sim"]=(deaths[["title","first_name","last_name","suffix"]].fillna("")
+                           .agg(" ".join,axis=1).str.replace(r"\s+"," ",regex=True).str.strip())
+            friendly_cards(
+                deaths,lambda r:r.get("Sim") or r.get("sim_id"),
+                meta=(lambda r:("When",r.get("death_date") or gd_caption(r.get("death_global_day"))),
+                      lambda r:("Global Day",r.get("death_global_day")),"death_place"),
+                body=lambda r:r.get("cause_of_death") or "Cause of death not yet recorded",
+                badge=lambda r:"Kill off today",
+            )
+
+        upcoming_deaths=q("""SELECT sim_id,title,first_name,last_name,suffix,death_global_day,death_date,cause_of_death
+                              FROM sims WHERE death_global_day>?
+                              ORDER BY death_global_day,last_name,first_name LIMIT 10""",(g,))
+        if not upcoming_deaths.empty:
+            section_heading("Coming deaths","The next ten scheduled deaths")
+            upcoming_deaths=upcoming_deaths.copy()
+            upcoming_deaths["Sim"]=(upcoming_deaths[["title","first_name","last_name","suffix"]].fillna("")
+                                    .agg(" ".join,axis=1).str.replace(r"\s+"," ",regex=True).str.strip())
+            friendly_cards(
+                upcoming_deaths,lambda r:r.get("Sim") or r.get("sim_id"),
+                meta=(lambda r:("When",r.get("death_date") or gd_caption(r.get("death_global_day"))),
+                      lambda r:("Global Day",r.get("death_global_day"))),
+                body="cause_of_death",badge=lambda r:"Upcoming",limit=10,
+            )
 
     section_heading("Coming up","A calm preview—nothing is added to the log until it becomes due")
     a,b=st.columns([1,3])
