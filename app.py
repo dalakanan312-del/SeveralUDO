@@ -34,6 +34,7 @@ import challenge_management as cm
 import event_library
 import action_queue
 import death_causes
+import cloud_schema
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -543,6 +544,7 @@ def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-li
         event_library.ensure_event_library(con)
         action_queue.ensure_schema(con)
         death_causes.ensure_schema(con)
+        cloud_schema.ensure_performance_indexes(con)
         action_queue.seed_event_configs(con)
         autorolls.repair_generated_roll_dice(con)
         # Reconcile imported/approved event rolls once for each save on every
@@ -1170,10 +1172,6 @@ elif page=="Sims":
             con=connect()
             frow=con.execute("SELECT * FROM sims WHERE sim_id=?",(focal,)).fetchone()
             photo=profiles.get_photo(con,focal)
-            children=con.execute("""SELECT sim_id,TRIM(COALESCE(title,'')||' '||COALESCE(first_name,'')||' '||COALESCE(last_name,'')),
-                                           mother_id,father_id,birth_global_day
-                                    FROM sims WHERE mother_id=? OR father_id=? ORDER BY birth_global_day""",(focal,focal)).fetchall()
-            rels=profiles.sim_relationships(con,focal)
             con.close()
             a,b=st.columns([1,4])
             with a:
@@ -1182,8 +1180,8 @@ elif page=="Sims":
             with b:
                 st.subheader(profiles.display_name(frow) or focal)
                 st.caption(focal)
-            parents_tab,children_tab,partners_tab=st.tabs(["Parents","Children","Partners / marriages"])
-            with parents_tab:
+            family_view=st.segmented_control("Family section",["Parents","Children","Partners / marriages"],default="Parents",label_visibility="collapsed",key=f"family_view_{focal}")
+            if family_view=="Parents":
                 opts=sim_options()
                 a,b=st.columns(2)
                 mom=a.selectbox("Mother",opts,index=opt_index(opts,frow["mother_id"]),key=f"family_mom_{focal}")
@@ -1191,7 +1189,12 @@ elif page=="Sims":
                 if st.button("Save parents",type="primary",use_container_width=True,key=f"family_parent_save_{focal}"):
                     con=connect(); con.execute("UPDATE sims SET mother_id=?,father_id=? WHERE sim_id=?",(sid(mom),sid(dad),focal)); con.commit(); con.close()
                     st.success("Parents updated."); st.rerun()
-            with children_tab:
+            if family_view=="Children":
+                con=connect()
+                children=con.execute("""SELECT sim_id,TRIM(COALESCE(title,'')||' '||COALESCE(first_name,'')||' '||COALESCE(last_name,'')),
+                                               mother_id,father_id,birth_global_day
+                                        FROM sims WHERE mother_id=? OR father_id=? ORDER BY birth_global_day""",(focal,focal)).fetchall()
+                con.close()
                 if children:
                     crows=[{"Sim ID":r[0],"Child":r[1],"Mother ID":r[2],"Father ID":r[3],"Birth GD":r[4]} for r in children]
                     friendly_cards(crows,"Child",meta=(lambda r:("Born",f"GD {r.get('Birth GD')}"),"Mother ID","Father ID"),badge="Sim ID",limit=40)
@@ -1208,7 +1211,8 @@ elif page=="Sims":
                     con.execute(f"UPDATE sims SET {col}=? WHERE sim_id=?",(focal,sid(child)))
                     con.commit(); con.close()
                     st.success("Child link added."); st.rerun()
-            with partners_tab:
+            if family_view=="Partners / marriages":
+                con=connect(); rels=profiles.sim_relationships(con,focal); con.close()
                 if rels:
                     rows=[]
                     for r in rels:
@@ -1708,11 +1712,15 @@ elif page=="Rolls":
         a,b=st.columns([1,1])
         only_open=a.checkbox("Only incomplete",True,key="roll_browse_open")
         cutoff=b.number_input("Due through Global Day",min_value=-10000,max_value=20000,value=current_gd(),key="roll_browse_cutoff")
-        sql="SELECT * FROM rolls WHERE due_global_day<=?"+(" AND COALESCE(completed,0)=0" if only_open else "")+" ORDER BY due_global_day,sim_name,roll_type"
-        rdf=q(sql,(cutoff,))
-        overdue=int((rdf.due_global_day<current_gd()).sum()) if not rdf.empty and "due_global_day" in rdf else 0
+        where="due_global_day<=?"+(" AND COALESCE(completed,0)=0" if only_open else "")
+        total=scalar(f"SELECT COUNT(*) FROM rolls WHERE {where}",(cutoff,))
+        overdue=scalar(f"SELECT COUNT(*) FROM rolls WHERE {where} AND due_global_day<?",(cutoff,current_gd()))
+        due_today=scalar(f"SELECT COUNT(*) FROM rolls WHERE {where} AND due_global_day=?",(cutoff,current_gd()))
+        pages=max(1,(int(total)+79)//80)
+        page_no=st.number_input("Chronicle page",1,pages,1,key="roll_chronicle_page") if pages>1 else 1
+        rdf=q(f"SELECT * FROM rolls WHERE {where} ORDER BY due_global_day,sim_name,roll_type LIMIT 80 OFFSET ?",(cutoff,(int(page_no)-1)*80))
         a,b,c=st.columns(3)
-        a.metric("Shown",len(rdf)); b.metric("Overdue",overdue); c.metric("Due today",int((rdf.due_global_day==current_gd()).sum()) if not rdf.empty else 0)
+        a.metric("Matching",total); b.metric("Overdue",overdue); c.metric("Due today",due_today)
         roll_sy,roll_dpy=calendar_settings()
         if not rdf.empty:
             rdf=rdf.copy()
@@ -1725,7 +1733,14 @@ elif page=="Rolls":
             badge=lambda r:"Complete" if r.get("completed") else "Open",limit=80)
 
     if roll_section=="Enter outcome":
-        rdf=q("SELECT * FROM rolls ORDER BY due_global_day DESC,roll_id")
+        roll_find=st.text_input("Find a roll",placeholder="Sim, roll type, or roll ID",key="roll_edit_search")
+        if roll_find.strip():
+            like=f"%{roll_find.strip()}%"
+            rdf=q("""SELECT * FROM rolls WHERE roll_id LIKE ? OR COALESCE(sim_name,'') LIKE ? OR COALESCE(roll_type,'') LIKE ?
+                     ORDER BY due_global_day DESC,roll_id LIMIT 150""",(like,like,like))
+        else:
+            rdf=q("SELECT * FROM rolls ORDER BY COALESCE(completed,0),due_global_day DESC,roll_id LIMIT 150")
+            st.caption("Showing the 150 most relevant rolls. Search to reach older records instantly.")
         if rdf.empty:
             st.info("No rolls recorded.")
         else:
@@ -1831,21 +1846,21 @@ elif page=="Relationships":
     relationship_section=st.segmented_control("Relationship section",["Browse","Add","Edit or end"],default=None,label_visibility="collapsed",key="relationship_section") or "Browse"
 
     if relationship_section=="Browse":
-        rdf=q("SELECT * FROM relationships ORDER BY start_global_day DESC,relationship_id")
-        active=int((rdf.status.fillna("").str.lower()=="active").sum()) if not rdf.empty else 0
+        relationship_total=scalar("SELECT COUNT(*) FROM relationships")
+        active=scalar("SELECT COUNT(*) FROM relationships WHERE LOWER(COALESCE(status,''))='active'")
         a,b,c=st.columns(3)
-        a.metric("Relationships",len(rdf)); b.metric("Active",active); c.metric("Ended",len(rdf)-active)
+        a.metric("Relationships",relationship_total); b.metric("Active",active); c.metric("Ended",relationship_total-active)
 
         search=st.text_input("Find a person",key="rel_browse_search",placeholder="Type either partner's name…")
-        view=rdf.copy()
-        if search and not view.empty:
-            s=search.lower()
-            view=view[
-                view.partner1_name.fillna("").str.lower().str.contains(s,regex=False)
-                |view.partner2_name.fillna("").str.lower().str.contains(s,regex=False)
-                |view.partner1_id.fillna("").str.lower().str.contains(s,regex=False)
-                |view.partner2_id.fillna("").str.lower().str.contains(s,regex=False)
-            ]
+        if search.strip():
+            like=f"%{search.strip().lower()}%"
+            view=q("""SELECT * FROM relationships WHERE LOWER(COALESCE(partner1_name,'')) LIKE ?
+                       OR LOWER(COALESCE(partner2_name,'')) LIKE ? OR LOWER(COALESCE(partner1_id,'')) LIKE ?
+                       OR LOWER(COALESCE(partner2_id,'')) LIKE ? ORDER BY start_global_day DESC,relationship_id LIMIT 100""",
+                   (like,like,like,like))
+        else:
+            view=q("SELECT * FROM relationships ORDER BY start_global_day DESC,relationship_id LIMIT 100")
+            if relationship_total>100: st.caption("Showing the 100 most recent relationships. Search by either person to reach older records.")
         friendly_cards(view,lambda r:f"{r.get('partner1_name') or r.get('partner1_id')} + {r.get('partner2_name') or r.get('partner2_id')}",
             meta=("type",lambda r:("Started",f"Global Day {r.get('start_global_day')}"),"location",lambda r:("Children",r.get("children_count"))),
             body="notes",badge=lambda r:r.get("status") or "Unknown",empty="No relationships match this search.")
@@ -2060,10 +2075,12 @@ elif page=="Households":
     household_section=st.segmented_control("Household section",["Browse","Create","Move Sim","Edit"],default=None,label_visibility="collapsed",key="household_section") or "Browse"
 
     if household_section=="Browse":
-        hdf=q("SELECT * FROM households ORDER BY household_name,household_id")
+        household_total=scalar("SELECT COUNT(*) FROM households")
+        active_households=scalar("SELECT COUNT(*) FROM households WHERE COALESCE(active,0)=1")
+        hdf=q("SELECT * FROM households ORDER BY household_name,household_id LIMIT 150")
         a,b,c=st.columns(3)
-        a.metric("Households",len(hdf))
-        b.metric("Active",int(hdf.active.fillna(0).astype(bool).sum()) if not hdf.empty else 0)
+        a.metric("Households",household_total)
+        b.metric("Active",active_households)
         c.metric("Living members",scalar("SELECT COUNT(*) FROM sims WHERE death_global_day IS NULL AND current_household_id IS NOT NULL"))
         friendly_cards(hdf,lambda r:r.get("household_name") or r.get("household_id"),
             meta=("location",lambda r:("Class",r.get("social_class")),lambda r:("Living",r.get("living_members")),lambda r:("Associated",r.get("total_assigned_members"))),
@@ -2208,13 +2225,12 @@ elif page=="Households":
 elif page=="Challenge Management":
     page_header("Challenge Management","Era guidance, succession, marriage matches, and wartime service in one place.")
     g=current_gd(); year,_=challenge_year_day(g)
-    sims=q("SELECT * FROM sims ORDER BY birth_global_day,sim_id")
-    households=q("SELECT * FROM households ORDER BY household_name,household_id")
     challenge_section=st.segmented_control("Challenge section",["Era rules","Succession","Matchmaking","War & conscription"],default=None,label_visibility="collapsed",key="challenge_section") or "Era rules"
 
     if challenge_section=="Era rules":
         st.subheader(f"Rules in force — Year {year}")
-        locations=["All"]+sorted({str(x) for x in households.location.dropna() if str(x).strip()})
+        location_rows=q("SELECT DISTINCT location FROM households WHERE location IS NOT NULL AND location<>'' ORDER BY location")
+        locations=["All"]+[str(x) for x in location_rows.location.tolist()]
         loc=st.selectbox("Challenge location",locations,key="era_location")
         rdf=q("SELECT * FROM era_guidance WHERE active=1 AND (start_year IS NULL OR start_year<=?) AND (end_year IS NULL OR end_year>=?) AND (location IS NULL OR location='' OR LOWER(location)='all' OR LOWER(location)=LOWER(?)) ORDER BY category,title",(year,year,loc))
         a,b,c=st.columns(3)
@@ -2263,6 +2279,7 @@ elif page=="Challenge Management":
                     con=connect(); con.execute("DELETE FROM era_guidance WHERE rule_id=?",(rid,)); con.commit(); con.close(); st.rerun()
 
     if challenge_section=="Succession":
+        sims=q("SELECT * FROM sims ORDER BY birth_global_day,sim_id")
         st.subheader("Line of succession")
         con=connect()
         system=setting(con,"succession_system","Absolute primogeniture")
@@ -2285,6 +2302,7 @@ elif page=="Challenge Management":
         st.caption("Use a Sim's Succession Override field to mark them Heir/Priority or Exclude/Disinherit; the ranking updates automatically.")
 
     if challenge_section=="Matchmaking":
+        sims=q("SELECT * FROM sims ORDER BY birth_global_day,sim_id")
         st.subheader("Marriage eligibility & matchmaking")
         con=connect(); min_age=int(float(setting(con,"marriage_min_age_days",72))); con.close()
         new_min=st.number_input("Minimum marriage age (challenge days)",0,10000,min_age,key="match_min_age")
@@ -2321,6 +2339,8 @@ elif page=="Challenge Management":
                 con.execute("INSERT INTO relationships(relationship_id,partner1_id,partner2_id,partner1_name,partner2_name,type,start_global_day,status,legally_married,children_count,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(rel_id,fid,second_id,cm.sim_name(p1),cm.sim_name(p2),"Courtship",g,"Active",0,0,"Created by Matchmaking")); con.commit(); con.close(); st.success(f"Created {rel_id}."); st.rerun()
 
     if challenge_section=="War & conscription":
+        sims=q("SELECT * FROM sims ORDER BY birth_global_day,sim_id")
+        households=q("SELECT * FROM households ORDER BY household_name,household_id")
         st.subheader("War & conscription")
         campaigns=q("SELECT * FROM military_campaigns ORDER BY start_global_day DESC,campaign_id")
         services=q("SELECT * FROM military_service ORDER BY enlisted_global_day DESC,service_id")
@@ -2367,14 +2387,16 @@ elif page=="Challenge Management":
 elif page=="Illnesses":
     page_header("Illnesses","Track sickness, treatment, recovery, chronic conditions, and outcomes for every Sim.")
     g=current_gd()
-    idf=q("SELECT * FROM illnesses ORDER BY onset_global_day DESC,sim_name,illness_name")
-    active_mask=idf.status.fillna("Active").isin(illnesses.ACTIVE_STATUSES) if not idf.empty else pd.Series(dtype=bool)
+    illness_total=scalar("SELECT COUNT(*) FROM illnesses")
+    active_total=scalar("SELECT COUNT(*) FROM illnesses WHERE COALESCE(status,'Active') IN ('Active','Improving','Worsening','Chronic')")
+    contagious_total=scalar("SELECT COUNT(*) FROM illnesses WHERE COALESCE(status,'Active') IN ('Active','Improving','Worsening','Chronic') AND COALESCE(contagious,0)=1")
     a,b,c=st.columns(3)
-    a.metric("Recorded illnesses",len(idf)); b.metric("Currently active",int(active_mask.sum()) if not idf.empty else 0)
-    c.metric("Contagious and active",int((active_mask & (idf.contagious.fillna(0)==1)).sum()) if not idf.empty else 0)
+    a.metric("Recorded illnesses",illness_total); b.metric("Currently active",active_total)
+    c.metric("Contagious and active",contagious_total)
     illness_section=st.segmented_control("Illness section",["Register","Add","Update or resolve"],default=None,label_visibility="collapsed",key="illness_section") or "Register"
 
     if illness_section=="Register":
+        idf=q("SELECT * FROM illnesses ORDER BY onset_global_day DESC,sim_name,illness_name LIMIT 200")
         if idf.empty:
             st.info("No illnesses have been recorded in this save.")
         else:
@@ -2416,6 +2438,7 @@ elif page=="Illnesses":
                     con.commit(); con.close(); st.success(f"Added {iid}."); st.rerun()
 
     if illness_section=="Update or resolve":
+        idf=q("SELECT * FROM illnesses ORDER BY onset_global_day DESC,sim_name,illness_name LIMIT 250")
         if idf.empty:
             st.info("No illnesses to update.")
         else:
@@ -2462,19 +2485,25 @@ elif page=="Events":
     event_section=st.segmented_control("Event section",["Browse","Batch resolve","Structured rules","Add","Record effect","Edit"],default=None,label_visibility="collapsed",key="event_section") or "Browse"
 
     if event_section=="Browse":
-        edf=q("SELECT * FROM events ORDER BY start_global_day,event_name")
-        active_now=edf[(edf.start_global_day<=g)&(edf.end_global_day>=g)] if not edf.empty else edf
+        event_total=scalar("SELECT COUNT(*) FROM events")
+        active_total=scalar("SELECT COUNT(*) FROM events WHERE start_global_day<=? AND end_global_day>=?",(g,g))
         a,b,c=st.columns(3)
-        a.metric("Historical events",len(edf)); b.metric("Active today",len(active_now)); c.metric("Recorded effects",scalar("SELECT COUNT(*) FROM event_results"))
+        a.metric("Historical events",event_total); b.metric("Active today",active_total); c.metric("Recorded effects",scalar("SELECT COUNT(*) FROM event_results"))
         event_search=st.text_input("Find an event",placeholder="Search by event, place, or scope…",key="events_v3_search")
-        event_view=edf
-        if event_search and not edf.empty:
-            needle=event_search.casefold()
-            event_view=edf[edf.apply(lambda row:needle in f"{row.event_name or ''} {row.location or ''} {row.scope or ''}".casefold(),axis=1)]
+        event_where=""
+        event_params=()
+        if event_search.strip():
+            like=f"%{event_search.strip()}%"
+            event_where=" WHERE COALESCE(event_name,'') LIKE ? OR COALESCE(location,'') LIKE ? OR COALESCE(scope,'') LIKE ?"
+            event_params=(like,like,like)
+        event_matches=scalar(f"SELECT COUNT(*) FROM events{event_where}",event_params)
+        event_pages=max(1,(int(event_matches)+39)//40)
+        event_page=st.number_input("Event page",1,event_pages,1,key="event_browse_page") if event_pages>1 else 1
+        event_view=q(f"SELECT * FROM events{event_where} ORDER BY start_global_day,event_name LIMIT 40 OFFSET ?",event_params+((int(event_page)-1)*40,))
         friendly_cards(event_view,lambda r:r.get("event_name") or r.get("event_id"),
             meta=(lambda r:("When",f"GD {r.get('start_global_day')}–{r.get('end_global_day')}"),"scope","location",lambda r:("Affected",r.get("affected_class"))),
             body="notes",badge=lambda r:"Roll required" if r.get("roll_required") else ("Active" if r.get("active") else "Disabled"),limit=40)
-        results=q("SELECT * FROM event_results ORDER BY global_day DESC,result_id")
+        results=q("SELECT * FROM event_results ORDER BY global_day DESC,result_id LIMIT 20")
         if not results.empty:
             section_heading("Recorded effects")
             friendly_cards(results,lambda r:r.get("outcome") or r.get("cause_effect") or "Recorded effect",
@@ -3499,9 +3528,12 @@ elif page=="Rules & Data":
     era_rules.ensure_schema(c)
     c.close()
 
-    tab_settings,tab_rules,tab_tables,tab_data=st.tabs(["Challenge Settings","Imported Rules","Roll Tables","Data & Backup"])
+    rules_section=st.segmented_control(
+        "Rules section",["Challenge Settings","Imported Rules","Roll Tables","Data & Backup"],
+        default="Challenge Settings",label_visibility="collapsed",key="rules_data_section"
+    )
 
-    with tab_settings:
+    if rules_section=="Challenge Settings":
         st.subheader("Automatic challenge defaults")
         st.caption("The tracker works immediately with its built-in defaults. Change these values only when your challenge rules call for it.")
         con=connect()
@@ -3583,12 +3615,12 @@ elif page=="Rules & Data":
             st.caption("A practice tray only; these casts are not written to the roll ledger.")
             historical_dice_tray(None,"rules_dice_practice","rules_dice_practice_result")
 
-    with tab_rules:
+    if rules_section=="Imported Rules":
         st.subheader("Imported challenge rules")
         st.dataframe(q("SELECT section,row_label,col_b,col_c,col_d,col_e FROM rules ORDER BY source_row"),
                      use_container_width=True,hide_index=True,height=520)
 
-    with tab_tables:
+    if rules_section=="Roll Tables":
         st.subheader("Era-aware roll tables")
         st.caption("Create as many year ranges as your challenge needs. The automatic scheduler chooses the active table whose species and year range match the roll.")
 
@@ -3701,7 +3733,7 @@ elif page=="Rules & Data":
                     st.dataframe(bad[["due_global_day","year","species","roll_type","sim_id","sim_name","rule_status"]].drop_duplicates(),
                                  use_container_width=True,hide_index=True,height=300)
 
-    with tab_data:
+    if rules_section=="Data & Backup":
         st.subheader("Migration inventory")
         counts={t:scalar(f"SELECT COUNT(*) FROM {t}") for t in ['sims','households','pregnancies','rolls','relationships','events','event_results','raw_import_rows']}
         st.json(counts)

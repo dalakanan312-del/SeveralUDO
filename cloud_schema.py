@@ -87,3 +87,27 @@ def create_save_schema(connection, schema_name):
             "ON CONFLICT(key) DO UPDATE SET value='1'"
         )
     connection.commit()
+
+
+def ensure_performance_indexes(connection):
+    """Add read-path indexes to both new and already-existing save schemas."""
+    statements = (
+        "CREATE INDEX IF NOT EXISTS rolls_due_completed_idx ON rolls(due_global_day,completed)",
+        "CREATE INDEX IF NOT EXISTS rolls_obligation_idx ON rolls(source_id,sim_id,due_global_day,roll_type)",
+        "CREATE INDEX IF NOT EXISTS rolls_recent_idx ON rolls(due_global_day DESC,roll_id)",
+        "CREATE INDEX IF NOT EXISTS sims_birth_death_idx ON sims(birth_global_day,death_global_day)",
+        "CREATE INDEX IF NOT EXISTS sims_household_idx ON sims(current_household_id)",
+        "CREATE INDEX IF NOT EXISTS sims_parents_idx ON sims(mother_id,father_id)",
+        "CREATE INDEX IF NOT EXISTS pregnancies_due_idx ON pregnancies(due_global_day,status)",
+        "CREATE INDEX IF NOT EXISTS events_start_active_idx ON events(start_global_day,active,roll_required)",
+        "CREATE INDEX IF NOT EXISTS events_recent_idx ON events(start_global_day DESC,event_id)",
+        "CREATE INDEX IF NOT EXISTS event_results_recent_idx ON event_results(global_day DESC,result_id)",
+        "CREATE INDEX IF NOT EXISTS relationships_partner1_idx ON relationships(partner1_id,start_global_day DESC)",
+        "CREATE INDEX IF NOT EXISTS relationships_partner2_idx ON relationships(partner2_id,start_global_day DESC)",
+        "CREATE INDEX IF NOT EXISTS households_name_idx ON households(household_name,household_id)",
+        "CREATE INDEX IF NOT EXISTS illnesses_recent_idx ON illnesses(onset_global_day DESC,illness_id)",
+        "CREATE INDEX IF NOT EXISTS illnesses_status_idx ON illnesses(status,onset_global_day DESC)",
+    )
+    for statement in statements:
+        connection.execute(statement)
+    connection.commit()
