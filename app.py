@@ -1298,9 +1298,11 @@ elif page=="Sims":
 elif page=="Family Tree":
     page_header("Family Tree","Explore ancestors, descendants, spouses, and nearby family with a cleaner generation-based layout.")
 
+    only_marked=st.checkbox("Only show Sims marked for the family tree",False,key="tree_only_marked",
+                            help="Off by default so a valid Sim or spouse cannot silently disappear.")
     sims=q("""SELECT sim_id,COALESCE(title,'') title,first_name,last_name,suffix,mother_id,father_id,
-                     birth_date,death_date,birth_global_day,death_global_day,generation
-              FROM sims WHERE COALESCE(include_in_tree,1)=1""")
+                     birth_date,death_date,birth_global_day,death_global_day,generation,include_in_tree
+              FROM sims WHERE (?=0 OR COALESCE(include_in_tree,1)=1)""",(1 if only_marked else 0,))
     if sims.empty:
         st.info("No Sims yet.")
     else:
@@ -1317,7 +1319,8 @@ elif page=="Family Tree":
         view_mode=b.selectbox("View",["Family","Ancestors","Descendants"],key="tree_view")
         depth=c.slider("Depth",1,8,4,key="tree_depth")
         show_spouses=d.checkbox("Spouses",True,key="tree_spouses")
-        show_portraits=st.checkbox("Show uploaded portraits",value=True,key="tree_portraits")
+        show_portraits=st.checkbox("Load portraits into the tree",value=False,key="tree_portraits",
+                                   help="Off by default for a faster, more stable tree. Turn it on when you want the portrait view.")
         show_dates=st.checkbox("Show birth/death dates in labels",value=False,key="tree_dates")
 
         # Parent-child graph.
@@ -1372,7 +1375,8 @@ elif page=="Family Tree":
         m3.metric("Recorded descendants",len(descendants))
         m4.metric("Visible partners",partner_count)
 
-        net=Network(height="760px",width="100%",directed=True,bgcolor="#ffffff",font_color="#222222")
+        net=Network(height="760px",width="100%",directed=True,bgcolor="#ffffff",font_color="#222222",
+                    cdn_resources="in_line")
         net.set_options("""
         {
           "layout": {
