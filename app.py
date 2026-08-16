@@ -601,6 +601,7 @@ with st.sidebar:
         "📊 Statistics":"Statistics",
         "📓 Notes":"Notes",
         "🌿 Planting Reference":"Planting Reference",
+        "📚 Challenge Guides":"Challenge Guides",
         "💾 Saves":"Saves",
         "⚙️ Rules & Data":"Rules & Data",
         "✅ Rules Health":"Rules Health",
@@ -2707,6 +2708,34 @@ elif page=="Events":
                             (name,start,end,scope,location,affected,1 if active else 0,notes or None,eid))
                 con.commit(); con.close(); st.success(f"Saved {eid}")
 
+
+elif page=="Challenge Guides":
+    page_header("Challenge Guides","Keep the two foundational Ultimate Decades rule sets beside your tracker.")
+    st.caption("These guides remain the property of their creators and are displayed from their public source pages.")
+    guide=st.segmented_control(
+        "Guide",
+        ["Several's Ultimate Decades Overhaul","MorbidGamer's Ultimate Decades Challenge"],
+        default="Several's Ultimate Decades Overhaul",
+        label_visibility="collapsed",
+        key="challenge_guide_tab",
+    )
+    if guide=="Several's Ultimate Decades Overhaul":
+        st.subheader("Several's Ultimate Decades Overhaul")
+        st.info("Google Sites blocks inline frames. These official sections open directly without making you search for the right page.")
+        a,b=st.columns(2)
+        a.link_button("Open starting rules","https://sites.google.com/view/severaludo/starting-rules",use_container_width=True)
+        b.link_button("Open basic start information","https://sites.google.com/view/severaludo/basic-start-info",use_container_width=True)
+        a,b=st.columns(2)
+        a.link_button("Browse events by era","https://sites.google.com/view/severaludo/events-by-era",use_container_width=True)
+        b.link_button("Browse events by location","https://sites.google.com/view/severaludo/events-by-location",use_container_width=True)
+        st.link_button("Open the complete SeveralUDO site","https://sites.google.com/view/severaludo/home",use_container_width=True)
+    else:
+        source_url="https://docs.google.com/document/d/1VKVvnDblpT2ngUs9JE9VcFyfhK9ZKXyqrYYaSun1pl4/preview"
+        edit_url="https://docs.google.com/document/d/1VKVvnDblpT2ngUs9JE9VcFyfhK9ZKXyqrYYaSun1pl4/edit"
+        st.subheader("MorbidGamer's Ultimate Decades Challenge")
+        st.link_button("Open MorbidGamer's rules in a new tab",edit_url,use_container_width=True)
+        st.components.v1.iframe(source_url,height=900,scrolling=True)
+    st.caption("If an embedded guide is blocked by its host or asks you to sign in, use the open-in-new-tab button above it.")
 
 elif page=="Statistics":
     page_header("Statistics","Detailed analytics, family records, demographic trends, and challenge records.")
