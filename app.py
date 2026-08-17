@@ -1328,8 +1328,9 @@ def render_today():
 
     section_heading("Coming up","A calm preview—nothing is added to the log until it becomes due")
     a,b=st.columns([2,3])
-    preview_window=a.segmented_control("Upcoming window",["Next day","Next 7 days","Later"],
-                                       default="Next 7 days",key="today_preview_window")
+    with a:
+        preview_window=st.segmented_control("Upcoming window",["Next day","Next 7 days","Later"],
+                                            default="Next 7 days",key="today_preview_window")
     lookahead={"Next day":1,"Next 7 days":7,"Later":80}[preview_window]
     with b:
         st.caption("Future rolls stay as previews until they actually become due, so your Roll Log stays clean.")
