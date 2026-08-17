@@ -13,7 +13,7 @@ import sims4.commands
 import sims4.log
 
 
-VERSION = "1.3.3"
+VERSION = "1.4.0"
 LOGGER = sims4.log.Logger("SeveralUDOClockSync", default_owner="SeveralUDO")
 _alarm_handle = None
 _last_reported_day = None
@@ -123,6 +123,59 @@ def _game_clock():
         return (int(hour.group(1)) if hour else 0, int(minute.group(1)) if minute else 0)
 
 
+def _value_or_call(owner, name, default=None):
+    """Read a Sims API property that may be exposed as a zero-argument method."""
+    try:
+        value = getattr(owner, name, default)
+        return value() if callable(value) else value
+    except Exception:
+        return default
+
+
+def _pregnancy_snapshot(sim_info):
+    tracker = getattr(sim_info, "pregnancy_tracker", None)
+    if tracker is None:
+        return {"is_pregnant": False}
+    is_pregnant = bool(_value_or_call(tracker, "is_pregnant", False))
+    if not is_pregnant:
+        return {"is_pregnant": False}
+
+    progress = _value_or_call(sim_info, "pregnancy_progress", None)
+    if progress is None:
+        progress = _value_or_call(tracker, "pregnancy_progress", None)
+    try:
+        progress = max(0.0, min(1.0, float(progress)))
+    except Exception:
+        progress = None
+
+    expected = _value_or_call(tracker, "offspring_count", None)
+    try:
+        expected = max(1, int(expected))
+    except Exception:
+        expected = None
+
+    partner = None
+    parents = _value_or_call(tracker, "get_parents", None)
+    try:
+        for parent in parents or ():
+            if str(getattr(parent, "sim_id", "")) != str(getattr(sim_info, "sim_id", "")):
+                partner = parent
+                break
+    except Exception:
+        partner = None
+    if partner is None:
+        partner = _value_or_call(tracker, "get_partner", None)
+
+    return {
+        "is_pregnant": True,
+        "pregnancy_progress": progress,
+        "pregnancy_offspring_count": expected,
+        "pregnancy_partner_game_sim_id": str(getattr(partner, "sim_id", "") or ""),
+        "pregnancy_partner_first_name": str(getattr(partner, "first_name", "") or ""),
+        "pregnancy_partner_last_name": str(getattr(partner, "last_name", "") or ""),
+    }
+
+
 def _household_snapshot():
     household = services.active_household()
     if household is None:
@@ -135,14 +188,16 @@ def _household_snapshot():
         if callable(baby_value):
             baby_value = baby_value()
         is_baby = bool(baby_value) or "baby" in age_text or "newborn" in age_text
-        members.append({
+        member = {
             "game_sim_id": str(getattr(sim_info, "sim_id", "")),
             "first_name": str(getattr(sim_info, "first_name", "") or ""),
             "last_name": str(getattr(sim_info, "last_name", "") or ""),
             "sex": str(getattr(sim_info, "gender", "") or ""),
             "age_stage": str(getattr(sim_info, "age", "") or "Unknown"),
             "is_baby": is_baby,
-        })
+        }
+        member.update(_pregnancy_snapshot(sim_info))
+        members.append(member)
     return name, members
 
 
@@ -177,8 +232,11 @@ def _poll_clock(_handle=None):
         game_day = _absolute_game_day()
         game_hour, game_minute = _game_clock()
         household_name, household_sims = _household_snapshot()
-        member_ids = tuple(sorted(item["game_sim_id"] for item in household_sims))
-        signature = (game_day, member_ids)
+        member_states = tuple(sorted(
+            (item["game_sim_id"], bool(item.get("is_pregnant")))
+            for item in household_sims
+        ))
+        signature = (game_day, member_states)
         if signature == _last_report_signature or _send_in_progress:
             return
         _last_reported_day = game_day
@@ -200,8 +258,8 @@ def _start_clock_sync(*_args, **_kwargs):
         if _alarm_handle is not None:
             alarms.cancel_alarm(_alarm_handle)
         _poll_clock()
-        # Poll every Sim minute. Network traffic occurs only when the day or
-        # household membership changes, so births are timestamped promptly.
+        # Poll every Sim minute. A report is queued only when the day,
+        # household membership, or a household pregnancy state changes.
         _alarm_handle = alarms.add_alarm(
             _start_clock_sync, clock.interval_in_sim_minutes(1),
             _poll_clock, repeating=True
@@ -232,9 +290,10 @@ def clock_status(_connection=None):
         game_day = _absolute_game_day()
         hour, minute = _game_clock()
         household_name, household_sims = _household_snapshot()
+        pregnancy_count = sum(1 for member in household_sims if member.get("is_pregnant"))
         out("Clock Sync v{} is ready.".format(VERSION))
-        out("Game day {}, time {:02d}:{:02d}; household '{}'; {} Sim(s).".format(
-            game_day, hour, minute, household_name or "None", len(household_sims)
+        out("Game day {}, time {:02d}:{:02d}; household '{}'; {} Sim(s); {} pregnancy/pregnancies.".format(
+            game_day, hour, minute, household_name or "None", len(household_sims), pregnancy_count
         ))
         return True
     except Exception as error:

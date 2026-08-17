@@ -861,6 +861,116 @@ if _candidate_row:
 
     _review_detected_sim()
 
+# Show one automatic-discovery dialog at a time. Pregnancy candidates remain
+# pending while a newly detected Sim/baby is being reviewed first.
+if not _candidate_row:
+    _pregnancy_candidate_con=connect()
+    try:
+        _pregnancy_candidate_row=_pregnancy_candidate_con.execute("""SELECT
+            detection_id,game_sim_id,first_name,last_name,partner_game_sim_id,
+            partner_first_name,partner_last_name,pregnancy_progress,game_day,game_hour,game_minute,
+            conception_global_day,due_global_day,babies_expected,household_name
+            FROM game_pregnancy_candidates WHERE status='pending'
+            ORDER BY detected_at,detection_id LIMIT 1""").fetchone()
+    finally:
+        _pregnancy_candidate_con.close()
+
+    if _pregnancy_candidate_row:
+        _pregnancy_candidate={key:_pregnancy_candidate_row[key] for key in (
+            "detection_id","game_sim_id","first_name","last_name","partner_game_sim_id",
+            "partner_first_name","partner_last_name","pregnancy_progress","game_day","game_hour",
+            "game_minute","conception_global_day","due_global_day","babies_expected","household_name"
+        )}
+
+        @st.dialog("New pregnancy detected!")
+        def _review_detected_pregnancy():
+            dialog_workspace=st.session_state.get("workspace_id")
+            if not dialog_workspace:
+                st.warning("This private workspace is locked. Reopen it to review the detected pregnancy.")
+                return
+            save_manager.set_workspace(dialog_workspace,st.session_state.get("active_save_id"))
+            pregnant_name=" ".join(filter(None,(
+                _pregnancy_candidate["first_name"],_pregnancy_candidate["last_name"]
+            ))) or "A household Sim"
+            st.write(f"The game reports that **{pregnant_name}** is pregnant. Add this pregnancy to the tracker?")
+            detected_time=(
+                f"{int(_pregnancy_candidate['game_hour']):02d}:{int(_pregnancy_candidate['game_minute']):02d}"
+                if _pregnancy_candidate["game_hour"] is not None and _pregnancy_candidate["game_minute"] is not None
+                else "time unavailable"
+            )
+            progress=_pregnancy_candidate["pregnancy_progress"]
+            progress_text=(f"{round(float(progress)*100)}% progress" if progress is not None else "progress unavailable")
+            st.caption(
+                f"Detected in {_pregnancy_candidate['household_name'] or 'the active household'} at "
+                f"game day {_pregnancy_candidate['game_day']} · {detected_time} · {progress_text}. "
+                "You can correct every estimate before adding it."
+            )
+            options=sim_options()
+
+            def _matching_sim_index(first_name,last_name):
+                wanted=" ".join(filter(None,(first_name,last_name))).strip().casefold()
+                if not wanted:return 0
+                return next((index for index,label in enumerate(options)
+                             if label.split("—",1)[-1].strip().casefold()==wanted),0)
+
+            mother_index=_matching_sim_index(_pregnancy_candidate["first_name"],_pregnancy_candidate["last_name"])
+            father_index=_matching_sim_index(_pregnancy_candidate["partner_first_name"],_pregnancy_candidate["partner_last_name"])
+            with st.form(f"detected_pregnancy_{_pregnancy_candidate['detection_id']}"):
+                a,b=st.columns(2)
+                mother=a.selectbox("Pregnant Sim",options,index=mother_index)
+                father=b.selectbox("Other parent (if known)",options,index=father_index)
+                a,b=st.columns(2)
+                conception=a.number_input("Estimated conception Global Day",min_value=-10000,max_value=20000,
+                    value=int(_pregnancy_candidate["conception_global_day"] or current_gd()),step=1)
+                pregnancy_length=max(1,int(float(rule_value("Pregnancy Length (challenge days)",3))))
+                suggested_due=int(_pregnancy_candidate["due_global_day"] or (int(conception)+pregnancy_length))
+                due=b.number_input("Estimated due Global Day",min_value=-10000,max_value=20000,
+                    value=suggested_due,step=1)
+                expected=st.number_input("Babies expected",1,10,
+                    int(_pregnancy_candidate["babies_expected"] or 1),step=1)
+                add_pregnancy=st.form_submit_button("Add this pregnancy",type="primary",use_container_width=True)
+
+            if add_pregnancy:
+                mother_id=sid(mother)
+                father_id=sid(father)
+                if not mother_id:
+                    st.error("Choose the pregnant Sim before adding this pregnancy.")
+                else:
+                    con=connect()
+                    try:
+                        pregnancy_id=next_id(con,"pregnancies","pregnancy_id","PREG")
+                        names={row[0]:row[1] for row in con.execute("""SELECT sim_id,
+                            TRIM(COALESCE(title,'')||' '||COALESCE(first_name,'')||' '||COALESCE(last_name,''))
+                            FROM sims""")}
+                        notes=(f"Detected automatically from The Sims 4 at game day "
+                               f"{_pregnancy_candidate['game_day']} ({progress_text}).")
+                        con.execute("""INSERT INTO pregnancies(
+                            pregnancy_id,mother_id,mother_name,father_id,father_name,
+                            conception_global_day,due_global_day,babies_expected,status,notes)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                            (pregnancy_id,mother_id,names.get(mother_id),father_id,names.get(father_id),
+                             int(conception),int(due),int(expected),"Pregnant",notes))
+                        con.execute("""UPDATE game_pregnancy_candidates SET status='added',resolved_at=?,
+                            created_pregnancy_id=? WHERE detection_id=? AND status='pending'""",
+                            (pd.Timestamp.now(tz="UTC").isoformat(),pregnancy_id,
+                             _pregnancy_candidate["detection_id"]))
+                        con.commit()
+                    finally:
+                        con.close()
+                    sync_auto_rolls(show_notice=False)
+                    st.success(f"Added {pregnancy_id}; pregnancy and maternal rolls are now scheduled.")
+                    st.rerun()
+
+            if st.button("Skip this pregnancy",use_container_width=True,
+                         key=f"skip_detected_pregnancy_{_pregnancy_candidate['detection_id']}"):
+                con=connect()
+                con.execute("""UPDATE game_pregnancy_candidates SET status='dismissed',resolved_at=?
+                    WHERE detection_id=?""",
+                    (pd.Timestamp.now(tz="UTC").isoformat(),_pregnancy_candidate["detection_id"]))
+                con.commit();con.close();st.rerun()
+
+        _review_detected_pregnancy()
+
 def undo_today_action(action):
     con=connect()
     try:
@@ -1259,7 +1369,7 @@ def render_game_clock_sync():
 - If you forget the BAT file, reports wait safely in `pending_report.json` and are delivered when the relay starts.
 - Keep the relay running while playing. Run the BAT again after restarting Windows or whenever the tracker stops receiving reports.
 - The tracker advances only when the in-game calendar advances. Loading an older save will not move Global Day backward.
-- Household changes are also reported so the tracker can offer to add newly detected babies, spouses, and other Sims.
+- Household and pregnancy-state changes are also reported so the tracker can offer to add newly detected babies, spouses, other Sims, and pregnancies.
 
 ### Useful in-game commands
 

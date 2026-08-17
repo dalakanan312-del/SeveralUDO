@@ -27,13 +27,15 @@ TABLE_DDLS = [
     "CREATE TABLE IF NOT EXISTS maintenance_jobs(job_key TEXT PRIMARY KEY,status TEXT,last_run_at TEXT,summary TEXT)",
     "CREATE TABLE IF NOT EXISTS death_cause_pools(death_group TEXT NOT NULL,cause TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(death_group,cause))",
     "CREATE TABLE IF NOT EXISTS game_birth_candidates(detection_id TEXT PRIMARY KEY,game_sim_id TEXT UNIQUE NOT NULL,first_name TEXT,last_name TEXT,sex TEXT,age_stage TEXT,is_baby INTEGER,game_day BIGINT,game_hour INTEGER,game_minute INTEGER,birth_global_day INTEGER,household_name TEXT,status TEXT NOT NULL DEFAULT 'pending',detected_at TEXT,resolved_at TEXT,created_sim_id TEXT)",
+    "CREATE TABLE IF NOT EXISTS game_pregnancy_states(game_sim_id TEXT PRIMARY KEY,was_pregnant INTEGER NOT NULL DEFAULT 0,pregnancy_sequence INTEGER NOT NULL DEFAULT 0,updated_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS game_pregnancy_candidates(detection_id TEXT PRIMARY KEY,game_sim_id TEXT NOT NULL,pregnancy_sequence INTEGER NOT NULL,first_name TEXT,last_name TEXT,partner_game_sim_id TEXT,partner_first_name TEXT,partner_last_name TEXT,pregnancy_progress DOUBLE PRECISION,game_day BIGINT,game_hour INTEGER,game_minute INTEGER,conception_global_day INTEGER,due_global_day INTEGER,babies_expected INTEGER,household_name TEXT,status TEXT NOT NULL DEFAULT 'pending',detected_at TEXT,resolved_at TEXT,created_pregnancy_id TEXT,UNIQUE(game_sim_id,pregnancy_sequence))",
 ]
 
 TABLES = [
     "settings", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "rules", "calendar_rows",
     "raw_import_rows", "sim_photos", "sim_lifestage_photos", "relationship_photos", "roll_rule_eras", "roll_rule_values", "notebook_entries", "illnesses",
-    "era_guidance", "military_campaigns", "military_service", "event_rule_configs", "action_queue", "maintenance_jobs", "death_cause_pools", "game_birth_candidates",
+    "era_guidance", "military_campaigns", "military_service", "event_rule_configs", "action_queue", "maintenance_jobs", "death_cause_pools", "game_birth_candidates", "game_pregnancy_states", "game_pregnancy_candidates",
 ]
 
 
@@ -104,6 +106,7 @@ def create_save_schema(connection, schema_name):
         cursor.execute("CREATE INDEX IF NOT EXISTS rolls_obligation_idx ON rolls(source_id,sim_id,due_global_day,roll_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS sims_birth_death_idx ON sims(birth_global_day,death_global_day)")
         cursor.execute("CREATE INDEX IF NOT EXISTS pregnancies_due_idx ON pregnancies(due_global_day,status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS game_pregnancy_candidates_status_idx ON game_pregnancy_candidates(status,detected_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS events_start_active_idx ON events(start_global_day,active,roll_required)")
         cursor.execute(
             "INSERT INTO settings(key,value) VALUES('roll_tracking_start','1') "
@@ -113,6 +116,8 @@ def create_save_schema(connection, schema_name):
 
 
 def ensure_game_sync_schema(connection):
+    connection.execute(TABLE_DDLS[-3])
+    connection.execute(TABLE_DDLS[-2])
     connection.execute(TABLE_DDLS[-1])
     connection.commit()
 
@@ -127,6 +132,7 @@ def ensure_performance_indexes(connection):
         "CREATE INDEX IF NOT EXISTS sims_household_idx ON sims(current_household_id)",
         "CREATE INDEX IF NOT EXISTS sims_parents_idx ON sims(mother_id,father_id)",
         "CREATE INDEX IF NOT EXISTS pregnancies_due_idx ON pregnancies(due_global_day,status)",
+        "CREATE INDEX IF NOT EXISTS game_pregnancy_candidates_status_idx ON game_pregnancy_candidates(status,detected_at)",
         "CREATE INDEX IF NOT EXISTS events_start_active_idx ON events(start_global_day,active,roll_required)",
         "CREATE INDEX IF NOT EXISTS events_recent_idx ON events(start_global_day DESC,event_id)",
         "CREATE INDEX IF NOT EXISTS event_results_recent_idx ON event_results(global_day DESC,result_id)",

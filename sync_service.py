@@ -93,6 +93,27 @@ def receive_clock(report:ClockReport,authorization:str|None=Header(default=None)
                 sex TEXT,age_stage TEXT,is_baby INTEGER,game_day BIGINT,game_hour INTEGER,game_minute INTEGER,birth_global_day INTEGER,
                 household_name TEXT,status TEXT NOT NULL DEFAULT 'pending',detected_at TEXT,resolved_at TEXT,
                 created_sim_id TEXT)""").format(sql.Identifier(schema_name)))
+            cursor.execute(sql.SQL("""CREATE TABLE IF NOT EXISTS {}.game_pregnancy_states(
+                game_sim_id TEXT PRIMARY KEY,was_pregnant INTEGER NOT NULL DEFAULT 0,
+                pregnancy_sequence INTEGER NOT NULL DEFAULT 0,updated_at TEXT)""").format(sql.Identifier(schema_name)))
+            cursor.execute(sql.SQL("""CREATE TABLE IF NOT EXISTS {}.game_pregnancy_candidates(
+                detection_id TEXT PRIMARY KEY,game_sim_id TEXT NOT NULL,pregnancy_sequence INTEGER NOT NULL,
+                first_name TEXT,last_name TEXT,partner_game_sim_id TEXT,partner_first_name TEXT,partner_last_name TEXT,
+                pregnancy_progress DOUBLE PRECISION,game_day BIGINT,game_hour INTEGER,game_minute INTEGER,
+                conception_global_day INTEGER,due_global_day INTEGER,babies_expected INTEGER,household_name TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',detected_at TEXT,resolved_at TEXT,created_pregnancy_id TEXT,
+                UNIQUE(game_sim_id,pregnancy_sequence))""").format(sql.Identifier(schema_name)))
+            pregnancy_length=3
+            cursor.execute(sql.SQL("""SELECT col_b FROM {}.rules
+                WHERE LOWER(COALESCE(row_label,''))='pregnancy length (challenge days)'
+                ORDER BY source_row DESC LIMIT 1""").format(sql.Identifier(schema_name)))
+            pregnancy_length_row=cursor.fetchone()
+            try:
+                if pregnancy_length_row and pregnancy_length_row[0] not in (None,""):
+                    pregnancy_length=max(1,int(float(pregnancy_length_row[0])))
+            except (TypeError,ValueError):
+                pregnancy_length=3
+            pregnancy_candidates_added=0
             for member in report.household_sims[:100]:
                 game_sim_id=str(member.get("game_sim_id") or "").strip()[:100]
                 if not game_sim_id:
@@ -125,6 +146,56 @@ def receive_clock(report:ClockReport,authorization:str|None=Header(default=None)
                          (report.household_name or "")[:200] or None,
                          datetime.now(timezone.utc).isoformat()),
                     )
+                is_pregnant=bool(member.get("is_pregnant"))
+                cursor.execute(sql.SQL("""SELECT was_pregnant,pregnancy_sequence
+                    FROM {}.game_pregnancy_states WHERE game_sim_id=%s FOR UPDATE""").format(sql.Identifier(schema_name)),
+                    (game_sim_id,))
+                pregnancy_state=cursor.fetchone()
+                if pregnancy_state:
+                    was_pregnant=bool(pregnancy_state[0])
+                    pregnancy_sequence=int(pregnancy_state[1] or 0)
+                    newly_discovered=is_pregnant and not was_pregnant
+                    if newly_discovered:
+                        pregnancy_sequence+=1
+                    cursor.execute(sql.SQL("""UPDATE {}.game_pregnancy_states
+                        SET was_pregnant=%s,pregnancy_sequence=%s,updated_at=%s WHERE game_sim_id=%s""").format(sql.Identifier(schema_name)),
+                        (1 if is_pregnant else 0,pregnancy_sequence,datetime.now(timezone.utc).isoformat(),game_sim_id))
+                else:
+                    newly_discovered=is_pregnant
+                    pregnancy_sequence=1 if is_pregnant else 0
+                    cursor.execute(sql.SQL("""INSERT INTO {}.game_pregnancy_states(
+                        game_sim_id,was_pregnant,pregnancy_sequence,updated_at) VALUES(%s,%s,%s,%s)""").format(sql.Identifier(schema_name)),
+                        (game_sim_id,1 if is_pregnant else 0,pregnancy_sequence,datetime.now(timezone.utc).isoformat()))
+                if newly_discovered:
+                    try:
+                        progress=max(0.0,min(1.0,float(member.get("pregnancy_progress"))))
+                    except (TypeError,ValueError):
+                        progress=None
+                    elapsed=round(pregnancy_length*progress) if progress is not None else 0
+                    conception_day=target-int(elapsed)
+                    due_day=conception_day+pregnancy_length
+                    try:
+                        babies_expected=max(1,int(member.get("pregnancy_offspring_count") or 1))
+                    except (TypeError,ValueError):
+                        babies_expected=1
+                    cursor.execute(sql.SQL("""INSERT INTO {}.game_pregnancy_candidates(
+                        detection_id,game_sim_id,pregnancy_sequence,first_name,last_name,
+                        partner_game_sim_id,partner_first_name,partner_last_name,pregnancy_progress,
+                        game_day,game_hour,game_minute,conception_global_day,due_global_day,babies_expected,
+                        household_name,status,detected_at)
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s)
+                        ON CONFLICT(game_sim_id,pregnancy_sequence) DO NOTHING""").format(sql.Identifier(schema_name)),
+                        ("PREGDET-"+uuid.uuid4().hex[:16].upper(),game_sim_id,pregnancy_sequence,
+                         str(member.get("first_name") or "")[:100] or None,
+                         str(member.get("last_name") or "")[:100] or None,
+                         str(member.get("pregnancy_partner_game_sim_id") or "")[:100] or None,
+                         str(member.get("pregnancy_partner_first_name") or "")[:100] or None,
+                         str(member.get("pregnancy_partner_last_name") or "")[:100] or None,
+                         progress,report.game_day,report.game_hour,report.game_minute,
+                         conception_day,due_day,babies_expected,(report.household_name or "")[:200] or None,
+                         datetime.now(timezone.utc).isoformat()))
+                    if cursor.rowcount:
+                        pregnancy_candidates_added+=1
             if report.household_sims and not members_initialized:
                 cursor.execute(
                     "UPDATE public.decades_clock_sync SET members_initialized=TRUE WHERE token_hash=%s",
@@ -146,6 +217,7 @@ def receive_clock(report:ClockReport,authorization:str|None=Header(default=None)
         return {
             "ok":True,"save_id":save_id,"game_day":report.game_day,
             "global_day":target,"advanced_by":max(0,target-current),
+            "pregnancies_detected":pregnancy_candidates_added,
             "received_at":datetime.now(timezone.utc).isoformat(),
         }
     finally:
