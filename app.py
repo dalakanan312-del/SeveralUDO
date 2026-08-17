@@ -7,16 +7,12 @@ from datetime import time
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-import plotly.express as px
-import networkx as nx
-from pyvis.network import Network
 from db import connect,setting,set_setting,next_id,statement_tables,cache_token
 from calendar_utils import global_day_to_year_day,global_day_label,date_to_global_day,global_day_time_to_date,format_exact_date
 import stats_engine as se
 import autorolls
 import era_rules
 import timeline_engine
-import plotly.graph_objects as go
 import profiles
 import save_manager
 import storage
@@ -37,6 +33,7 @@ import death_causes
 import cloud_schema
 import clock_sync
 from app_version import APP_VERSION
+from page_registry import navigation_labels
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
 
@@ -49,6 +46,14 @@ if not hasattr(st,"segmented_control"):
         index=choices.index(default) if default in choices else 0
         return st.radio(label,choices,index=index,horizontal=True,**kwargs)
     st.segmented_control=_segmented_control_compat
+
+# Streamlit fragments are the core of the 3.2 interaction model: a control on
+# the active page reruns that page only. Keep a compatibility decorator for
+# older local Streamlit builds; Railway uses the native implementation.
+if not hasattr(st,"fragment"):
+    def _fragment_compat(func=None,**_kwargs):
+        return func if func is not None else (lambda wrapped: wrapped)
+    st.fragment=_fragment_compat
 
 if not storage.configured():
     neon_ui.render_connection_setup(st)
@@ -610,6 +615,7 @@ with st.sidebar:
         "✅ Rules Health":"Rules Health",
     }
     nav_labels["Challenge Management"]="Challenge Management"
+    nav_labels=navigation_labels()
     nav=st.radio("Navigate",list(nav_labels),label_visibility="collapsed")
     page=nav_labels[nav]
     st.divider()
@@ -746,7 +752,8 @@ if _candidate_row:
 
     _review_detected_sim()
 
-if page=="Today":
+@st.fragment
+def render_today():
     page_header("Today","Your play-session dashboard: advance time, handle what is due, and see what comes next.")
     g0=current_gd()
     y0,d0=challenge_year_day(g0)
@@ -990,7 +997,8 @@ if page=="Today":
     else:
         st.info("Nothing automatically scheduled in this window.")
 
-elif page=="Game Clock Sync":
+@st.fragment
+def render_game_clock_sync():
     page_header("Automatic Game Clock","Let The Sims 4 advance this save's Global Day when its in-game calendar changes.")
     active_record=save_manager.active_save()
     sync_status=clock_sync.status(workspace,active_record["save_id"])
@@ -1035,7 +1043,8 @@ elif page=="Game Clock Sync":
             st.success("Automatic clock sync disconnected.")
             st.rerun()
 
-elif page=="Sims":
+@st.fragment
+def render_sims():
     page_header("Sims","Browse profiles, add people quickly, or edit family connections without touching raw IDs.")
 
     sim_section=st.segmented_control("Sim section",["Directory","Add Sim","Edit Sim","Family"],default=None,label_visibility="collapsed",key="sim_section") or "Directory"
@@ -1462,7 +1471,11 @@ elif page=="Sims":
         else:
             st.info("No Sims yet.")
 
-elif page=="Family Tree":
+@st.fragment
+def render_family_tree():
+    import networkx as nx
+    from pyvis.network import Network
+
     page_header("Family Tree","Explore ancestors, descendants, spouses, and nearby family with a cleaner generation-based layout.")
 
     only_marked=st.checkbox("Only show Sims marked for the family tree",False,key="tree_only_marked",
@@ -1668,7 +1681,11 @@ elif page=="Family Tree":
                         meta=tuple(key for key in ("type","status","start_global_day") if key in partners[0]),limit=30)
                 else: st.caption("None recorded")
 
-elif page=="Timeline":
+@st.fragment
+def render_timeline():
+    import plotly.express as px
+    import plotly.graph_objects as go
+
     page_header("The Great Chronicle","Explore the challenge chronologically without digging through individual tables.")
     chronicle_note(
         "From the keeper of the household annals",
@@ -1802,7 +1819,8 @@ elif page=="Timeline":
                     body=lambda r:", ".join(f"{k}: {int(v)}" for k,v in r.items() if k not in ("decade","Total") and pd.notna(v) and int(v)>0),
                     badge="Total",limit=40)
 
-elif page=="Pregnancies":
+@st.fragment
+def render_pregnancies():
     page_header("Pregnancies","Track active pregnancies, deliveries, and outcomes.")
     st.caption("Add pregnancies, record delivery/outcome details, or revise an existing record.")
 
@@ -1920,7 +1938,8 @@ elif page=="Pregnancies":
                         con.close(); st.success(f"Deleted {pid} and its linked rolls."); st.rerun()
 
 
-elif page=="Rolls":
+@st.fragment
+def render_rolls():
     page_header("The Book of Trials","See what is due, record outcomes, and inspect the automatic schedule.")
     chronicle_note(
         "Recorded by those who endured",
@@ -2059,7 +2078,8 @@ elif page=="Rolls":
         st.caption("Add or edit later-year and occult/species roll tables under Rules & Data → Roll Tables. The scheduler automatically selects the matching table by historical year and species.")
 
 
-elif page=="Relationships":
+@st.fragment
+def render_relationships():
     page_header("Relationships","Browse partnerships by name, see both people together, and add or end relationships without editing spouse IDs.")
 
     relationship_section=st.segmented_control("Relationship section",["Browse","Add","Edit or end"],default=None,label_visibility="collapsed",key="relationship_section") or "Browse"
@@ -2289,7 +2309,8 @@ elif page=="Relationships":
                     else:
                         con.close(); st.success(f"Deleted {rid}."); st.rerun()
 
-elif page=="Households":
+@st.fragment
+def render_households():
     page_header("Households","Create households, view members, move Sims, and edit household details.")
     household_section=st.segmented_control("Household section",["Browse","Create","Move Sim","Edit"],default=None,label_visibility="collapsed",key="household_section") or "Browse"
 
@@ -2441,7 +2462,8 @@ elif page=="Households":
                         con.close(); st.success(f"Deleted {hh}; assigned Sims are now unassigned."); st.rerun()
 
 
-elif page=="Challenge Management":
+@st.fragment
+def render_challenge_management():
     page_header("Challenge Management","Era guidance, succession, marriage matches, and wartime service in one place.")
     g=current_gd(); year,_=challenge_year_day(g)
     challenge_section=st.segmented_control("Challenge section",["Era rules","Succession","Matchmaking","War & conscription"],default=None,label_visibility="collapsed",key="challenge_section") or "Era rules"
@@ -2603,7 +2625,8 @@ elif page=="Challenge Management":
                     if status=="Killed" and record_death: con.execute("UPDATE sims SET death_global_day=COALESCE(death_global_day,?),cause_of_death=COALESCE(cause_of_death,'Military service') WHERE sim_id=?",(int(return_day),row.sim_id))
                     con.commit(); con.close(); st.rerun()
 
-elif page=="Illnesses":
+@st.fragment
+def render_illnesses():
     page_header("Illnesses","Track sickness, treatment, recovery, chronic conditions, and outcomes for every Sim.")
     g=current_gd()
     illness_total=scalar("SELECT COUNT(*) FROM illnesses")
@@ -2697,7 +2720,8 @@ elif page=="Illnesses":
                     con=connect(); con.execute("DELETE FROM illnesses WHERE illness_id=?",(iid,)); con.commit(); con.close()
                     st.success("Illness record deleted."); st.rerun()
 
-elif page=="Events":
+@st.fragment
+def render_events():
     page_header("Historical Events","Manage challenge-wide events and record their effects.")
     g=current_gd()
     st.caption(f"Current Global Day: {g} — {gd_caption(g)}")
@@ -2880,7 +2904,8 @@ elif page=="Events":
                 con.commit(); con.close(); st.success(f"Saved {eid}")
 
 
-elif page=="Challenge Guides":
+@st.fragment
+def render_challenge_guides():
     page_header("Challenge Guides","Keep the two foundational Ultimate Decades rule sets beside your tracker.")
     st.caption("These guides remain the property of their creators and are displayed from their public source pages.")
     guide=st.segmented_control(
@@ -2908,7 +2933,10 @@ elif page=="Challenge Guides":
         st.components.v1.iframe(source_url,height=900,scrolling=True)
     st.caption("If an embedded guide is blocked by its host or asks you to sign in, use the open-in-new-tab button above it.")
 
-elif page=="Statistics":
+@st.fragment
+def render_statistics():
+    import plotly.express as px
+
     page_header("Statistics","Detailed analytics, family records, demographic trends, and challenge records.")
     st.caption("Live analytics calculated from the SQLite database. Global Day is the canonical time coordinate.")
 
@@ -3500,7 +3528,8 @@ elif page=="Statistics":
 """)
 
 
-elif page=="Notes":
+@st.fragment
+def render_notes():
     page_header("Notes","A private notebook for the active save: plans, research, reminders, and family chronicles.")
     notes=q("""SELECT note_id,title,category,body,pinned,created_at,updated_at
                FROM notebook_entries ORDER BY pinned DESC,updated_at DESC,title""")
@@ -3571,7 +3600,8 @@ elif page=="Notes":
                     con=connect(); con.execute("DELETE FROM notebook_entries WHERE note_id=?",(nid,)); con.commit(); con.close()
                     st.success("Note deleted."); st.rerun()
 
-elif page=="Planting Reference":
+@st.fragment
+def render_planting_reference():
     page_header("Historical Planting Reference","See which Sims plants fit the current year and challenge location.")
     con=connect()
     main_household=setting(con,"main_household_id","")
@@ -3618,7 +3648,8 @@ elif page=="Planting Reference":
     st.caption("Research basis: English Heritage's British food timeline, the Royal Horticultural Society's crop histories, Nature's tomato history, and scholarship on the Columbian Exchange. Sims seasons come from EA's gardening guide.")
     st.markdown("[English Heritage food timeline](https://www.english-heritage.org.uk/visit/places/stonehenge/history-and-stories/history/food-timeline/) · [RHS crop facts](https://www.rhs.org.uk/advice/grow-your-own/features/fascinating-facts-and-figures/) · [Columbian Exchange research](https://pubs.aeaweb.org/doi/10.1257/jep.24.2.163) · [EA gardening guide](https://help.ea.com/en/help/the-sims/the-sims-4/the-sims-4-gardening-guide/)")
 
-elif page=="Saves":
+@st.fragment
+def render_saves():
     page_header("Saves","Keep completely separate challenge worlds in one tracker. Each save has its own Sims, calendar, photos, rolls, events, relationships, households, and statistics.")
 
     saves=save_manager.list_saves()
@@ -3752,7 +3783,8 @@ elif page=="Saves":
 
     st.info("Share saves using `.decades-save` files. They contain the complete selected world—including Sims, portraits, relationships, households, pregnancies, rolls, events, statistics source data, calendar state, and that save's roll-table configuration. Your original `decades.db` remains a legacy safety copy.")
 
-elif page=="Rules Health":
+@st.fragment
+def render_rules_health():
     page_header("Rules Health","Validate schedules and rule coverage, and run expensive maintenance only when you choose.")
     con=connect(); action_queue.ensure_schema(con); checks=action_queue.validation(con,current_gd()); con.close()
     health=pd.DataFrame(checks)
@@ -3770,7 +3802,8 @@ elif page=="Rules Health":
     jobs=q("SELECT job_key,status,last_run_at,summary FROM maintenance_jobs ORDER BY last_run_at DESC")
     if not jobs.empty: friendly_cards(jobs,"job_key",meta=("status","last_run_at"),body="summary")
 
-elif page=="Rules & Data":
+@st.fragment
+def render_rules_and_data():
     page_header("Rules & Data","Configure era roll tables, inspect imported rules, and back up your database.")
     c=connect()
     era_rules.ensure_schema(c)
@@ -3987,3 +4020,30 @@ elif page=="Rules & Data":
         st.json(counts)
         st.success("Every non-empty row from the source workbooks is also retained in raw_import_rows as a lossless archive.")
         st.download_button("Download database backup",save_manager.export_database_bytes(save_manager.active_save_id()),file_name=f"{save_manager.active_save()['name'].replace(' ','_')}.db",mime='application/octet-stream')
+
+
+# Only the selected page renderer is invoked. Native Streamlit fragments keep
+# subsequent page interactions inside that renderer instead of restarting the
+# workspace gate, save selector, sidebar, migrations, and detection pipeline.
+PAGE_RENDERERS={
+    "Today":render_today,
+    "Game Clock Sync":render_game_clock_sync,
+    "Sims":render_sims,
+    "Family Tree":render_family_tree,
+    "Timeline":render_timeline,
+    "Pregnancies":render_pregnancies,
+    "Rolls":render_rolls,
+    "Relationships":render_relationships,
+    "Households":render_households,
+    "Challenge Management":render_challenge_management,
+    "Illnesses":render_illnesses,
+    "Events":render_events,
+    "Challenge Guides":render_challenge_guides,
+    "Statistics":render_statistics,
+    "Notes":render_notes,
+    "Planting Reference":render_planting_reference,
+    "Saves":render_saves,
+    "Rules Health":render_rules_health,
+    "Rules & Data":render_rules_and_data,
+}
+PAGE_RENDERERS[page]()
