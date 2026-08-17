@@ -18,7 +18,7 @@ import storage
 ROOT = Path(__file__).resolve().parent
 SAVE_PACKAGE_EXTENSION = ".decades-save"
 GAMEPLAY_TABLES = [
-    "sim_photos", "relationship_photos", "sims", "households", "pregnancies", "rolls",
+    "sim_photos", "sim_lifestage_photos", "relationship_photos", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "raw_import_rows",
 ]
 _SAVE_CACHE = {}

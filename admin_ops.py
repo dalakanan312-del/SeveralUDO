@@ -27,6 +27,9 @@ def sim_dependency_summary(connection, sim_id):
         "Portraits": (
             "SELECT COUNT(*) FROM sim_photos WHERE sim_id=?", (sim_id,)
         ),
+        "Life-stage portraits": (
+            "SELECT COUNT(*) FROM sim_lifestage_photos WHERE sim_id=?", (sim_id,)
+        ),
     }
     return {
         label: connection.execute(statement, parameters).fetchone()[0]
@@ -67,6 +70,7 @@ def delete_sim(connection, sim_id, commit=True):
         "DELETE FROM relationships WHERE partner1_id=? OR partner2_id=?", (sim_id, sim_id)
     )
     connection.execute("DELETE FROM sim_photos WHERE sim_id=?", (sim_id,))
+    connection.execute("DELETE FROM sim_lifestage_photos WHERE sim_id=?", (sim_id,))
     connection.execute("UPDATE sims SET mother_id=NULL WHERE mother_id=?", (sim_id,))
     connection.execute("UPDATE sims SET father_id=NULL WHERE father_id=?", (sim_id,))
     connection.execute("UPDATE event_results SET sim_id=NULL WHERE sim_id=?", (sim_id,))

@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 from datetime import datetime, timezone
+from stats_engine import LIFE_STAGES, life_stage_from_age_days
 
 MAX_PHOTO_BYTES = 8 * 1024 * 1024
 
@@ -15,13 +16,57 @@ def ensure_schema(con):
             FOREIGN KEY(sim_id) REFERENCES sims(sim_id)
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sim_lifestage_photos(
+            sim_id TEXT NOT NULL,
+            life_stage TEXT NOT NULL,
+            image_data BLOB NOT NULL,
+            mime_type TEXT,
+            filename TEXT,
+            updated_at TEXT,
+            PRIMARY KEY(sim_id,life_stage),
+            FOREIGN KEY(sim_id) REFERENCES sims(sim_id)
+        )
+    """)
     con.commit()
+
+
+LIFE_STAGE_NAMES=tuple(stage[0] for stage in LIFE_STAGES)
+
+
+def normalize_life_stage(life_stage):
+    text=str(life_stage or "").strip().casefold()
+    return next((name for name in LIFE_STAGE_NAMES if name.casefold()==text),None)
 
 def get_photo(con, sim_id):
     return con.execute(
         "SELECT image_data,mime_type,filename,updated_at FROM sim_photos WHERE sim_id=?",
         (sim_id,)
     ).fetchone()
+
+
+def get_lifestage_photo(con,sim_id,life_stage):
+    stage=normalize_life_stage(life_stage)
+    if not stage:return None
+    return con.execute(
+        """SELECT image_data,mime_type,filename,updated_at,life_stage
+           FROM sim_lifestage_photos WHERE sim_id=? AND life_stage=?""",
+        (sim_id,stage),
+    ).fetchone()
+
+
+def current_life_stage(con,sim_id,current_global_day):
+    row=con.execute("SELECT birth_global_day,death_global_day FROM sims WHERE sim_id=?",(sim_id,)).fetchone()
+    if not row or row[0] is None:return None
+    reference=int(current_global_day)
+    if row[1] is not None:reference=min(reference,int(row[1]))
+    return life_stage_from_age_days(max(0,reference-int(row[0])))
+
+
+def get_current_photo(con,sim_id,current_global_day):
+    stage=current_life_stage(con,sim_id,current_global_day)
+    photo=get_lifestage_photo(con,sim_id,stage) if stage else None
+    return photo or get_photo(con,sim_id)
 
 def get_photos(con, sim_ids):
     identifiers=[identifier for identifier in dict.fromkeys(sim_ids) if identifier]
@@ -64,8 +109,28 @@ def save_photo(con, sim_id, uploaded_file):
                      updated_at=excluded.updated_at""",
                 (sim_id,data,mime,filename,datetime.now(timezone.utc).isoformat()))
 
+
+def save_lifestage_photo(con,sim_id,life_stage,uploaded_file):
+    stage=normalize_life_stage(life_stage)
+    if not stage:raise ValueError("Choose a valid life stage.")
+    if uploaded_file is None:return
+    data=uploaded_file.getvalue()
+    if len(data)>MAX_PHOTO_BYTES:raise ValueError("Photo is larger than 8 MB.")
+    mime=getattr(uploaded_file,"type",None) or "application/octet-stream"
+    filename=getattr(uploaded_file,"name",None)
+    con.execute("""INSERT INTO sim_lifestage_photos(sim_id,life_stage,image_data,mime_type,filename,updated_at)
+                   VALUES(?,?,?,?,?,?) ON CONFLICT(sim_id,life_stage) DO UPDATE SET
+                   image_data=excluded.image_data,mime_type=excluded.mime_type,
+                   filename=excluded.filename,updated_at=excluded.updated_at""",
+                (sim_id,stage,data,mime,filename,datetime.now(timezone.utc).isoformat()))
+
 def delete_photo(con, sim_id):
     con.execute("DELETE FROM sim_photos WHERE sim_id=?",(sim_id,))
+
+
+def delete_lifestage_photo(con,sim_id,life_stage):
+    stage=normalize_life_stage(life_stage)
+    if stage:con.execute("DELETE FROM sim_lifestage_photos WHERE sim_id=? AND life_stage=?",(sim_id,stage))
 
 def display_name(row):
     def val(k):

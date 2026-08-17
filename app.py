@@ -187,9 +187,11 @@ def scalar(sql,params=(),default=0):
     return _cached_scalar(sql,tuple(params or ()),default,*_query_revision(sql=sql))
 
 @st.cache_data(ttl=60,show_spinner=False)
-def _cached_sim_photo(sim_id,workspace_key,save_id,revision):
+def _cached_sim_photo(sim_id,global_day,life_stage,workspace_key,save_id,revision):
     con=connect()
-    try:return profiles.get_photo(con,sim_id)
+    try:
+        return (profiles.get_lifestage_photo(con,sim_id,life_stage) if life_stage
+                else profiles.get_current_photo(con,sim_id,global_day))
     finally:con.close()
 
 @st.cache_data(ttl=60,show_spinner=False)
@@ -223,8 +225,15 @@ def _cached_statistics(global_day,start_year,workspace_key,save_id,revision):
     ctx.pop("ancestors",None)
     return ctx
 
-def cached_sim_photo(sim_id):
-    return _cached_sim_photo(sim_id,*_query_revision(tables=("sim_photos",))) if sim_id else None
+def cached_sim_photo(sim_id,life_stage=None):
+    return _cached_sim_photo(sim_id,current_gd(),life_stage,
+        *_query_revision(tables=("sim_photos","sim_lifestage_photos","sims","settings"))) if sim_id else None
+
+def current_sim_life_stage(sim_id):
+    if not sim_id:return None
+    con=connect()
+    try:return profiles.current_life_stage(con,sim_id,current_gd())
+    finally:con.close()
 
 def cached_relationship_photo(relationship_id):
     return _cached_relationship_photo(relationship_id,*_query_revision(tables=("relationship_photos",))) if relationship_id else None
@@ -1372,8 +1381,8 @@ def render_sims():
             a,b,c=st.columns(3)
             birth_status=a.selectbox("Birth status",["Naturally Born","Married In","Adopted In","Other Partner","Other","Unknown"])
             multiple=b.selectbox("Birth type",["Single","Twin","Triplet","Quadruplet","Sextuplet","Unknown"])
-            photo=c.file_uploader("Portrait (optional)",type=["png","jpg","jpeg","webp"],key="sim_add_photo",
-                                  help="Stored inside the tracker database and included in database backups.")
+            photo=c.file_uploader("Default portrait (fallback, optional)",type=["png","jpg","jpeg","webp"],key="sim_add_photo",
+                                  help="Used until you add a portrait for the Sim's current life stage.")
             notes=st.text_area("Notes",placeholder="Anything important about this Sim…")
             with st.expander("Advanced details"):
                 a,b,c=st.columns(3)
@@ -1452,7 +1461,8 @@ def render_sims():
                 nm=" ".join(x for x in [row.get("title"),row.get("first_name"),row.get("last_name"),row.get("suffix")] if x)
                 st.subheader(nm or selected)
                 st.caption(selected)
-            basic_tab,family_tab,life_tab,advanced_tab=st.tabs(["Basic info","Parents & household","Life events","Advanced"])
+            basic_tab,family_tab,life_tab,portraits_tab,advanced_tab=st.tabs(
+                ["Basic info","Parents & household","Life events","Life-stage portraits","Advanced"])
             with basic_tab:
                 a,b,c,d=st.columns(4)
                 title=a.text_input("Title",value=row.get("title") or "",key="sim_edit_title")
@@ -1464,8 +1474,8 @@ def render_sims():
                 gen=b.number_input("Generation",0,100,int(row.get("generation") or 0),key="sim_edit_gen")
                 species=c.text_input("Species / occult",value=row.get("species_occult") or "Human",key="sim_edit_species")
                 maiden=d.text_input("Maiden / married name",value=row.get("maiden_married_name") or "",key="sim_edit_maiden")
-                photo=st.file_uploader("Replace portrait",type=["png","jpg","jpeg","webp"],key=f"sim_edit_photo_{selected}")
-                delete_photo=st.checkbox("Remove current portrait when saving",value=False,key=f"sim_delete_photo_{selected}")
+                photo=st.file_uploader("Replace default fallback portrait",type=["png","jpg","jpeg","webp"],key=f"sim_edit_photo_{selected}")
+                delete_photo=st.checkbox("Remove default fallback portrait when saving",value=False,key=f"sim_delete_photo_{selected}")
             with family_tab:
                 opts=sim_options()
                 hdf=q("SELECT household_id,household_name FROM households ORDER BY household_name,household_id")
@@ -1529,6 +1539,47 @@ def render_sims():
                 succession_note=st.text_input("Succession note",value=row.get("succession_note") or "",key="sim_edit_succnote")
                 notes=st.text_area("Notes",value=row.get("notes") or "",key="sim_edit_notes")
                 include_tree=st.checkbox("Include in family tree",value=bool(row.get("include_in_tree") if row.get("include_in_tree") is not None else 1),key="sim_edit_tree")
+            with portraits_tab:
+                automatic_stage=current_sim_life_stage(selected)
+                st.info(f"The tracker currently identifies this Sim as {automatic_stage or 'Unknown'}. That stage's portrait is used automatically wherever the Sim appears.")
+                portrait_stage=st.selectbox("Life stage",profiles.LIFE_STAGE_NAMES,
+                    index=(profiles.LIFE_STAGE_NAMES.index(automatic_stage) if automatic_stage in profiles.LIFE_STAGE_NAMES else 0),
+                    key=f"sim_portrait_stage_{selected}")
+                stage_photo=cached_sim_photo(selected,portrait_stage)
+                a,b=st.columns([1,3])
+                with a:
+                    if stage_photo:st.image(stage_photo["image_data"],width=200)
+                    else:st.caption(f"No {portrait_stage} portrait yet. The default portrait will be used.")
+                with b:
+                    stage_upload=st.file_uploader(f"Upload {portrait_stage} portrait",type=["png","jpg","jpeg","webp"],
+                                                  key=f"sim_stage_upload_{selected}_{portrait_stage}")
+                    save_stage=st.button("Save life-stage portrait",type="primary",use_container_width=True,
+                                         disabled=stage_upload is None,key=f"sim_stage_save_{selected}_{portrait_stage}")
+                    remove_stage=st.button("Remove this stage portrait",use_container_width=True,
+                                           disabled=stage_photo is None,key=f"sim_stage_remove_{selected}_{portrait_stage}")
+                if save_stage:
+                    con=connect()
+                    try:
+                        profiles.save_lifestage_photo(con,selected,portrait_stage,stage_upload)
+                        con.commit()
+                    except ValueError as error:
+                        con.rollback()
+                        st.error(str(error))
+                        st.stop()
+                    finally:
+                        con.close()
+                    st.success(f"Saved the {portrait_stage} portrait."); st.rerun()
+                if remove_stage:
+                    con=connect(); profiles.delete_lifestage_photo(con,selected,portrait_stage); con.commit(); con.close()
+                    st.success(f"Removed the {portrait_stage} portrait. The default portrait will be used."); st.rerun()
+                st.markdown("**Portrait coverage**")
+                coverage=[]
+                con=connect()
+                try:
+                    for stage in profiles.LIFE_STAGE_NAMES:
+                        coverage.append({"Life stage":stage,"Portrait":"Added" if profiles.get_lifestage_photo(con,selected,stage) else "Uses default"})
+                finally:con.close()
+                friendly_cards(coverage,"Life stage",meta=("Portrait",),limit=len(coverage))
             if st.button("Save Sim changes",type="primary",use_container_width=True,key=f"sim_edit_save_{selected}"):
                 con=connect()
                 con.execute("""UPDATE sims SET
