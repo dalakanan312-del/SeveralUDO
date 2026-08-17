@@ -3,6 +3,7 @@ import base64
 import re
 import secrets
 import html
+import io
 from datetime import time
 from pathlib import Path
 import pandas as pd
@@ -33,7 +34,7 @@ import death_causes
 import cloud_schema
 import clock_sync
 from app_version import APP_VERSION
-from page_registry import navigation_labels
+from page_registry import navigation_labels, grouped_pages
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
 
@@ -141,6 +142,12 @@ h1{margin-bottom:.1rem;font-size:clamp(2rem,4vw,3.1rem)}
 .v3-card-meta{display:flex;gap:.85rem;flex-wrap:wrap;margin:.45rem 0 0;color:var(--decades-muted);font-size:.86rem}.v3-card-body{margin-top:.55rem;opacity:.82;line-height:1.48}
 .v3-empty{text-align:center;padding:2.1rem 1rem;border:1px dashed var(--decades-line);border-radius:18px;opacity:.72}
 .v3-nav-group{font-size:.68rem;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--decades-gold);margin:1rem .4rem .25rem}
+[data-testid="stSidebar"] .stButton>button{justify-content:flex-start;text-align:left;border-color:transparent;background:transparent;box-shadow:none;padding:.34rem .55rem}
+[data-testid="stSidebar"] .stButton>button:hover{background:var(--decades-gold-soft);transform:translateX(2px);box-shadow:none}
+[data-testid="stSidebar"] .stButton>button[kind="primary"]{background:linear-gradient(90deg,rgba(185,138,67,.24),rgba(185,138,67,.07));color:inherit;border-left:3px solid var(--decades-gold);border-radius:8px}
+.v3-hero{position:relative;overflow:hidden}
+.v3-hero:after{content:"";position:absolute;width:13rem;height:13rem;border:1px solid rgba(185,138,67,.12);border-radius:50%;right:-5rem;top:-7rem;box-shadow:0 0 0 2rem rgba(185,138,67,.025),0 0 0 4rem rgba(185,138,67,.018)}
+.v3-card{backdrop-filter:blur(3px)}
 [data-testid="stDataFrame"]{opacity:.94}
 @media(max-width:760px){
     .block-container{padding:.9rem .85rem 2.5rem}
@@ -360,11 +367,47 @@ def sim_options(blank=True):
     out=[f"{r.sim_id} — {' '.join(x for x in [r.title,r.first_name,r.last_name] if x).strip()}" for _,r in df.iterrows()]
     return ([""] if blank else [])+out
 def sid(v): return v.split(" — ",1)[0] if v else None
+def _sim_id_number(sim_id):
+    match=re.search(r"(\d+)$",str(sim_id or ""))
+    return int(match.group(1)) if match else -1
+
+def remember_sim(sim_id):
+    if not sim_id:return
+    recent=[str(value) for value in st.session_state.get("recent_sim_ids",[]) if str(value)!=str(sim_id)]
+    st.session_state["recent_sim_ids"]=[str(sim_id)]+recent[:7]
+
+# Numeric ID descending is the default. Pages may opt into recent-first while
+# retaining the same numeric order for every remaining Sim.
+_legacy_sim_options=sim_options
+def sim_options(blank=True,prefer_recent=False):
+    df=q("SELECT sim_id,COALESCE(title,'') title,COALESCE(first_name,'') first_name,COALESCE(last_name,'') last_name FROM sims")
+    records=df.to_dict("records")
+    recent={value:index for index,value in enumerate(st.session_state.get("recent_sim_ids",[]))}
+    use_recent=prefer_recent or st.session_state.get("sim_menu_order")=="Recently used first"
+    records.sort(key=lambda row:(
+        0 if use_recent and str(row.get("sim_id")) in recent else 1,
+        recent.get(str(row.get("sim_id")),999),
+        -_sim_id_number(row.get("sim_id")),
+        str(row.get("sim_id") or ""),
+    ))
+    out=[f"{row['sim_id']} — {' '.join(x for x in [row['title'],row['first_name'],row['last_name']] if x).strip()}" for row in records]
+    return ([""] if blank else [])+out
+
+def sid(v): return re.split(r"\s+[—�]\s+",str(v),maxsplit=1)[0] if v else None
+
 def opt_index(opts,s):
     if not s:return 0
     for i,o in enumerate(opts):
         if o.startswith(str(s)+" —"): return i
     return 0
+def sid(v): return str(v).split(None,1)[0] if v else None
+
+def opt_index(opts,s):
+    if not s:return 0
+    for index,option in enumerate(opts):
+        if str(option).startswith(str(s)+" "):return index
+    return 0
+
 def int_or_none(v):
     try:return int(str(v).strip()) if str(v).strip() else None
     except:return None
@@ -548,6 +591,24 @@ def friendly_df(df,rename=None,cols=None):
 def status_badge(text):
     return f"<span class='pill'>{text}</span>"
 
+@st.cache_data(show_spinner=False,max_entries=256)
+def compressed_thumbnail(image_data,max_size=150):
+    """Return a small web thumbnail while preserving the original portrait."""
+    if not image_data:return None
+    try:
+        from PIL import Image
+        image=Image.open(io.BytesIO(bytes(image_data)))
+        image.thumbnail((int(max_size),int(max_size)))
+        if image.mode not in ("RGB","L"):
+            background=Image.new("RGB",image.size,"#171512")
+            if "A" in image.getbands(): background.paste(image,mask=image.getchannel("A"))
+            else: background.paste(image)
+            image=background
+        output=io.BytesIO(); image.save(output,format="WEBP",quality=68,method=4)
+        return output.getvalue()
+    except Exception:
+        return bytes(image_data)
+
 @st.cache_resource(show_spinner=False)
 def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-library-v2"):
     """Run migrations once per deployed process/save, not on every page click."""
@@ -594,6 +655,8 @@ with st.sidebar:
         st.rerun()
 
     st.caption(f"💾 {save_manager.active_save()['name']}")
+    st.selectbox("Sim menu order",["Highest ID first","Recently used first"],key="sim_menu_order",
+                 help="Recent mode keeps numeric descending order after this session's recently used Sims.")
     nav_labels={
         "🏠 Today":"Today",
         "🕰️ Game Clock Sync":"Game Clock Sync",
@@ -616,8 +679,23 @@ with st.sidebar:
     }
     nav_labels["Challenge Management"]="Challenge Management"
     nav_labels=navigation_labels()
-    nav=st.radio("Navigate",list(nav_labels),label_visibility="collapsed")
-    page=nav_labels[nav]
+    page=st.session_state.get("active_tracker_page","Today")
+    if page not in nav_labels.values():page="Today"
+    sidebar_counts=today_counts(current_gd())
+    badge_counts={
+        "Today":sum(sidebar_counts),"Rolls":sidebar_counts[0],
+        "Pregnancies":sidebar_counts[1],"Events":sidebar_counts[2],
+        "Illnesses":sidebar_counts[3],
+    }
+    for group,pages in grouped_pages():
+        st.markdown(f"<div class='v3-nav-group'>{html.escape(group)}</div>",unsafe_allow_html=True)
+        for spec in pages:
+            count=badge_counts.get(spec.name,0)
+            label=f"{spec.label}{f'  ·  {count}' if count else ''}"
+            if st.button(label,key=f"nav_{spec.name}",use_container_width=True,
+                         type="primary" if page==spec.name else "secondary"):
+                st.session_state["active_tracker_page"]=spec.name
+                st.rerun()
     st.divider()
     cg_sidebar=current_gd()
     cy_sidebar,cd_sidebar=challenge_year_day(cg_sidebar)
@@ -752,9 +830,47 @@ if _candidate_row:
 
     _review_detected_sim()
 
+def undo_today_action(action):
+    con=connect()
+    try:
+        kind=action.get("kind")
+        if kind=="roll":
+            con.execute("UPDATE rolls SET actual_roll=?,outcome=?,completed=?,completed_global_day=? WHERE roll_id=?",
+                        (action.get("actual_roll"),action.get("outcome"),action.get("completed"),
+                         action.get("completed_global_day"),action.get("roll_id")))
+            con.execute("UPDATE action_queue SET status=?,updated_at=? WHERE roll_id=?",
+                        (action.get("queue_status","open"),str(pd.Timestamp.utcnow()),action.get("roll_id")))
+            if action.get("sim_id"):
+                con.execute("UPDATE sims SET death_global_day=?,death_date=?,cause_of_death=? WHERE sim_id=?",
+                            (action.get("death_global_day"),action.get("death_date"),
+                             action.get("cause_of_death"),action.get("sim_id")))
+        elif kind=="pregnancy":
+            con.execute("""UPDATE pregnancies SET status=?,babies_delivered=?,delivery_date=?,outcome=?,complication=?
+                           WHERE pregnancy_id=?""",
+                        (action.get("status"),action.get("babies_delivered"),action.get("delivery_date"),
+                         action.get("outcome"),action.get("complication"),action.get("pregnancy_id")))
+        elif kind=="illness":
+            con.execute("UPDATE illnesses SET status=?,end_global_day=? WHERE illness_id=?",
+                        (action.get("status"),action.get("end_global_day"),action.get("illness_id")))
+        elif kind=="death":
+            con.execute("""UPDATE sims SET death_global_day=?,death_date=?,death_place=?,cause_of_death=?
+                           WHERE sim_id=?""",
+                        (action.get("death_global_day"),action.get("death_date"),action.get("death_place"),
+                         action.get("cause_of_death"),action.get("sim_id")))
+        con.commit()
+    finally:
+        con.close()
+
 @st.fragment
 def render_today():
     page_header("Today","Your play-session dashboard: advance time, handle what is due, and see what comes next.")
+    undo=st.session_state.get("today_undo")
+    if undo:
+        a,b=st.columns([4,1])
+        a.info(f"Last action: {undo.get('label','Today update')}")
+        if b.button("Undo",key="today_undo_button",use_container_width=True):
+            undo_today_action(undo); st.session_state.pop("today_undo",None)
+            st.success("The last Today action was restored."); st.rerun()
     g0=current_gd()
     y0,d0=challenge_year_day(g0)
 
@@ -781,7 +897,7 @@ def render_today():
     edit_focus=st.checkbox("Edit current household & heir",False,key="today_edit_focus")
     if edit_focus:
         cdb=connect(); heir=setting(cdb,'current_heir_id','SIM-0181'); hh=setting(cdb,'main_household_id','HH-0035'); cdb.close()
-        opts=sim_options(); hhs=q("SELECT household_id,household_name FROM households ORDER BY household_name,household_id")
+        opts=sim_options(prefer_recent=True); hhs=q("SELECT household_id,household_name FROM households ORDER BY household_name,household_id")
         a,b=st.columns(2)
         with a:
             nv=st.selectbox("Current heir",opts,index=opt_index(opts,heir))
@@ -804,6 +920,16 @@ def render_today():
     d.metric("Active illnesses",sick_count)
     e.metric("Deaths today",death_count)
 
+    filter_col,density_col=st.columns([3,1])
+    with filter_col:
+        due_scope=st.segmented_control("Due window",["Due + overdue","Today only","Overdue only"],
+                                       default="Due + overdue",key="today_due_scope")
+    with density_col:
+        card_density=st.selectbox("Card size",["Comfortable","Compact"],key="today_card_density")
+    if card_density=="Compact":
+        st.markdown("<style>.v3-card{padding:.58rem .75rem;margin:.3rem 0}.v3-card-body{margin-top:.25rem}.v3-card-meta{margin-top:.2rem}</style>",unsafe_allow_html=True)
+    due_operator={"Today only":"=","Overdue only":"<"}.get(due_scope,"<=")
+
     task_view=st.segmented_control("Today task",[
         f"🎲 Rolls due ({rolls_count})",
         f"🤰 Pregnancies due ({preg_count})",
@@ -815,13 +941,13 @@ def render_today():
     if "Rolls due" in task_view:
         roll_kind=st.selectbox("Roll filter",["All","Event","Aging","Pregnancy"],key="today_roll_kind")
         roll_page_size=50
-        filtered_count=rolls_count if roll_kind=="All" else scalar("SELECT COUNT(*) FROM action_queue WHERE status='open' AND source_type='roll' AND due_global_day<=? AND category=?",(g,roll_kind))
+        filtered_count=scalar(f"SELECT COUNT(*) FROM action_queue WHERE status='open' AND source_type='roll' AND due_global_day{due_operator}? AND (?='All' OR category=?)",(g,roll_kind,roll_kind))
         roll_pages=max(1,(filtered_count+roll_page_size-1)//roll_page_size)
         roll_page=st.number_input("Roll page",1,roll_pages,1,key="today_roll_page") if roll_pages>1 else 1
-        due=q("""SELECT r.roll_id,r.due_global_day,r.sim_id,r.sim_name,r.source_id,r.roll_type,r.die,
+        due=q(f"""SELECT r.roll_id,r.due_global_day,r.sim_id,r.sim_name,r.source_id,r.roll_type,r.die,
                         r.bad_results,r.actual_roll,r.outcome
                  FROM action_queue a JOIN rolls r ON r.roll_id=a.roll_id
-                 WHERE a.status='open' AND a.source_type='roll' AND a.due_global_day<=?
+                 WHERE a.status='open' AND a.source_type='roll' AND a.due_global_day{due_operator}?
                    AND (?='All' OR a.category=?)
                  ORDER BY a.priority,a.due_global_day,r.sim_name,r.roll_type LIMIT ? OFFSET ?""",
               (g,roll_kind,roll_kind,roll_page_size,(int(roll_page)-1)*roll_page_size))
@@ -840,6 +966,11 @@ def render_today():
             pick=st.selectbox("Choose roll",labels,key="today_roll_pick")
             rid=pick.split(" — ",1)[0]
             rr=due[due.roll_id==rid].iloc[0]
+            remember_sim(rr.get("sim_id"))
+            selected_photo=cached_sim_photo(rr.get("sim_id"))
+            if selected_photo:
+                st.image(compressed_thumbnail(selected_photo["image_data"],150),width=150,
+                         caption=rr.get("sim_name") or rr.get("sim_id"))
             if rr.get("applicable_events"):
                 st.info(f"Applicable historical events: {rr.get('applicable_events')}")
             actual_key=f"today_roll_actual_{rid}"
@@ -854,6 +985,18 @@ def render_today():
                                  help="Calculated from the editable Bad results rule when a numeric roll is entered.")
             if st.button("Save & complete roll",type="primary",key="today_roll_save",use_container_width=True):
                 con=connect()
+                old=con.execute("SELECT actual_roll,outcome,completed,completed_global_day FROM rolls WHERE roll_id=?",(rid,)).fetchone()
+                old_queue=con.execute("SELECT status FROM action_queue WHERE roll_id=?",(rid,)).fetchone()
+                old_sim=(con.execute("SELECT death_global_day,death_date,cause_of_death FROM sims WHERE sim_id=?",(rr.get("sim_id"),)).fetchone()
+                         if rr.get("sim_id") else None)
+                st.session_state["today_undo"]={
+                    "kind":"roll","label":f"Completed {rid}","roll_id":rid,
+                    "actual_roll":old[0] if old else None,"outcome":old[1] if old else None,
+                    "completed":old[2] if old else 0,"completed_global_day":old[3] if old else None,
+                    "queue_status":old_queue[0] if old_queue else "open","sim_id":rr.get("sim_id"),
+                    "death_global_day":old_sim[0] if old_sim else None,"death_date":old_sim[1] if old_sim else None,
+                    "cause_of_death":old_sim[2] if old_sim else None,
+                }
                 con.execute("UPDATE rolls SET actual_roll=?,outcome=?,completed=1,completed_global_day=? WHERE roll_id=?",
                             (actual or None,outcome or None,g,rid))
                 con.execute("UPDATE action_queue SET status='complete',updated_at=? WHERE roll_id=?",
@@ -872,10 +1015,10 @@ def render_today():
                 st.rerun()
 
     if "Pregnancies due" in task_view:
-        preg=q("""SELECT pregnancy_id,mother_id,mother_name,father_name,conception_global_day,due_global_day,
+        preg=q(f"""SELECT pregnancy_id,mother_id,mother_name,father_name,conception_global_day,due_global_day,
                          babies_expected,status,outcome FROM pregnancies WHERE due_global_day<=?
                   AND COALESCE(status,'') NOT IN ('Delivered','Cancelled','Complete','Miscarriage','Stillbirth')
-                  ORDER BY due_global_day,mother_name""",(g,))
+                  ORDER BY due_global_day,mother_name""".replace("due_global_day<=?",f"due_global_day{due_operator}?"),(g,))
         if preg.empty:
             st.success("No pregnancies are due right now.")
         else:
@@ -894,6 +1037,14 @@ def render_today():
             complication=b.text_input("Complication",key="today_preg_complication")
             if st.button("Save pregnancy outcome",type="primary",key="today_preg_save",use_container_width=True):
                 con=connect()
+                old=con.execute("""SELECT status,babies_delivered,delivery_date,outcome,complication
+                                   FROM pregnancies WHERE pregnancy_id=?""",(pid,)).fetchone()
+                st.session_state["today_undo"]={
+                    "kind":"pregnancy","label":f"Updated {pid}","pregnancy_id":pid,
+                    "status":old[0] if old else None,"babies_delivered":old[1] if old else None,
+                    "delivery_date":old[2] if old else None,"outcome":old[3] if old else None,
+                    "complication":old[4] if old else None,
+                }
                 con.execute("""UPDATE pregnancies SET status=?,babies_delivered=?,delivery_date=?,outcome=?,complication=?
                                WHERE pregnancy_id=?""",
                             (status,babies,gd_caption(g),outcome or None,complication or None,pid))
@@ -924,9 +1075,21 @@ def render_today():
             friendly_cards(sick,lambda r:f"{r.get('sim_name') or r.get('sim_id')} — {r.get('illness_name')}",
                 meta=(lambda r:("Began",f"Global Day {r.get('onset_global_day')}"),"status",lambda r:("Contagious","Yes" if r.get("contagious") else "No")),
                 body="treatment",badge="severity")
+            illness_labels=[f"{row.illness_id} — {row.sim_name or row.sim_id} — {row.illness_name}" for _,row in sick.iterrows()]
+            recovery_pick=st.selectbox("Resolve an active illness",illness_labels,key="today_illness_resolve")
+            recovery_id=recovery_pick.split(" — ",1)[0]
+            if st.button("Mark selected illness recovered",key="today_illness_recover",use_container_width=True):
+                con=connect(); old=con.execute("SELECT status,end_global_day,sim_id FROM illnesses WHERE illness_id=?",(recovery_id,)).fetchone()
+                st.session_state["today_undo"]={"kind":"illness","label":f"Resolved {recovery_id}",
+                    "illness_id":recovery_id,"status":old[0] if old else "Active",
+                    "end_global_day":old[1] if old else None}
+                con.execute("UPDATE illnesses SET status='Recovered',end_global_day=? WHERE illness_id=?",(g,recovery_id))
+                con.commit(); con.close()
+                if old:remember_sim(old[2])
+                st.success(f"Marked {recovery_id} recovered."); st.rerun()
         st.markdown("**Quickly record an illness**")
         with st.form("today_add_illness",clear_on_submit=True):
-            opts=sim_options(blank=False)
+            opts=sim_options(blank=False,prefer_recent=True)
             a,b=st.columns(2)
             ill_sim=a.selectbox("Sim",opts,key="today_illness_sim") if opts else ""
             ill_name=b.text_input("Illness",placeholder="Influenza, fever, consumption…",key="today_illness_name")
@@ -941,6 +1104,7 @@ def render_today():
             if not ill_sim: st.error("Add a Sim before recording an illness.")
             elif not ill_name.strip(): st.error("Enter the illness name.")
             else:
+                remember_sim(sid(ill_sim))
                 con=connect(); iid=illnesses.next_id(con)
                 con.execute("""INSERT INTO illnesses(illness_id,sim_id,sim_name,illness_name,onset_global_day,status,
                                severity,contagious,treatment,notes) VALUES(?,?,?,?,?,?,?,?,?,?)""",
@@ -959,6 +1123,13 @@ def render_today():
             deaths=deaths.copy()
             deaths["Sim"]=(deaths[["title","first_name","last_name","suffix"]].fillna("")
                            .agg(" ".join,axis=1).str.replace(r"\s+"," ",regex=True).str.strip())
+            portrait_rows=[]
+            for _,death_row in deaths.head(6).iterrows():
+                portrait=cached_sim_photo(death_row.sim_id)
+                if portrait:portrait_rows.append((death_row.Sim or death_row.sim_id,compressed_thumbnail(portrait["image_data"],120)))
+            if portrait_rows:
+                for column,(name,portrait) in zip(st.columns(len(portrait_rows)),portrait_rows):
+                    column.image(portrait,width=120,caption=name)
             friendly_cards(
                 deaths,lambda r:r.get("Sim") or r.get("sim_id"),
                 meta=(lambda r:("When",r.get("death_date") or gd_caption(r.get("death_global_day"))),
@@ -966,6 +1137,22 @@ def render_today():
                 body=lambda r:r.get("cause_of_death") or "Cause of death not yet recorded",
                 badge=lambda r:"Kill off today",
             )
+            death_labels=[f"{row.sim_id} — {row.Sim or row.sim_id}" for _,row in deaths.iterrows()]
+            death_pick=st.selectbox("Record death details",death_labels,key="today_death_pick")
+            death_sim=sid(death_pick)
+            chosen=deaths[deaths.sim_id==death_sim].iloc[0]
+            a,b=st.columns(2)
+            death_cause=a.text_input("Cause of death",value=chronicle_value(chosen.cause_of_death),key="today_death_cause")
+            death_place=b.text_input("Place of death",value=chronicle_value(chosen.death_place),key="today_death_place")
+            if st.button("Confirm death details",key="today_death_confirm",type="primary",use_container_width=True):
+                st.session_state["today_undo"]={"kind":"death","label":f"Recorded death for {chosen.Sim}",
+                    "sim_id":death_sim,"death_global_day":chosen.death_global_day,"death_date":chosen.death_date,
+                    "death_place":chosen.death_place,"cause_of_death":chosen.cause_of_death}
+                con=connect(); con.execute("""UPDATE sims SET death_global_day=?,death_date=COALESCE(death_date,?),
+                               death_place=?,cause_of_death=? WHERE sim_id=?""",
+                            (g,gd_caption(g),death_place or None,death_cause or None,death_sim))
+                con.commit(); con.close(); remember_sim(death_sim)
+                st.success(f"Death details saved for {chosen.Sim}."); st.rerun()
 
         upcoming_deaths=q("""SELECT sim_id,title,first_name,last_name,suffix,death_global_day,death_date,cause_of_death
                               FROM sims WHERE death_global_day>?
@@ -983,8 +1170,10 @@ def render_today():
             )
 
     section_heading("Coming up","A calm preview—nothing is added to the log until it becomes due")
-    a,b=st.columns([1,3])
-    lookahead=a.selectbox("Look ahead",options=[4,8,12,20,40,80],index=3,format_func=lambda x:f"{x} Global Days",key="today_roll_lookahead")
+    a,b=st.columns([2,3])
+    preview_window=a.segmented_control("Upcoming window",["Next day","Next 7 days","Later"],
+                                       default="Next 7 days",key="today_preview_window")
+    lookahead={"Next day":1,"Next 7 days":7,"Later":80}[preview_window]
     with b:
         st.caption("Future rolls stay as previews until they actually become due, so your Roll Log stays clean.")
     upcoming_rows=cached_upcoming_rolls(g,lookahead)

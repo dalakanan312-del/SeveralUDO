@@ -35,4 +35,4 @@ The `.env` file, local Neon state, databases, saves, exports, and private runtim
 
 ## Version
 
-Current source version: **3.2.0**
+Current source version: **3.2.1**

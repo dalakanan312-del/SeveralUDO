@@ -39,3 +39,10 @@ def navigation_labels():
 
 def page_names():
     return tuple(page.name for page in PAGES)
+
+
+def grouped_pages():
+    groups={}
+    for page in PAGES:
+        groups.setdefault(page.group,[]).append(page)
+    return tuple((group,tuple(pages)) for group,pages in groups.items())
