@@ -41,6 +41,9 @@ TABLES = [
 
 def create_registry(connection):
     with connection.cursor() as cursor:
+        # PostgreSQL's IF NOT EXISTS does not protect concurrent CREATE TABLE
+        # calls from separate app sessions. Serialize this short migration.
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("decades:registry",))
         cursor.execute(
             """CREATE TABLE IF NOT EXISTS public.decades_saves(
                 save_id TEXT PRIMARY KEY,
@@ -98,6 +101,13 @@ def create_save_schema(connection, schema_name):
     from psycopg import sql
 
     with connection.cursor() as cursor:
+        # Streamlit sessions can start together after a deploy. CREATE TABLE IF
+        # NOT EXISTS still races while PostgreSQL is creating the table's row
+        # type, so take one transaction-scoped lock per save schema first.
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            ("decades:schema:" + schema_name,),
+        )
         cursor.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema_name)))
         cursor.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name)))
         for ddl in TABLE_DDLS:
