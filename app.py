@@ -162,6 +162,12 @@ h1{margin-bottom:.1rem;font-size:clamp(2rem,4vw,3.1rem)}
 .v3-hero{position:relative;overflow:hidden}
 .v3-hero:after{content:"";position:absolute;width:13rem;height:13rem;border:1px solid rgba(185,138,67,.12);border-radius:50%;right:-5rem;top:-7rem;box-shadow:0 0 0 2rem rgba(185,138,67,.025),0 0 0 4rem rgba(185,138,67,.018)}
 .v3-card{backdrop-filter:blur(3px)}
+.v3-chronicle-list{border:1px solid var(--decades-line);border-radius:14px;overflow:hidden;background:var(--decades-card);margin:.45rem 0}
+.v3-chronicle-row{display:grid;grid-template-columns:minmax(12rem,1.35fr) minmax(16rem,2.65fr) auto;align-items:center;gap:.75rem;padding:.58rem .78rem;border-bottom:1px solid var(--decades-line)}
+.v3-chronicle-row:last-child{border-bottom:0}.v3-chronicle-row:hover{background:rgba(185,138,67,.07)}
+.v3-chronicle-title{font:700 .96rem/1.25 Georgia,serif;min-width:0}.v3-chronicle-meta{display:flex;gap:.65rem 1rem;align-items:center;flex-wrap:wrap;color:var(--decades-muted);font-size:.82rem;min-width:0}
+.v3-chronicle-body{grid-column:2/4;font-size:.82rem;line-height:1.35;opacity:.76;white-space:pre-line;margin-top:-.28rem}.v3-chronicle-badge{white-space:nowrap;border-radius:999px;padding:.14rem .48rem;background:var(--decades-gold-soft);color:var(--decades-gold);font-size:.7rem;font-weight:750}
+@media(max-width:760px){.v3-chronicle-row{grid-template-columns:1fr auto}.v3-chronicle-meta,.v3-chronicle-body{grid-column:1/3}.v3-chronicle-body{margin-top:0}}
 [data-testid="stDataFrame"]{opacity:.94}
 @media(max-width:760px){
     .block-container{padding:.9rem .85rem 2.5rem}
@@ -515,6 +521,10 @@ def friendly_cards(rows,title,meta=(),body=None,badge=None,empty="Nothing to sho
     records=rows.to_dict("records") if isinstance(rows,pd.DataFrame) else list(rows or [])
     if not records:
         st.markdown(f"<div class='v3-empty'>{html.escape(empty)}</div>",unsafe_allow_html=True); return
+    # Build one compact HTML list instead of one Streamlit element per record.
+    # Large directories previously produced dozens of frontend elements on every
+    # interaction; batching them makes reruns substantially lighter.
+    rendered=[]
     for row in records[:limit]:
         heading=title(row) if callable(title) else row.get(title)
         badge_text=(badge(row) if callable(badge) else row.get(badge)) if badge else ""
@@ -523,7 +533,13 @@ def friendly_cards(rows,title,meta=(),body=None,badge=None,empty="Nothing to sho
             label,value=item(row) if callable(item) else (item,row.get(item))
             if value not in (None,"",False) and pd.notna(value): meta_bits.append(f"<span><b>{html.escape(str(label))}</b> {html.escape(str(value))}</span>")
         body_text=(body(row) if callable(body) else row.get(body)) if body else ""
-        st.markdown(f"<div class='v3-card'><div class='v3-card-top'><div class='v3-card-title'>{html.escape(str(heading or 'Untitled'))}</div>{f'<div class=\"v3-card-badge\">{html.escape(str(badge_text))}</div>' if badge_text else ''}</div><div class='v3-card-meta'>{''.join(meta_bits)}</div>{f'<div class=\"v3-card-body\">{html.escape(str(body_text))}</div>' if body_text else ''}</div>",unsafe_allow_html=True)
+        rendered.append(
+            f"<div class='v3-chronicle-row'><div class='v3-chronicle-title'>{html.escape(str(heading or 'Untitled'))}</div>"
+            f"<div class='v3-chronicle-meta'>{''.join(meta_bits)}</div>"
+            f"{f'<div class=\"v3-chronicle-badge\">{html.escape(str(badge_text))}</div>' if badge_text else '<span></span>'}"
+            f"{f'<div class=\"v3-chronicle-body\">{html.escape(str(body_text))}</div>' if body_text else ''}</div>"
+        )
+    st.markdown("<div class='v3-chronicle-list'>"+"".join(rendered)+"</div>",unsafe_allow_html=True)
     if len(records)>limit: st.caption(f"Showing the first {limit} of {len(records)} items. Narrow the filters to see more.")
 
 def chronicle_note(title,text):
@@ -1066,9 +1082,9 @@ def render_today():
         due_scope=st.segmented_control("Due window",["Due + overdue","Today only","Overdue only"],
                                        default="Due + overdue",key="today_due_scope")
     with density_col:
-        card_density=st.selectbox("Card size",["Comfortable","Compact"],key="today_card_density")
+        card_density=st.selectbox("List spacing",["Comfortable","Compact"],key="today_card_density")
     if card_density=="Compact":
-        st.markdown("<style>.v3-card{padding:.58rem .75rem;margin:.3rem 0}.v3-card-body{margin-top:.25rem}.v3-card-meta{margin-top:.2rem}</style>",unsafe_allow_html=True)
+        st.markdown("<style>.v3-chronicle-row{padding:.38rem .65rem}.v3-chronicle-body{display:none}</style>",unsafe_allow_html=True)
     due_operator={"Today only":"=","Overdue only":"<"}.get(due_scope,"<=")
 
     task_view=st.segmented_control("Today task",[
