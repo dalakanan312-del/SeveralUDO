@@ -11,7 +11,7 @@ import storage
 
 
 DEFAULT_RECEIVER_URL = os.environ.get(
-    "CLOCK_SYNC_URL", "https://severaludo-clock-sync.up.railway.app"
+    "CLOCK_SYNC_URL", "https://severaludo-clock-sync-production.up.railway.app"
 ).rstrip("/")
 
 
@@ -77,4 +77,3 @@ def config_bytes(token,receiver_url=None):
         "enabled":True,
     }
     return json.dumps(payload,indent=2).encode("utf-8")
-
