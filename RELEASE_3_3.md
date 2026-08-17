@@ -1,5 +1,10 @@
 # Tracker 3.3.0
 
+## 3.3.1 session fix
+
+- Independent page updates now restore the active private workspace before accessing save data.
+- If a workspace is intentionally locked, an older page fragment exits cleanly instead of showing a traceback.
+
 ## Life-stage portraits
 
 - Every Sim can have a separate portrait for Newborn, Infant, Toddler, Child, Preteen, Teen, Young Adult, Adult, and Elder.
