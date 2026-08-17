@@ -13,4 +13,10 @@ The first report anchors the current in-game day to the tracker's current
 Global Day. Each later in-game day advances the tracker once. Restoring an
 older Sims save never rewinds the tracker automatically.
 
+If the automatic first report does not appear, open the cheat console and use:
+  severaludo.clock.status
+  severaludo.clock.report
+The second command sends immediately and prints either the accepted HTTP status
+or the exact error returned by the tracker.
+
 Keep config.json private. Use Revoke link in the tracker if it is shared.

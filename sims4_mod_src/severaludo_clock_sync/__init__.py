@@ -10,10 +10,11 @@ import alarms
 import clock
 import services
 import sims4.callback_utils
+import sims4.commands
 import sims4.log
 
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 LOGGER = sims4.log.Logger("SeveralUDOClockSync", default_owner="SeveralUDO")
 _alarm_handle = None
 _last_reported_day = None
@@ -46,6 +47,12 @@ def _load_config():
 
 def _absolute_game_day():
     now = services.time_service().sim_now
+    # Current game builds expose absolute_days(). Prefer that stable public
+    # accessor; the text fallbacks retain compatibility with older builds.
+    try:
+        return int(now.absolute_days())
+    except Exception:
+        pass
     # DateAndTime's stable text form includes `day:N week:N` across current
     # game builds. It avoids relying on private tick constants.
     text = str(now)
@@ -58,6 +65,35 @@ def _absolute_game_day():
     if day and week:
         return int(week.group(1)) * 7 + int(day.group(1))
     raise ValueError("Could not read the in-game date: {}".format(text))
+
+
+def _report_payload(config):
+    game_day = _absolute_game_day()
+    game_hour, game_minute = _game_clock()
+    household_name, household_sims = _household_snapshot()
+    payload = json.dumps({
+        "game_day": game_day,
+        "game_hour": game_hour,
+        "game_minute": game_minute,
+        "household_name": household_name,
+        "household_sims": household_sims,
+        "mod_version": VERSION,
+    }).encode("utf-8")
+    return game_day, game_hour, game_minute, household_name, household_sims, payload
+
+
+def _send_payload(config, payload):
+    request = urllib.request.Request(
+        config["receiver_url"], data=payload, method="POST",
+        headers={
+            "Authorization": "Bearer " + config["sync_token"],
+            "Content-Type": "application/json",
+            "User-Agent": "SeveralUDOClockSync/" + VERSION,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=12) as response:
+        response.read()
+        return int(getattr(response, "status", 200) or 200)
 
 
 def _game_clock():
@@ -105,16 +141,7 @@ def _post_day(config, game_day, game_hour, game_minute, household_name, househol
             "household_sims": household_sims,
             "mod_version": VERSION,
         }).encode("utf-8")
-        request = urllib.request.Request(
-            config["receiver_url"], data=payload, method="POST",
-            headers={
-                "Authorization": "Bearer " + config["sync_token"],
-                "Content-Type": "application/json",
-                "User-Agent": "SeveralUDOClockSync/" + VERSION,
-            },
-        )
-        with urllib.request.urlopen(request, timeout=12) as response:
-            response.read()
+        _send_payload(config, payload)
         LOGGER.info("Reported in-game day {} to SeveralUDO", game_day)
     except Exception as error:
         # The next poll retries; game simulation is never interrupted.
@@ -172,3 +199,56 @@ sims4.callback_utils.add_callbacks(
     sims4.callback_utils.CallbackEvent.PROCESS_EVENTS_FOR_HOUSEHOLD_ENTER,
     _start_clock_sync,
 )
+
+
+@sims4.commands.Command(
+    "severaludo.clock.status",
+    command_type=sims4.commands.CommandType.Live,
+)
+def clock_status(_connection=None):
+    """Show a safe local diagnostic without revealing the private token."""
+    out = sims4.commands.CheatOutput(_connection)
+    config = _load_config()
+    if config is None:
+        out("Clock Sync is not configured or is disabled.")
+        return False
+    try:
+        game_day = _absolute_game_day()
+        hour, minute = _game_clock()
+        household_name, household_sims = _household_snapshot()
+        out("Clock Sync v{} is ready.".format(VERSION))
+        out("Game day {}, time {:02d}:{:02d}; household '{}'; {} Sim(s).".format(
+            game_day, hour, minute, household_name or "None", len(household_sims)
+        ))
+        return True
+    except Exception as error:
+        out("Clock Sync cannot read the game state: {}".format(error))
+        return False
+
+
+@sims4.commands.Command(
+    "severaludo.clock.report",
+    command_type=sims4.commands.CommandType.Live,
+)
+def force_clock_report(_connection=None):
+    """Send a report immediately and show the receiver result in the console."""
+    global _last_reported_day, _last_report_signature
+    out = sims4.commands.CheatOutput(_connection)
+    config = _load_config()
+    if config is None:
+        out("Clock Sync is not configured or is disabled.")
+        return False
+    try:
+        game_day, hour, minute, household_name, household_sims, payload = _report_payload(config)
+        status = _send_payload(config, payload)
+        member_ids = tuple(sorted(item["game_sim_id"] for item in household_sims))
+        _last_reported_day = game_day
+        _last_report_signature = (game_day, member_ids)
+        out("Report accepted (HTTP {}). Game day {}, {:02d}:{:02d}, household '{}'.".format(
+            status, game_day, hour, minute, household_name or "None"
+        ))
+        return True
+    except Exception as error:
+        out("Report failed: {}".format(error))
+        LOGGER.exception("Manual Clock Sync report failed: {}", error)
+        return False
