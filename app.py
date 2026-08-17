@@ -814,7 +814,7 @@ if _candidate_row:
             else:
                 con=connect()
                 try:
-                    tracker_sim_id=next_id(con,"sims","sim_id","SIM-")
+                    tracker_sim_id=next_id(con,"sims","sim_id","SIM")
                     parent_ids=[value for value in (sid(mother),sid(father)) if value]
                     generation=0
                     if parent_ids:

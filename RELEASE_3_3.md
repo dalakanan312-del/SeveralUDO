@@ -14,6 +14,12 @@
 - Detected baby and Sim review dialogs now restore the active private workspace during independent dialog reruns.
 - Estimated birth dates and the Add Sim form submit button render normally instead of showing workspace and missing-submit errors.
 
+## 3.3.4 unique detected-Sim IDs
+
+- Automatically detected babies and Sims now receive canonical `SIM-####` IDs without an extra hyphen.
+- ID allocation is protected by a PostgreSQL transaction lock so simultaneous additions cannot choose the same next number.
+- Trailing hyphens are normalized defensively before any ID is generated.
+
 ## Life-stage portraits
 
 - Every Sim can have a separate portrait for Newborn, Infant, Toddler, Child, Preteen, Teen, Young Adult, Adult, and Elder.

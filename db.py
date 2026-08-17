@@ -193,6 +193,12 @@ def set_setting(connection, key, value):
 
 
 def next_id(connection, table, column, prefix, width=4):
+    prefix=str(prefix).rstrip("-")
+    # Serialise ID allocation inside the caller's transaction. This prevents
+    # two simultaneous dialogs or sessions from reading the same current max
+    # and attempting to create duplicate IDs.
+    lock_key=f"{connection.schema_name}:{table}:{column}:{prefix}"
+    connection.execute("SELECT pg_advisory_xact_lock(hashtext(?))",(lock_key,))
     values = [row[0] for row in connection.execute(f"SELECT {column} FROM {table} WHERE {column} LIKE ?", (prefix + "-%",))]
     numbers = []
     for value in values:
