@@ -4,7 +4,6 @@ import json
 import os
 import re
 import threading
-import urllib.request
 
 import alarms
 import clock
@@ -14,7 +13,7 @@ import sims4.commands
 import sims4.log
 
 
-VERSION = "1.3.0"
+VERSION = "1.3.2"
 LOGGER = sims4.log.Logger("SeveralUDOClockSync", default_owner="SeveralUDO")
 _alarm_handle = None
 _last_reported_day = None
@@ -32,9 +31,12 @@ def _config_path():
 
 def _load_config():
     path = _config_path()
+    handle = None
     try:
-        with open(path, "r") as handle:
-            data = json.load(handle)
+        # Sims 4's embedded file object does not consistently implement the
+        # context-manager protocol, so close it explicitly.
+        handle = open(path, "r")
+        data = json.load(handle)
         if not data.get("enabled", True):
             return None
         if not data.get("receiver_url") or not data.get("sync_token"):
@@ -43,6 +45,12 @@ def _load_config():
     except Exception as error:
         LOGGER.warn("Clock sync configuration is unavailable: {}", error)
         return None
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
 
 
 def _absolute_game_day():
@@ -83,37 +91,27 @@ def _report_payload(config):
 
 
 def _send_payload(config, payload):
-    # The Sims 4 embedded Python omits the SSL extension, so urllib cannot
-    # create an HTTPS handler. Queue secure reports for the local Windows relay
-    # instead of weakening the public endpoint to plain HTTP.
-    if str(config["receiver_url"]).lower().startswith("https://"):
-        folder = os.path.dirname(_config_path())
-        pending = os.path.join(folder, "pending_report.json")
-        temporary = pending + ".tmp"
-        envelope = json.dumps({
-            "receiver_url": config["receiver_url"],
-            "sync_token": config["sync_token"],
-            "payload": json.loads(payload.decode("utf-8")),
-        })
-        with open(temporary, "w") as handle:
-            handle.write(envelope)
-        try:
-            os.replace(temporary, pending)
-        except AttributeError:
-            if os.path.exists(pending): os.remove(pending)
-            os.rename(temporary, pending)
-        return 202
-    request = urllib.request.Request(
-        config["receiver_url"], data=payload, method="POST",
-        headers={
-            "Authorization": "Bearer " + config["sync_token"],
-            "Content-Type": "application/json",
-            "User-Agent": "SeveralUDOClockSync/" + VERSION,
-        },
-    )
-    with urllib.request.urlopen(request, timeout=12) as response:
-        response.read()
-        return int(getattr(response, "status", 200) or 200)
+    # The game mod never opens a network connection. It only writes this local
+    # queue; the separately installed Windows relay performs the HTTPS request.
+    folder = os.path.dirname(_config_path())
+    pending = os.path.join(folder, "pending_report.json")
+    temporary = pending + ".tmp"
+    envelope = json.dumps({
+        "receiver_url": config["receiver_url"],
+        "sync_token": config["sync_token"],
+        "payload": json.loads(payload.decode("utf-8")),
+    })
+    handle = open(temporary, "w")
+    try:
+        handle.write(envelope)
+    finally:
+        handle.close()
+    try:
+        os.replace(temporary, pending)
+    except AttributeError:
+        if os.path.exists(pending): os.remove(pending)
+        os.rename(temporary, pending)
+    return 202
 
 
 def _game_clock():
