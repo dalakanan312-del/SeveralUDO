@@ -34,3 +34,7 @@ app_source_uncommitted.py
 name_library.json
 event_library.json
 starter_seed.json
+
+# Local mod-development tools and inspected third-party files
+tools/
+tmp/
