@@ -25,13 +25,14 @@ TABLE_DDLS = [
     "CREATE TABLE IF NOT EXISTS action_queue(action_id TEXT PRIMARY KEY,source_type TEXT NOT NULL,source_id TEXT,roll_id TEXT UNIQUE,sim_id TEXT,household_id TEXT,due_global_day INTEGER,title TEXT,category TEXT,status TEXT NOT NULL,priority INTEGER NOT NULL DEFAULT 100,payload_json TEXT,created_at TEXT,updated_at TEXT)",
     "CREATE TABLE IF NOT EXISTS maintenance_jobs(job_key TEXT PRIMARY KEY,status TEXT,last_run_at TEXT,summary TEXT)",
     "CREATE TABLE IF NOT EXISTS death_cause_pools(death_group TEXT NOT NULL,cause TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(death_group,cause))",
+    "CREATE TABLE IF NOT EXISTS game_birth_candidates(detection_id TEXT PRIMARY KEY,game_sim_id TEXT UNIQUE NOT NULL,first_name TEXT,last_name TEXT,sex TEXT,age_stage TEXT,is_baby INTEGER,game_day BIGINT,game_hour INTEGER,game_minute INTEGER,birth_global_day INTEGER,household_name TEXT,status TEXT NOT NULL DEFAULT 'pending',detected_at TEXT,resolved_at TEXT,created_sim_id TEXT)",
 ]
 
 TABLES = [
     "settings", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "rules", "calendar_rows",
     "raw_import_rows", "sim_photos", "relationship_photos", "roll_rule_eras", "roll_rule_values", "notebook_entries", "illnesses",
-    "era_guidance", "military_campaigns", "military_service", "event_rule_configs", "action_queue", "maintenance_jobs", "death_cause_pools",
+    "era_guidance", "military_campaigns", "military_service", "event_rule_configs", "action_queue", "maintenance_jobs", "death_cause_pools", "game_birth_candidates",
 ]
 
 
@@ -80,6 +81,13 @@ def create_registry(connection):
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
         cursor.execute("CREATE INDEX IF NOT EXISTS decades_clock_sync_owner_idx ON public.decades_clock_sync(owner_hash,save_id)")
+        cursor.execute("ALTER TABLE public.decades_clock_sync ADD COLUMN IF NOT EXISTS members_initialized BOOLEAN NOT NULL DEFAULT FALSE")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS public.decades_clock_members(
+            token_hash TEXT NOT NULL,
+            game_sim_id TEXT NOT NULL,
+            first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY(token_hash,game_sim_id)
+        )""")
     connection.commit()
 
 
@@ -100,6 +108,11 @@ def create_save_schema(connection, schema_name):
             "INSERT INTO settings(key,value) VALUES('roll_tracking_start','1') "
             "ON CONFLICT(key) DO UPDATE SET value='1'"
         )
+    connection.commit()
+
+
+def ensure_game_sync_schema(connection):
+    connection.execute(TABLE_DDLS[-1])
     connection.commit()
 
 

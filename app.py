@@ -556,6 +556,7 @@ def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-li
         event_library.ensure_event_library(con)
         action_queue.ensure_schema(con)
         death_causes.ensure_schema(con)
+        cloud_schema.ensure_game_sync_schema(con)
         cloud_schema.ensure_performance_indexes(con)
         action_queue.seed_event_configs(con)
         autorolls.repair_generated_roll_dice(con)
@@ -625,6 +626,125 @@ with st.sidebar:
     workspace_access.render_account_settings(st,workspace)
     if st.button("Lock private workspace",use_container_width=True):
         workspace_access.sign_out(st)
+
+# The game-clock receiver writes these rows outside Streamlit, so read the next
+# candidate directly instead of using the short-lived query cache. This keeps
+# the prompt responsive while leaving the rest of the app's caching intact.
+_candidate_con=connect()
+try:
+    _candidate_row=_candidate_con.execute("""SELECT detection_id,game_sim_id,first_name,last_name,sex,age_stage,is_baby,
+        game_day,game_hour,game_minute,birth_global_day,household_name
+        FROM game_birth_candidates WHERE status='pending'
+        ORDER BY detected_at,detection_id LIMIT 1""").fetchone()
+finally:
+    _candidate_con.close()
+
+if _candidate_row:
+    _candidate={key:_candidate_row[key] for key in (
+        "detection_id","game_sim_id","first_name","last_name","sex","age_stage","is_baby",
+        "game_day","game_hour","game_minute","birth_global_day","household_name"
+    )}
+    _is_detected_baby=bool(_candidate["is_baby"])
+
+    @st.dialog("New baby detected!" if _is_detected_baby else "New Sim detected!")
+    def _review_detected_sim():
+        st.write("Would you like to add this Sim to the tracker?")
+        detected_time=(
+            f"{int(_candidate['game_hour']):02d}:{int(_candidate['game_minute']):02d}"
+            if _candidate["game_hour"] is not None and _candidate["game_minute"] is not None else "time unavailable"
+        )
+        st.caption(
+            f"Detected in {_candidate['household_name'] or 'the active household'} at "
+            f"game day {_candidate['game_day']} · {detected_time} · {_candidate['age_stage'] or 'unknown life stage'}"
+        )
+        if not _is_detected_baby:
+            st.info("The birth Global Day is estimated from this Sim's current life stage. You can correct it before adding them.")
+
+        with st.form(f"detected_sim_{_candidate['detection_id']}"):
+            a,b=st.columns(2)
+            first=a.text_input("First name",value=_candidate["first_name"] or "")
+            last=b.text_input("Last name",value=_candidate["last_name"] or "")
+            a,b=st.columns(2)
+            sex_values=["Female","Male","Other","Unknown"]
+            detected_sex_text=str(_candidate["sex"] or "Unknown").casefold()
+            detected_sex=("Female" if "female" in detected_sex_text else
+                          "Male" if "male" in detected_sex_text else
+                          "Other" if "other" in detected_sex_text else "Unknown")
+            sex=a.selectbox("Gender / sex",sex_values,index=sex_values.index(detected_sex) if detected_sex in sex_values else 3)
+            birth_gd=b.number_input("Birth Global Day",min_value=-10000,max_value=20000,
+                                    value=int(_candidate["birth_global_day"] or current_gd()),step=1)
+            st.caption("Estimated birth: "+gd_caption(birth_gd))
+
+            opts=sim_options()
+            hdf=q("SELECT household_id,household_name FROM households ORDER BY household_name,household_id")
+            hopts=[""]+[f"{r.household_id} — {r.household_name or ''}" for _,r in hdf.iterrows()]
+            detected_household=str(_candidate["household_name"] or "").strip().casefold()
+            household_index=next((i for i,label in enumerate(hopts)
+                                  if detected_household and label.split(" — ",1)[-1].strip().casefold()==detected_household),0)
+            a,b,c=st.columns(3)
+            mother=a.selectbox("Mother",opts,key=f"detected_mother_{_candidate['detection_id']}")
+            father=b.selectbox("Father",opts,key=f"detected_father_{_candidate['detection_id']}")
+            household=c.selectbox("Household",hopts,index=household_index,
+                                  key=f"detected_household_{_candidate['detection_id']}")
+            birth_status=st.selectbox(
+                "How did this Sim join the family?",
+                ["Naturally Born","Married In","Adopted In","Other Partner","Other","Unknown"],
+                index=0 if _is_detected_baby else 1,
+            )
+            add_sim=st.form_submit_button("Add this Sim",type="primary",use_container_width=True)
+
+        if add_sim:
+            if not first.strip() and not last.strip():
+                st.error("Enter at least a first or last name.")
+            else:
+                con=connect()
+                try:
+                    tracker_sim_id=next_id(con,"sims","sim_id","SIM-")
+                    parent_ids=[value for value in (sid(mother),sid(father)) if value]
+                    generation=0
+                    if parent_ids:
+                        marks=",".join("?" for _ in parent_ids)
+                        generations=con.execute(
+                            f"SELECT generation FROM sims WHERE sim_id IN ({marks}) AND generation IS NOT NULL",
+                            tuple(parent_ids),
+                        ).fetchall()
+                        if generations:
+                            generation=max(int(row[0]) for row in generations)+1
+                    # Exact time is a true birth time only for a newly detected
+                    # baby. For older Sims, retain the estimated day without
+                    # pretending their current clock time was their birth time.
+                    birth_date=None
+                    if _is_detected_baby and _candidate["game_hour"] is not None and _candidate["game_minute"] is not None:
+                        birth_date=exact_date_from_ingame_time(
+                            int(birth_gd),time(int(_candidate["game_hour"]),int(_candidate["game_minute"]))
+                        )
+                    note=(f"Detected automatically from The Sims 4 ({_candidate['age_stage'] or 'unknown stage'}; "
+                          f"game Sim ID {_candidate['game_sim_id']}).")
+                    con.execute("""INSERT INTO sims(
+                        sim_id,include_in_tree,first_name,last_name,sex,generation,mother_id,father_id,
+                        birth_global_day,birth_date,birth_status,multiple_birth,notes,current_household_id,
+                        legitimate,species_occult
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (tracker_sim_id,1,first.strip() or None,last.strip() or None,sex,generation,
+                     sid(mother),sid(father),int(birth_gd),birth_date,birth_status,
+                     "Single" if _is_detected_baby else "Unknown",note,sid(household),1,"Human"))
+                    con.execute("""UPDATE game_birth_candidates SET status='added',resolved_at=?,created_sim_id=?
+                                   WHERE detection_id=? AND status='pending'""",
+                                (pd.Timestamp.now(tz="UTC").isoformat(),tracker_sim_id,_candidate["detection_id"]))
+                    con.commit()
+                    scheduled=autorolls.schedule_sim_lifecycle(con,tracker_sim_id,current_gd())
+                finally:
+                    con.close()
+                st.success(f"Added {first} {last} and scheduled {scheduled} lifecycle roll(s).")
+                st.rerun()
+
+        if st.button("Skip this Sim",use_container_width=True,key=f"skip_detected_{_candidate['detection_id']}"):
+            con=connect()
+            con.execute("UPDATE game_birth_candidates SET status='dismissed',resolved_at=? WHERE detection_id=?",
+                        (pd.Timestamp.now(tz="UTC").isoformat(),_candidate["detection_id"]))
+            con.commit(); con.close(); st.rerun()
+
+    _review_detected_sim()
 
 if page=="Today":
     page_header("Today","Your play-session dashboard: advance time, handle what is due, and see what comes next.")
