@@ -13,6 +13,7 @@ class PageSpec:
 PAGES = (
     PageSpec("Today", "🏠 Today", "Play"),
     PageSpec("Game Clock Sync", "🕰️ Game Clock Sync", "Play"),
+    PageSpec("Play Planner", "🧭 Play Planner", "Play"),
     PageSpec("Rolls", "🎲 Rolls", "Play"),
     PageSpec("Sims", "👤 Sims", "Family"),
     PageSpec("Family Tree", "🌳 Family Tree", "Family"),

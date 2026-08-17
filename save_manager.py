@@ -20,6 +20,7 @@ SAVE_PACKAGE_EXTENSION = ".decades-save"
 GAMEPLAY_TABLES = [
     "sim_photos", "sim_lifestage_photos", "relationship_photos", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "raw_import_rows",
+    "play_rotation", "sim_family_plans", "planner_rules",
 ]
 _SAVE_CACHE = {}
 _SAVE_CACHE_SECONDS = 60.0

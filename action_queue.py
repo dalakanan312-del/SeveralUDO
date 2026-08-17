@@ -42,11 +42,13 @@ def sync(con, current_gd):
                           COALESCE(r.roll_type,'Scheduled roll'),
                           CASE WHEN LOWER(COALESCE(r.roll_type,'')) LIKE 'event%%' THEN 'Event'
                                WHEN LOWER(COALESCE(r.roll_type,'')) LIKE 'maternal%%' THEN 'Pregnancy'
+                               WHEN LOWER(COALESCE(r.roll_type,'')) IN
+                                    ('side household pregnancy','non-heir marriage eligibility') THEN 'Planner'
                                ELSE 'Aging' END,
                           'open',CASE WHEN r.due_global_day<? THEN 10 ELSE 50 END,'{}',?,?
                    FROM rolls r WHERE COALESCE(r.completed,0)=0
                    ON CONFLICT(action_id) DO UPDATE SET due_global_day=excluded.due_global_day,
-                     title=excluded.title,status='open',priority=excluded.priority,updated_at=excluded.updated_at""",
+                     title=excluded.title,category=excluded.category,status='open',priority=excluded.priority,updated_at=excluded.updated_at""",
                 (int(current_gd),_now(),_now()))
     con.execute("""UPDATE action_queue SET status='complete',updated_at=? WHERE source_type='roll'
                    AND roll_id IN (SELECT roll_id FROM rolls WHERE COALESCE(completed,0)=1)""",(_now(),))

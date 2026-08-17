@@ -29,13 +29,16 @@ TABLE_DDLS = [
     "CREATE TABLE IF NOT EXISTS game_birth_candidates(detection_id TEXT PRIMARY KEY,game_sim_id TEXT UNIQUE NOT NULL,first_name TEXT,last_name TEXT,sex TEXT,age_stage TEXT,is_baby INTEGER,game_day BIGINT,game_hour INTEGER,game_minute INTEGER,birth_global_day INTEGER,household_name TEXT,status TEXT NOT NULL DEFAULT 'pending',detected_at TEXT,resolved_at TEXT,created_sim_id TEXT)",
     "CREATE TABLE IF NOT EXISTS game_pregnancy_states(game_sim_id TEXT PRIMARY KEY,was_pregnant INTEGER NOT NULL DEFAULT 0,pregnancy_sequence INTEGER NOT NULL DEFAULT 0,updated_at TEXT)",
     "CREATE TABLE IF NOT EXISTS game_pregnancy_candidates(detection_id TEXT PRIMARY KEY,game_sim_id TEXT NOT NULL,pregnancy_sequence INTEGER NOT NULL,first_name TEXT,last_name TEXT,partner_game_sim_id TEXT,partner_first_name TEXT,partner_last_name TEXT,pregnancy_progress DOUBLE PRECISION,game_day BIGINT,game_hour INTEGER,game_minute INTEGER,conception_global_day INTEGER,due_global_day INTEGER,babies_expected INTEGER,household_name TEXT,status TEXT NOT NULL DEFAULT 'pending',detected_at TEXT,resolved_at TEXT,created_pregnancy_id TEXT,UNIQUE(game_sim_id,pregnancy_sequence))",
+    "CREATE TABLE IF NOT EXISTS play_rotation(rotation_id TEXT PRIMARY KEY,global_day INTEGER NOT NULL,sim_id TEXT,household_id TEXT,status TEXT NOT NULL DEFAULT 'Planned',played_global_day INTEGER,notes TEXT,created_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS sim_family_plans(sim_id TEXT PRIMARY KEY,target_children INTEGER,min_birth_spacing_days INTEGER,notes TEXT)",
+    "CREATE TABLE IF NOT EXISTS planner_rules(rule_key TEXT NOT NULL,start_year INTEGER NOT NULL,end_year INTEGER NOT NULL,die TEXT,bad_results TEXT,notes TEXT,active INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(rule_key,start_year,end_year))",
 ]
 
 TABLES = [
     "settings", "sims", "households", "pregnancies", "rolls",
     "relationships", "events", "event_results", "rules", "calendar_rows",
     "raw_import_rows", "sim_photos", "sim_lifestage_photos", "relationship_photos", "roll_rule_eras", "roll_rule_values", "notebook_entries", "illnesses",
-    "era_guidance", "military_campaigns", "military_service", "event_rule_configs", "action_queue", "maintenance_jobs", "death_cause_pools", "game_birth_candidates", "game_pregnancy_states", "game_pregnancy_candidates",
+    "era_guidance", "military_campaigns", "military_service", "event_rule_configs", "action_queue", "maintenance_jobs", "death_cause_pools", "game_birth_candidates", "game_pregnancy_states", "game_pregnancy_candidates", "play_rotation", "sim_family_plans", "planner_rules",
 ]
 
 
@@ -126,9 +129,9 @@ def create_save_schema(connection, schema_name):
 
 
 def ensure_game_sync_schema(connection):
-    connection.execute(TABLE_DDLS[-3])
-    connection.execute(TABLE_DDLS[-2])
-    connection.execute(TABLE_DDLS[-1])
+    for ddl in TABLE_DDLS:
+        if "game_birth_candidates" in ddl or "game_pregnancy_states" in ddl or "game_pregnancy_candidates" in ddl:
+            connection.execute(ddl)
     connection.commit()
 
 

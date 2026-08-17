@@ -34,6 +34,7 @@ import action_queue
 import death_causes
 import cloud_schema
 import clock_sync
+import play_planner
 from app_version import APP_VERSION
 from page_registry import navigation_labels, grouped_pages
 
@@ -492,12 +493,13 @@ def sync_auto_rolls(show_notice=False):
     con=connect()
     try:
         result=autorolls.sync_rolls(con,current_gd())
+        planner_added=play_planner.sync_scheduled_rolls(con,current_gd())
         action_queue.sync(con,current_gd())
     finally:
         con.close()
     if show_notice:
-        if result["added"]:
-            st.success(f"Auto-scheduled {result['added']} missing roll(s).")
+        if result["added"] or planner_added:
+            st.success(f"Auto-scheduled {result['added'] + planner_added} missing roll(s).")
         else:
             st.info("Roll schedule is already up to date.")
         if result.get("missing_rule_rows"):
@@ -649,7 +651,7 @@ def compressed_thumbnail(image_data,max_size=150):
         return bytes(image_data)
 
 @st.cache_resource(show_spinner=False)
-def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-library-v2"):
+def _ensure_optional_features(workspace_key,save_id,release="2026-08-17-play-planner-v1"):
     """Run migrations once per deployed process/save, not on every page click."""
     con=connect()
     try:
@@ -661,6 +663,7 @@ def _ensure_optional_features(workspace_key,save_id,release="2026-08-12-event-li
         event_library.ensure_event_library(con)
         action_queue.ensure_schema(con)
         death_causes.ensure_schema(con)
+        play_planner.ensure_schema(con)
         cloud_schema.ensure_game_sync_schema(con)
         cloud_schema.ensure_performance_indexes(con)
         action_queue.seed_event_configs(con)
@@ -1096,7 +1099,7 @@ def render_today():
     ],default=None,label_visibility="collapsed",key="today_task_view") or "Rolls due"
 
     if "Rolls due" in task_view:
-        roll_kind=st.selectbox("Roll filter",["All","Event","Aging","Pregnancy"],key="today_roll_kind")
+        roll_kind=st.selectbox("Roll filter",["All","Event","Aging","Pregnancy","Planner"],key="today_roll_kind")
         roll_page_size=50
         filtered_count=scalar(f"SELECT COUNT(*) FROM action_queue WHERE status='open' AND source_type='roll' AND due_global_day{due_operator}? AND (?='All' OR category=?)",(g,roll_kind,roll_kind))
         roll_pages=max(1,(filtered_count+roll_page_size-1)//roll_page_size)
@@ -2309,6 +2312,20 @@ def render_pregnancies():
         plen=int(float(rule_value('Pregnancy Length (challenge days)',3)))
         due=conception+plen
         st.info(f"Due Global Day **{due}** — {gd_caption(due)}")
+        mother_id=sid(mother)
+        if mother_id:
+            spacing=q("""SELECT p.min_birth_spacing_days,
+                (SELECT MAX(birth_global_day) FROM sims WHERE mother_id=?) AS last_birth
+                FROM sim_family_plans p WHERE p.sim_id=?""",(mother_id,mother_id))
+            if not spacing.empty:
+                minimum=int(spacing.iloc[0].get("min_birth_spacing_days") or 0)
+                last_birth=spacing.iloc[0].get("last_birth")
+                if minimum and pd.notna(last_birth):
+                    gap=int(conception)-int(last_birth)
+                    if gap<minimum:
+                        st.warning(f"Birth-spacing plan: only {gap} challenge day(s) since the last birth; this Sim's minimum is {minimum}.")
+                    else:
+                        st.success(f"Birth-spacing plan met: {gap} challenge days since the last birth.")
         a,b,c=st.columns(3)
         expected=a.number_input("Babies expected",1,10,1,key="preg_add_expected")
         status=b.selectbox("Starting status",["Pregnant","Other"],key="preg_add_status")
@@ -3077,6 +3094,123 @@ def render_challenge_management():
                     con=connect(); con.execute("UPDATE military_service SET status=?,return_global_day=?,outcome=?,injury=? WHERE service_id=?",(status,int(return_day) if status!="Active" else None,outcome.strip() or None,injury.strip() or None,service_id))
                     if status=="Killed" and record_death: con.execute("UPDATE sims SET death_global_day=COALESCE(death_global_day,?),cause_of_death=COALESCE(cause_of_death,'Military service') WHERE sim_id=?",(int(return_day),row.sim_id))
                     con.commit(); con.close(); st.rerun()
+
+@workspace_fragment
+def render_play_planner():
+    page_header("Play Planner","Plan rotations, family growth, marriage eligibility, and future milestones.")
+    g=current_gd(); _,dpy=calendar_settings()
+    section=st.segmented_control("Planner section",["Next to play","Family plans","Dynasties","Planner rules"],
+        default=None,label_visibility="collapsed",key="planner_section") or "Next to play"
+
+    if section=="Next to play":
+        con=connect()
+        try:
+            recommendations=play_planner.rotation_recommendations(con,g)
+        finally: con.close()
+        rows=[{key:row[key] for key in row.keys()} for row in recommendations]
+        for index,row in enumerate(rows):
+            row["wait"]="Never played" if row["last_played"] is None else f"{g-int(row['last_played'])} days ago"
+            row["recommendation"]="Play next" if index==0 else "Waiting"
+        friendly_cards(rows,lambda r:r.get("household_name") or r.get("household_id"),
+            meta=("location","social_class",lambda r:("Living",r.get("living_members")),lambda r:("Last played",r.get("wait"))),
+            badge="recommendation",limit=100,empty="Create an active household to begin a rotation.")
+        section_heading("Plan or record a play session","Assign future years or record what you just played")
+        households=q("SELECT household_id,household_name FROM households WHERE COALESCE(active,1)=1 ORDER BY household_name,household_id")
+        hopts=[f"{r.household_id} — {r.household_name or r.household_id}" for _,r in households.iterrows()]
+        if hopts:
+            a,b,c=st.columns(3); household=a.selectbox("Household",hopts,key="planner_play_household")
+            play_status=b.selectbox("Entry type",["Played","Planned"],key="planner_play_status")
+            played_day=c.number_input("Global Day",-10000,20000,g,key="planner_play_day")
+            household_id=sid(household)
+            members=q("""SELECT sim_id,COALESCE(first_name,'') first_name,COALESCE(last_name,'') last_name FROM sims
+                WHERE current_household_id=? AND birth_global_day<=? AND (death_global_day IS NULL OR death_global_day>=?)""",(household_id,g,g))
+            mopts=[""]+[f"{r.sim_id} — {r.first_name} {r.last_name}" for _,r in members.iterrows()]
+            played_sim=st.selectbox("Primary Sim played (optional)",mopts,key="planner_play_sim")
+            notes=st.text_input("Session notes",key="planner_play_notes")
+            if st.button("Save rotation entry",type="primary",key="planner_play_save"):
+                con=connect(); play_planner.record_rotation(con,played_day,household_id,sid(played_sim),play_status,notes or None); con.close()
+                st.success("Rotation entry saved."); st.rerun()
+        history=q("""SELECT r.rotation_id,r.global_day,r.status,r.notes,h.household_name,
+            TRIM(COALESCE(s.first_name,'')||' '||COALESCE(s.last_name,'')) sim_name
+            FROM play_rotation r LEFT JOIN households h ON h.household_id=r.household_id
+            LEFT JOIN sims s ON s.sim_id=r.sim_id ORDER BY r.global_day DESC,r.rotation_id DESC LIMIT 30""")
+        if not history.empty:
+            section_heading("Recent rotation","Latest recorded play sessions")
+            friendly_cards(history,lambda r:r.get("household_name") or "Household",
+                meta=(lambda r:("When",gd_caption(r.get("global_day"))),"sim_name"),body="notes",badge="status",limit=30)
+
+    if section=="Family plans":
+        opts=sim_options(blank=False)
+        if not opts: st.info("Add a Sim before creating a family plan."); return
+        chosen=st.selectbox("Sim",opts,key="planner_family_sim"); sim_id=sid(chosen)
+        con=connect()
+        try:
+            plan=con.execute("SELECT target_children,min_birth_spacing_days,notes FROM sim_family_plans WHERE sim_id=?",(sim_id,)).fetchone()
+            adulthood=int(float(setting(con,"adulthood_age_days",72)))
+            survival=play_planner.child_survival(con,sim_id,adulthood)
+            forecast=play_planner.milestone_forecast(con,sim_id,g)
+            last_birth=con.execute("SELECT MAX(birth_global_day) FROM sims WHERE mother_id=?",(sim_id,)).fetchone()[0]
+        finally: con.close()
+        a,b,c,d=st.columns(4); a.metric("Children",survival["children"]); b.metric("Reached adulthood",survival["survived"])
+        c.metric("Died before adulthood",survival["died_young"]); d.metric("Still too young",survival["pending"])
+        target=st.number_input("Target number of children",0,100,int(plan[0] if plan and plan[0] is not None else survival["children"]),key="planner_target")
+        spacing=st.number_input("Minimum birth spacing (challenge days)",0,1000,int(plan[1] if plan and plan[1] is not None else dpy),key="planner_spacing")
+        plan_notes=st.text_area("Family-plan notes",value=plan[2] if plan and plan[2] else "",key="planner_family_notes")
+        if last_birth is not None and spacing:
+            next_day=int(last_birth)+int(spacing); st.info(f"Next planned conception: Global Day {next_day} — {gd_caption(next_day)}")
+        st.caption(f"{max(0,int(target)-survival['children'])} additional child(ren) needed to reach this goal.")
+        if st.button("Save family plan",type="primary",key="planner_family_save"):
+            con=connect(); con.execute("""INSERT INTO sim_family_plans(sim_id,target_children,min_birth_spacing_days,notes)
+                VALUES(?,?,?,?) ON CONFLICT(sim_id) DO UPDATE SET target_children=excluded.target_children,
+                min_birth_spacing_days=excluded.min_birth_spacing_days,notes=excluded.notes""",
+                (sim_id,int(target),int(spacing),plan_notes or None)); con.commit(); con.close(); st.success("Family plan saved.")
+        section_heading("Milestone forecast","Derived from the Sim's birth day and editable aging rules")
+        future=[row for row in forecast if row["status"]=="Upcoming"][:12]
+        friendly_cards(future,"milestone",meta=(lambda r:("When",gd_caption(r.get("global_day"))),),badge="status",limit=12,
+            empty="No future milestones are currently scheduled.")
+
+    if section=="Dynasties":
+        dynasty=q("""SELECT COALESCE(NULLIF(TRIM(last_name),''),'Unknown') dynasty,COUNT(*) total,
+            COUNT(*) FILTER(WHERE birth_global_day<=? AND (death_global_day IS NULL OR death_global_day>=?)) living,
+            MIN(birth_global_day) first_recorded FROM sims
+            GROUP BY COALESCE(NULLIF(TRIM(last_name),''),'Unknown') ORDER BY living,total DESC,dynasty""",(g,g))
+        if not dynasty.empty:
+            dynasty["state"]=dynasty["living"].apply(lambda value:"Extinct" if int(value)==0 else ("Endangered" if int(value)<=2 else "Surviving"))
+            a,b,c=st.columns(3); a.metric("Surviving",int((dynasty.state=="Surviving").sum()))
+            b.metric("Endangered",int((dynasty.state=="Endangered").sum())); c.metric("Extinct",int((dynasty.state=="Extinct").sum()))
+            state=st.selectbox("Dynasty status",["All","Surviving","Endangered","Extinct"],key="planner_dynasty_filter")
+            shown=dynasty if state=="All" else dynasty[dynasty.state==state]
+            friendly_cards(shown,"dynasty",meta=("living","total",lambda r:("First recorded",gd_caption(r.get("first_recorded")) if pd.notna(r.get("first_recorded")) else "Unknown")),badge="state",limit=100)
+        con=connect(); adult_days=int(float(setting(con,"adulthood_age_days",72))); con.close()
+        section_heading("Children reaching adulthood","Younger living children remain pending until they reach the configured age")
+        parents=q("""WITH links AS (SELECT mother_id parent_id,birth_global_day,death_global_day FROM sims WHERE mother_id IS NOT NULL
+            UNION ALL SELECT father_id,birth_global_day,death_global_day FROM sims WHERE father_id IS NOT NULL)
+            SELECT p.sim_id,TRIM(COALESCE(p.title,'')||' '||COALESCE(p.first_name,'')||' '||COALESCE(p.last_name,'')) parent,
+            COUNT(*) children,SUM(CASE WHEN l.death_global_day IS NOT NULL AND l.death_global_day<l.birth_global_day+? THEN 1 ELSE 0 END) died_young,
+            SUM(CASE WHEN NOT(l.death_global_day IS NOT NULL AND l.death_global_day<l.birth_global_day+?) AND
+                (l.death_global_day IS NOT NULL OR l.birth_global_day+?<=?) THEN 1 ELSE 0 END) survived,
+            SUM(CASE WHEN l.death_global_day IS NULL AND l.birth_global_day+?>? THEN 1 ELSE 0 END) pending
+            FROM links l JOIN sims p ON p.sim_id=l.parent_id GROUP BY p.sim_id,p.title,p.first_name,p.last_name
+            ORDER BY survived DESC,children DESC,parent""",(adult_days,adult_days,adult_days,g,adult_days,g))
+        friendly_cards(parents,"parent",meta=("children","survived","died_young","pending"),badge="sim_id",limit=100,
+            empty="No parent-child records are available yet.")
+
+    if section=="Planner rules":
+        con=connect(); marriage_now=int(float(setting(con,"marriage_min_age_days",72))); adult_now=int(float(setting(con,"adulthood_age_days",72))); con.close()
+        a,b=st.columns(2); marriage_age=a.number_input("Marriage eligibility age (challenge days)",0,1000,marriage_now,key="planner_marriage_age")
+        adult_age=b.number_input("Survived-to-adulthood age (challenge days)",1,1000,adult_now,key="planner_adult_age")
+        if st.button("Save planner ages",key="planner_age_save"):
+            con=connect(); set_setting(con,"marriage_min_age_days",marriage_age); set_setting(con,"adulthood_age_days",adult_age); con.close(); sync_auto_rolls(False); st.success("Planner ages saved.")
+        rules=q("SELECT rule_key,start_year,end_year,die,bad_results,active FROM planner_rules ORDER BY rule_key,start_year")
+        labels=[f"{r.rule_key} · {int(r.start_year)}–{int(r.end_year)}" for _,r in rules.iterrows()]
+        selected=st.selectbox("Rule period",labels,key="planner_rule_select"); rr=rules.iloc[labels.index(selected)]
+        a,b,c=st.columns(3); start=a.number_input("Start year",-10000,10000,int(rr.start_year),key="planner_rule_start")
+        end=b.number_input("End year",-10000,10000,int(rr.end_year),key="planner_rule_end"); die=c.text_input("Die",value=rr.die or "",key="planner_rule_die")
+        results=st.text_area("Results",value=rr.bad_results or "",key="planner_rule_results"); active=st.checkbox("Active",bool(rr.active),key="planner_rule_active")
+        if st.button("Save planner rule",type="primary",key="planner_rule_save"):
+            con=connect(); con.execute("""UPDATE planner_rules SET start_year=?,end_year=?,die=?,bad_results=?,active=?
+                WHERE rule_key=? AND start_year=? AND end_year=?""",(int(start),int(end),die or None,results or None,1 if active else 0,rr.rule_key,int(rr.start_year),int(rr.end_year)))
+            con.commit(); con.close(); sync_auto_rolls(False); st.success("Planner rule saved."); st.rerun()
 
 @workspace_fragment
 def render_illnesses():
@@ -4481,6 +4615,7 @@ def render_rules_and_data():
 PAGE_RENDERERS={
     "Today":render_today,
     "Game Clock Sync":render_game_clock_sync,
+    "Play Planner":render_play_planner,
     "Sims":render_sims,
     "Family Tree":render_family_tree,
     "Timeline":render_timeline,
