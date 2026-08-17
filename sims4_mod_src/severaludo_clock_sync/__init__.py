@@ -14,7 +14,7 @@ import sims4.commands
 import sims4.log
 
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 LOGGER = sims4.log.Logger("SeveralUDOClockSync", default_owner="SeveralUDO")
 _alarm_handle = None
 _last_reported_day = None
@@ -83,6 +83,26 @@ def _report_payload(config):
 
 
 def _send_payload(config, payload):
+    # The Sims 4 embedded Python omits the SSL extension, so urllib cannot
+    # create an HTTPS handler. Queue secure reports for the local Windows relay
+    # instead of weakening the public endpoint to plain HTTP.
+    if str(config["receiver_url"]).lower().startswith("https://"):
+        folder = os.path.dirname(_config_path())
+        pending = os.path.join(folder, "pending_report.json")
+        temporary = pending + ".tmp"
+        envelope = json.dumps({
+            "receiver_url": config["receiver_url"],
+            "sync_token": config["sync_token"],
+            "payload": json.loads(payload.decode("utf-8")),
+        })
+        with open(temporary, "w") as handle:
+            handle.write(envelope)
+        try:
+            os.replace(temporary, pending)
+        except AttributeError:
+            if os.path.exists(pending): os.remove(pending)
+            os.rename(temporary, pending)
+        return 202
     request = urllib.request.Request(
         config["receiver_url"], data=payload, method="POST",
         headers={
@@ -244,9 +264,12 @@ def force_clock_report(_connection=None):
         member_ids = tuple(sorted(item["game_sim_id"] for item in household_sims))
         _last_reported_day = game_day
         _last_report_signature = (game_day, member_ids)
-        out("Report accepted (HTTP {}). Game day {}, {:02d}:{:02d}, household '{}'.".format(
-            status, game_day, hour, minute, household_name or "None"
-        ))
+        if status == 202:
+            out("Report queued for the secure Windows relay. Game day {}, {:02d}:{:02d}, household '{}'.".format(
+                game_day, hour, minute, household_name or "None"))
+        else:
+            out("Report accepted (HTTP {}). Game day {}, {:02d}:{:02d}, household '{}'.".format(
+                status, game_day, hour, minute, household_name or "None"))
         return True
     except Exception as error:
         out("Report failed: {}".format(error))

@@ -24,4 +24,8 @@ if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force 
 if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Force }
 Compress-Archive -Path (Join-Path $staging "severaludo_clock_sync") -DestinationPath $archive
 Move-Item -LiteralPath $archive -Destination $output
+Copy-Item -LiteralPath (Join-Path $sourceRoot "SeveralUDOClockRelay.ps1") `
+    -Destination (Join-Path $repoRoot "dist\SeveralUDOClockRelay.ps1") -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot "Start SeveralUDO Clock Relay.bat") `
+    -Destination (Join-Path $repoRoot "dist\Start SeveralUDO Clock Relay.bat") -Force
 Write-Output $output

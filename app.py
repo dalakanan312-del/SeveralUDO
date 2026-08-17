@@ -1211,6 +1211,8 @@ def render_game_clock_sync():
         st.success("New private link created. Any older link for this save was revoked.")
     token=st.session_state.get(f"clock_sync_token_{active_record['save_id']}")
     mod_path=Path(__file__).resolve().parent/"dist"/"SeveralUDOClockSync.ts4script"
+    relay_path=Path(__file__).resolve().parent/"dist"/"SeveralUDOClockRelay.ps1"
+    relay_launcher_path=Path(__file__).resolve().parent/"dist"/"Start SeveralUDO Clock Relay.bat"
     if token:
         st.warning("Download the configuration now. For security, its token is only shown during this session.")
         a,b=st.columns(2)
@@ -1219,10 +1221,25 @@ def render_game_clock_sync():
                               mime="application/zip",use_container_width=True)
         b.download_button("Download private config.json",clock_sync.config_bytes(token),file_name="config.json",
                           mime="application/json",use_container_width=True)
+        a,b=st.columns(2)
+        if relay_path.exists():
+            a.download_button("Download secure relay",relay_path.read_bytes(),file_name="SeveralUDOClockRelay.ps1",
+                              mime="text/plain",use_container_width=True)
+        if relay_launcher_path.exists():
+            b.download_button("Download relay launcher",relay_launcher_path.read_bytes(),
+                              file_name="Start SeveralUDO Clock Relay.bat",mime="text/plain",use_container_width=True)
         st.code(r"Documents\Electronic Arts\The Sims 4\Mods\SeveralUDOClockSync",language=None)
-        st.caption("Place both files directly in that folder, enable Script Mods Allowed, restart The Sims 4, and load your household.")
+        st.caption("Place all four files directly in that folder, double-click the relay launcher, enable Script Mods Allowed, restart The Sims 4, and load your household.")
     elif sync_status and sync_status.get("enabled"):
         st.caption("The token is hidden after creation. Create a new private link if you need to download a replacement configuration.")
+        a,b=st.columns(2)
+        if relay_path.exists():
+            a.download_button("Download secure relay",relay_path.read_bytes(),file_name="SeveralUDOClockRelay.ps1",
+                              mime="text/plain",use_container_width=True,key="clock_relay_existing")
+        if relay_launcher_path.exists():
+            b.download_button("Download relay launcher",relay_launcher_path.read_bytes(),
+                              file_name="Start SeveralUDO Clock Relay.bat",mime="text/plain",use_container_width=True,
+                              key="clock_relay_launcher_existing")
 
     with st.expander("Disconnect automatic clock sync"):
         confirm=st.checkbox("Revoke the active game-clock link",key="clock_sync_revoke_confirm")

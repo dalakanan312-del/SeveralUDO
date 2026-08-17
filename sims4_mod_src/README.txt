@@ -5,9 +5,10 @@ SeveralUDO Automatic Game Clock
 2. Download both the .ts4script file and config.json.
 3. Create this folder if it does not exist:
    Documents\Electronic Arts\The Sims 4\Mods\SeveralUDOClockSync
-4. Put both downloaded files directly inside that folder.
-5. In The Sims 4, enable Custom Content and Mods and Script Mods Allowed.
-6. Restart the game and load the household you want to track.
+4. Put the downloaded script, config, and relay files directly inside that folder.
+5. Double-click Start SeveralUDO Clock Relay.bat once after signing into Windows.
+6. In The Sims 4, enable Custom Content and Mods and Script Mods Allowed.
+7. Restart the game and load the household you want to track.
 
 The first report anchors the current in-game day to the tracker's current
 Global Day. Each later in-game day advances the tracker once. Restoring an
