@@ -35,6 +35,7 @@ import event_library
 import action_queue
 import death_causes
 import cloud_schema
+import clock_sync
 from app_version import APP_VERSION
 
 st.set_page_config(page_title="Decades Tracker",page_icon="🏰",layout="wide")
@@ -589,6 +590,7 @@ with st.sidebar:
     st.caption(f"💾 {save_manager.active_save()['name']}")
     nav_labels={
         "🏠 Today":"Today",
+        "🕰️ Game Clock Sync":"Game Clock Sync",
         "👤 Sims":"Sims",
         "🌳 Family Tree":"Family Tree",
         "🕰️ Timeline":"Timeline",
@@ -867,6 +869,51 @@ if page=="Today":
                           f"Bad results: {r.get('bad_results') or 'Not configured'}",badge="rule_status",limit=20)
     else:
         st.info("Nothing automatically scheduled in this window.")
+
+elif page=="Game Clock Sync":
+    page_header("Automatic Game Clock","Let The Sims 4 advance this save's Global Day when its in-game calendar changes.")
+    active_record=save_manager.active_save()
+    sync_status=clock_sync.status(workspace,active_record["save_id"])
+    if sync_status and sync_status.get("enabled"):
+        a,b,c=st.columns(3)
+        a.metric("Link","Active")
+        b.metric("Last game day",sync_status.get("last_game_day") if sync_status.get("last_game_day") is not None else "Waiting")
+        c.metric("Tracker Global Day",sync_status.get("last_tracker_day") if sync_status.get("last_tracker_day") is not None else current_gd())
+        if sync_status.get("last_seen_at"):
+            st.success(f"Last received from The Sims 4: {sync_status['last_seen_at']}")
+        else:
+            st.info("The private link is ready and waiting for its first report from the game.")
+    else:
+        st.info("No automatic game-clock link is active for this save.")
+
+    section_heading("Install the bridge","One private configuration per tracker save")
+    st.write("The first report pairs the game's current day with this save's current Global Day. Every later in-game day advances the tracker once; loading an older game save will never rewind it automatically.")
+    if st.button("Create a new private clock link",type="primary",use_container_width=True,key="clock_sync_create"):
+        token=clock_sync.create_link(workspace,active_record)
+        st.session_state[f"clock_sync_token_{active_record['save_id']}"]=token
+        st.success("New private link created. Any older link for this save was revoked.")
+    token=st.session_state.get(f"clock_sync_token_{active_record['save_id']}")
+    mod_path=Path(__file__).resolve().parent/"dist"/"SeveralUDOClockSync.ts4script"
+    if token:
+        st.warning("Download the configuration now. For security, its token is only shown during this session.")
+        a,b=st.columns(2)
+        if mod_path.exists():
+            a.download_button("Download Sims 4 script mod",mod_path.read_bytes(),file_name="SeveralUDOClockSync.ts4script",
+                              mime="application/zip",use_container_width=True)
+        b.download_button("Download private config.json",clock_sync.config_bytes(token),file_name="config.json",
+                          mime="application/json",use_container_width=True)
+        st.code(r"Documents\Electronic Arts\The Sims 4\Mods\SeveralUDOClockSync",language=None)
+        st.caption("Place both files directly in that folder, enable Script Mods Allowed, restart The Sims 4, and load your household.")
+    elif sync_status and sync_status.get("enabled"):
+        st.caption("The token is hidden after creation. Create a new private link if you need to download a replacement configuration.")
+
+    with st.expander("Disconnect automatic clock sync"):
+        confirm=st.checkbox("Revoke the active game-clock link",key="clock_sync_revoke_confirm")
+        if st.button("Disconnect",disabled=not confirm,key="clock_sync_revoke"):
+            clock_sync.revoke(workspace,active_record["save_id"])
+            st.session_state.pop(f"clock_sync_token_{active_record['save_id']}",None)
+            st.success("Automatic clock sync disconnected.")
+            st.rerun()
 
 elif page=="Sims":
     page_header("Sims","Browse profiles, add people quickly, or edit family connections without touching raw IDs.")

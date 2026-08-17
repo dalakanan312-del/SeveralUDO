@@ -66,6 +66,20 @@ def create_registry(connection):
             last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
         cursor.execute("CREATE INDEX IF NOT EXISTS decades_sessions_expiry_idx ON public.decades_sessions(expires_at)")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS public.decades_clock_sync(
+            token_hash TEXT PRIMARY KEY,
+            owner_hash TEXT NOT NULL,
+            save_id TEXT NOT NULL,
+            schema_name TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            game_anchor_day BIGINT,
+            tracker_anchor_day INTEGER,
+            last_game_day BIGINT,
+            last_tracker_day INTEGER,
+            last_seen_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+        cursor.execute("CREATE INDEX IF NOT EXISTS decades_clock_sync_owner_idx ON public.decades_clock_sync(owner_hash,save_id)")
     connection.commit()
 
 
