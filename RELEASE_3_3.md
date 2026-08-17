@@ -9,6 +9,11 @@
 
 - Added complete installation, everyday-use, command, status, privacy, ModGuard, and troubleshooting instructions directly to the Automatic Game Clock page.
 
+## 3.3.3 detected-Sim dialog fix
+
+- Detected baby and Sim review dialogs now restore the active private workspace during independent dialog reruns.
+- Estimated birth dates and the Add Sim form submit button render normally instead of showing workspace and missing-submit errors.
+
 ## Life-stage portraits
 
 - Every Sim can have a separate portrait for Newborn, Infant, Toddler, Child, Preteen, Teen, Young Adult, Adult, and Elder.

@@ -755,6 +755,14 @@ if _candidate_row:
 
     @st.dialog("New baby detected!" if _is_detected_baby else "New Sim detected!")
     def _review_detected_sim():
+        # Dialog interactions rerun independently from the main app, just like
+        # fragments. Restore the workspace ContextVars before date helpers,
+        # queries, and form controls access the active save.
+        dialog_workspace=st.session_state.get("workspace_id")
+        if not dialog_workspace:
+            st.warning("This private workspace is locked. Reopen it to review the detected Sim.")
+            return
+        save_manager.set_workspace(dialog_workspace,st.session_state.get("active_save_id"))
         st.write("Would you like to add this Sim to the tracker?")
         detected_time=(
             f"{int(_candidate['game_hour']):02d}:{int(_candidate['game_minute']):02d}"
