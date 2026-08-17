@@ -13,7 +13,7 @@ import sims4.commands
 import sims4.log
 
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 LOGGER = sims4.log.Logger("SeveralUDOClockSync", default_owner="SeveralUDO")
 _alarm_handle = None
 _last_reported_day = None
@@ -95,22 +95,20 @@ def _send_payload(config, payload):
     # queue; the separately installed Windows relay performs the HTTPS request.
     folder = os.path.dirname(_config_path())
     pending = os.path.join(folder, "pending_report.json")
-    temporary = pending + ".tmp"
     envelope = json.dumps({
         "receiver_url": config["receiver_url"],
         "sync_token": config["sync_token"],
         "payload": json.loads(payload.decode("utf-8")),
     })
-    handle = open(temporary, "w")
+    # Write only JSON. ModGuard intentionally blocks temporary-file creation
+    # patterns commonly used by executable downloaders.
+    handle = open(pending, "w")
+    if handle is None:
+        raise IOError("ModGuard blocked the local JSON report queue")
     try:
         handle.write(envelope)
     finally:
         handle.close()
-    try:
-        os.replace(temporary, pending)
-    except AttributeError:
-        if os.path.exists(pending): os.remove(pending)
-        os.rename(temporary, pending)
     return 202
 
 
