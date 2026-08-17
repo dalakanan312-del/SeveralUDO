@@ -1228,6 +1228,53 @@ def render_game_clock_sync():
 
     section_heading("Install the bridge","One private configuration per tracker save")
     st.write("The first report pairs the game's current day with this save's current Global Day. Every later in-game day advances the tracker once; loading an older game save will never rewind it automatically.")
+    with st.expander("Complete setup and troubleshooting instructions",expanded=not bool(sync_status and sync_status.get("last_seen_at"))):
+        st.markdown(r"""
+### First-time setup
+
+1. Open the tracker save you want to connect and confirm its **Tracker Global Day** is correct.
+2. Select **Create a new private clock link** below. Creating another link later revokes the older configuration.
+3. Download all four files shown after creating the link:
+   - `SeveralUDOClockSync.ts4script`
+   - `config.json`
+   - `SeveralUDOClockRelay.ps1`
+   - `Start SeveralUDO Clock Relay.bat`
+4. Put all four files directly in:
+   `Documents\Electronic Arts\The Sims 4\Mods\SeveralUDOClockSync`
+5. In The Sims 4, enable **Custom Content and Mods** and **Script Mods Allowed**, then restart the game if either setting changed.
+6. Double-click **Start SeveralUDO Clock Relay.bat**. It runs quietly in the background; opening it more than once is safe.
+7. Start The Sims 4 and load the household you are actively playing. The first report anchors that in-game day to the tracker's current Global Day.
+
+### Normal use
+
+- The relay can be started **before or after** The Sims 4. Starting it first provides the quickest updates.
+- If you forget the BAT file, reports wait safely in `pending_report.json` and are delivered when the relay starts.
+- Keep the relay running while playing. Run the BAT again after restarting Windows or whenever the tracker stops receiving reports.
+- The tracker advances only when the in-game calendar advances. Loading an older save will not move Global Day backward.
+- Household changes are also reported so the tracker can offer to add newly detected babies, spouses, and other Sims.
+
+### Useful in-game commands
+
+Open the cheat console with **Ctrl + Shift + C**, then enter:
+
+- `severaludo.clock.status` — shows the detected game day, time, household, and installed Clock Sync version.
+- `severaludo.clock.report` — queues a report immediately. “Report queued” means the game-to-relay step succeeded; the tracker updates after the relay delivers it.
+
+### If the tracker still says Waiting
+
+1. Run **Start SeveralUDO Clock Relay.bat** and wait about 20 seconds.
+2. Use `severaludo.clock.report` in the game, then refresh this page.
+3. Confirm all four files are together in the `SeveralUDOClockSync` folder—not in a second nested folder.
+4. If the relay reports **401 Unauthorized**, create a new private link and replace only `config.json`. A newly created link revokes the old token.
+5. If ModGuard warns about Clock Sync, make sure you have the current local-only script from this page. Do not approve or keep an older networking build.
+6. Never post or share `config.json`; it contains the private credential for this tracker save.
+
+### What the page status means
+
+- **Waiting** — the link exists, but Railway has not accepted its first report.
+- **Last received from The Sims 4** — the complete game → queue → relay → tracker path is working.
+- **Tracker Global Day unchanged after a successful report** — normal when the reported game day has not advanced since the prior report.
+""")
     if st.button("Create a new private clock link",type="primary",use_container_width=True,key="clock_sync_create"):
         token=clock_sync.create_link(workspace,active_record)
         st.session_state[f"clock_sync_token_{active_record['save_id']}"]=token

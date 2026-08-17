@@ -5,6 +5,10 @@
 - Independent page updates now restore the active private workspace before accessing save data.
 - If a workspace is intentionally locked, an older page fragment exits cleanly instead of showing a traceback.
 
+## 3.3.2 Clock Sync instructions
+
+- Added complete installation, everyday-use, command, status, privacy, ModGuard, and troubleshooting instructions directly to the Automatic Game Clock page.
+
 ## Life-stage portraits
 
 - Every Sim can have a separate portrait for Newborn, Infant, Toddler, Child, Preteen, Teen, Young Adult, Adult, and Elder.
