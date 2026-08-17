@@ -10,7 +10,7 @@ import sims4.resources
 import services
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # Historical labels mapped to the closest HCR disease model.  The HCR model is
 # shown in command output so the player always knows which mechanics apply.
@@ -43,6 +43,11 @@ def _hcr_available():
         return False
 
 
+def _disease_tuning():
+    manager = services.get_instance_manager(sims4.resources.Types.BUFF)
+    return {key: manager.get(data[0]) for key, data in DISEASES.items()}
+
+
 @sims4.commands.Command(
     "severaludo.historical_diseases",
     command_type=sims4.commands.CommandType.Live,
@@ -52,9 +57,17 @@ def list_historical_diseases(_connection=None):
     out = _output(_connection)
     out("SeveralUDO Historical Diseases v{}".format(VERSION))
     out("Healthcare Redux detected: {}".format("yes" if _hcr_available() else "no"))
+    tunings = _disease_tuning()
     for key in sorted(DISEASES):
         _, hcr_name, model = DISEASES[key]
-        out("  {} -> HCR {} ({})".format(key, hcr_name, model))
+        state = "ready" if tunings[key] is not None else "missing"
+        out("  {} -> HCR {} ({}) [{}]".format(key, hcr_name, model, state))
+
+
+@sims4.commands.Command("severaludo.hcr.status", command_type=sims4.commands.CommandType.Live)
+def historical_disease_status(_connection=None):
+    """Verify that the add-on, HCR module, and mapped disease tunings loaded."""
+    list_historical_diseases(_connection=_connection)
 
 
 @sims4.commands.Command(
@@ -95,6 +108,12 @@ def apply_historical_disease(profile: str = "", _connection=None):
     return True
 
 
+@sims4.commands.Command("severaludo.hcr.apply", command_type=sims4.commands.CommandType.Live)
+def apply_historical_disease_alias(profile: str = "", _connection=None):
+    """Short alias for severaludo.historical_disease."""
+    return apply_historical_disease(profile=profile, _connection=_connection)
+
+
 @sims4.commands.Command(
     "severaludo.historical_disease.clear",
     command_type=sims4.commands.CommandType.Live,
@@ -116,3 +135,9 @@ def clear_historical_diseases(_connection=None):
             removed += 1
     out("Removed {} historical disease profile(s) from {}.".format(removed, sim.full_name))
     return True
+
+
+@sims4.commands.Command("severaludo.hcr.clear", command_type=sims4.commands.CommandType.Live)
+def clear_historical_diseases_alias(_connection=None):
+    """Short alias for severaludo.historical_disease.clear."""
+    return clear_historical_diseases(_connection=_connection)

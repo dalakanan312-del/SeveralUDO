@@ -1,4 +1,4 @@
-# SeveralUDO Historical Diseases for Healthcare Redux
+# SeveralUDO Historical Diseases for Healthcare Redux 0.2.0
 
 Unofficial, version-bound extension for **a.deep.indigo's Healthcare Redux**.
 It does not include or modify Healthcare Redux files. Healthcare Redux Core and
@@ -26,14 +26,20 @@ The backing model is always disclosed in game and in this table.
    deep inside the Sims 4 `Mods` folder.
 3. Enable **Script Mods Allowed**, then restart the game.
 
-## Commands (first test release)
+## Commands
 
-Open the cheat console with `Ctrl+Shift+C`.
+Open the cheat console with `Ctrl+Shift+C`. First run `severaludo.hcr.status`.
+It should show version 0.2.0, confirm Healthcare Redux was detected, and mark
+each disease `ready`. If the cheat produces no output, verify that both **Script
+Mods Allowed** and **Custom Content and Mods** are enabled, then restart the
+game.
 
 - `severaludo.historical_diseases` — list profiles and verify HCR was detected.
 - `severaludo.historical_disease plague` — apply a profile to the selected Sim.
 - `severaludo.historical_disease scarlet_fever` — underscores or spaces work.
 - `severaludo.historical_disease.clear` — remove profiles applied by the add-on.
+- `severaludo.hcr.apply plague` — shorter apply command.
+- `severaludo.hcr.clear` — shorter clear command.
 
 This is the compatibility-first test release. A later release can add a native
 pie-menu chooser and optional automatic outbreaks after the installed HCR build
