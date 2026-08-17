@@ -433,7 +433,7 @@ def rule_value(label,default=None):
 
 def page_header(title,subtitle=None):
     st.markdown(
-        f"<div class='v3-hero'><div class='v3-eyebrow'>Decades Tracker 3.0</div>"
+        f"<div class='v3-hero'><div class='v3-eyebrow'>Decades Tracker {APP_VERSION}</div>"
         f"<div class='v3-hero-title'>{html.escape(str(title))}</div>"
         f"<div class='v3-hero-copy'>{html.escape(str(subtitle or ''))}</div></div>",unsafe_allow_html=True)
 
@@ -573,7 +573,7 @@ _ensure_optional_features(*active_cache_key())
 with st.sidebar:
     st.markdown(
         "<div class='sidebar-brand'><div class='sidebar-brand-title'>🏰 Decades</div>"
-        "<div class='sidebar-brand-subtitle'>Your living family chronicle · 3.0</div></div>",
+        f"<div class='sidebar-brand-subtitle'>Your living family chronicle · {APP_VERSION}</div></div>",
         unsafe_allow_html=True,
     )
 
