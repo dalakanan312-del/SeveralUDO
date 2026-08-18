@@ -5,6 +5,7 @@
 .neon_storage.json
 
 # User data / local databases
+local_data/
 *.db
 *.sqlite
 *.sqlite3

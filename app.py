@@ -4,19 +4,27 @@ import re
 import secrets
 import html
 import io
+import os
+import sys
 from functools import wraps
 from datetime import time
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-from db import connect,setting,set_setting,next_id,statement_tables,cache_token
+LOCAL_MODE=os.environ.get("DECADES_STORAGE_MODE","").strip().casefold()=="local"
+if LOCAL_MODE:
+    import local_save_manager as save_manager
+    sys.modules["save_manager"]=save_manager
+    from local_db import connect,setting,set_setting,next_id,statement_tables,cache_token
+else:
+    import save_manager
+    from db import connect,setting,set_setting,next_id,statement_tables,cache_token
 from calendar_utils import global_day_to_year_day,global_day_label,date_to_global_day,global_day_time_to_date,format_exact_date
 import stats_engine as se
 import autorolls
 import era_rules
 import timeline_engine
 import profiles
-import save_manager
 import storage
 import neon_ui
 import admin_ops
@@ -35,6 +43,7 @@ import death_causes
 import cloud_schema
 import clock_sync
 import play_planner
+import desktop_package
 from app_version import APP_VERSION
 from page_registry import navigation_labels, grouped_pages
 
@@ -82,16 +91,18 @@ def rerun_current_fragment():
             raise
         st.rerun()
 
-if not storage.configured():
-    neon_ui.render_connection_setup(st)
-    st.stop()
-
-workspace=workspace_access.render_gate(st)
-if not workspace:
-    st.stop()
+if LOCAL_MODE:
+    workspace="local"
+else:
+    if not storage.configured():
+        neon_ui.render_connection_setup(st)
+        st.stop()
+    workspace=workspace_access.render_gate(st)
+    if not workspace:
+        st.stop()
 save_manager.set_workspace(workspace,st.session_state.get("active_save_id"))
 save_manager.ensure_setup()
-if neon_ui.render_first_save_setup(st):
+if not LOCAL_MODE and neon_ui.render_first_save_setup(st):
     st.stop()
 
 st.markdown("""
@@ -754,9 +765,12 @@ with st.sidebar:
     st.markdown("**Help preserve the chronicle**")
     st.caption("If this tracker enriches your challenge, you can help support its hosting and continued development.")
     st.link_button("☕ Support SeveralUDO on Ko-fi","https://ko-fi.com/SeveralUDO",use_container_width=True)
-    workspace_access.render_account_settings(st,workspace)
-    if st.button("Lock private workspace",use_container_width=True):
-        workspace_access.sign_out(st)
+    if LOCAL_MODE:
+        st.caption("💻 Offline SQLite edition")
+    else:
+        workspace_access.render_account_settings(st,workspace)
+        if st.button("Lock private workspace",use_container_width=True):
+            workspace_access.sign_out(st)
 
 # The game-clock receiver writes these rows outside Streamlit, so read the next
 # candidate directly instead of using the short-lived query cache. This keeps
@@ -1355,6 +1369,9 @@ def render_today():
 @workspace_fragment
 def render_game_clock_sync():
     page_header("Automatic Game Clock","Let The Sims 4 advance this save's Global Day when its in-game calendar changes.")
+    if LOCAL_MODE:
+        st.info("Automatic game-clock sync is available in the browser edition. The offline edition keeps all tracker data local and never opens a receiver connection.")
+        return
     active_record=save_manager.active_save()
     sync_status=clock_sync.status(workspace,active_record["save_id"])
     if sync_status and sync_status.get("enabled"):
@@ -4256,6 +4273,23 @@ def render_saves():
     c.metric("Current Global Day",current_gd())
     d.metric("Sims in this save",scalar("SELECT COUNT(*) FROM sims"))
 
+    section_heading("Downloadable edition","Run this tracker with a fast private SQLite database on your own computer")
+    starter_bytes=save_manager.export_save_package(active["save_id"])
+    desktop_bytes=desktop_package.build(starter_bytes)
+    st.download_button(
+        "Download current desktop edition",
+        data=desktop_bytes,
+        file_name=f"Decades_Tracker_{APP_VERSION}_Local.zip",
+        mime="application/zip",
+        use_container_width=True,
+        key="download_local_edition",
+        help="Includes the application, local launcher, instructions, and a private copy of the active save. It never includes Neon or login secrets.",
+    )
+    if LOCAL_MODE:
+        st.success("This is the offline SQLite edition. Export a .decades-save below whenever you want to move this save back to the browser.")
+    else:
+        st.caption("Extract the ZIP and run Start Decades Tracker Local.bat. Your active save is included for the first launch.")
+
     st.subheader("Your saves")
     summary_rows=[]
     for s in saves:
@@ -4357,7 +4391,7 @@ def render_saves():
 
     if save_section=="Import":
         st.subheader("Import a shared save")
-        st.caption("Import a `.decades-save` file from another player. Older raw `.db` backups are supported too.")
+        st.caption("Import a `.decades-save` from another player or from the offline edition. In the browser, this uploads it into Neon as a new independent save. Older raw `.db` backups are supported too.")
         imported=st.file_uploader("Save file",type=["decades-save","db","sqlite","sqlite3"],key="save_import_file")
         import_name=st.text_input("Name override (optional)",placeholder="Leave blank to use the shared save's name",key="save_import_name")
         if st.button("Import save",type="primary",use_container_width=True,key="save_import_btn"):
@@ -4373,7 +4407,7 @@ def render_saves():
                 except Exception as e:
                     st.error(f"Could not import that save: {e}")
 
-    st.info("Share saves using `.decades-save` files. They contain the complete selected world—including Sims, portraits, relationships, households, pregnancies, rolls, events, statistics source data, calendar state, and that save's roll-table configuration. Your original `decades.db` remains a legacy safety copy.")
+    st.info("To switch between local and browser versions, export a `.decades-save` from the version you are leaving and import it into the version you are opening. Imports create an independent copy, so verify it before deleting the original. The package contains Sims, portraits, relationships, households, pregnancies, rolls, events, planner data, calendar state, and roll tables.")
 
 @workspace_fragment
 def render_rules_health():
