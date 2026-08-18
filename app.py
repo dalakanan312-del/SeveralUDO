@@ -71,6 +71,17 @@ def workspace_fragment(func):
         return func(*args,**kwargs)
     return guarded_fragment
 
+def rerun_current_fragment():
+    """Refresh only the active page when supported; safely fall back on older Streamlit."""
+    try:
+        st.rerun(scope="fragment")
+    except (TypeError, ValueError):
+        st.rerun()
+    except Exception as error:
+        if "scope" not in str(error).casefold() and "fragment" not in str(error).casefold():
+            raise
+        st.rerun()
+
 if not storage.configured():
     neon_ui.render_connection_setup(st)
     st.stop()
@@ -298,33 +309,27 @@ def should_record_roll_death(roll,outcome):
     aging_types.update({"being born","newborn","infant","toddler","child","preteen","teen","young adult","adult","elder death-age rng"})
     return roll_type in aging_types and str(outcome or "").strip().casefold() in {"bad result","dies","death"}
 
-def random_death_for_roll(roll,actual_roll=None):
+def random_death_for_roll(roll,actual_roll=None,connection=None):
     """Choose a stable valid date inside an event span or the roll's quarter."""
     due=int(roll.get("due_global_day") or current_gd())
     low=high=due
     source=roll.get("source_id")
-    con=connect()
+    con=connection or connect()
+    owns_connection=connection is None
     try:
         event=con.execute("SELECT start_global_day,end_global_day,event_name FROM events WHERE event_id=?",(source,)).fetchone()
         sim=con.execute("SELECT birth_global_day,death_global_day FROM sims WHERE sim_id=?",(roll.get("sim_id"),)).fetchone()
-    finally:
-        con.close()
-    cause=None
-    if event:
-        low=int(event[0] if event[0] is not None else due)
-        high=int(event[1] if event[1] is not None else low)
-        con=connect()
-        try:
+        cause=None
+        if event:
+            low=int(event[0] if event[0] is not None else due)
+            high=int(event[1] if event[1] is not None else low)
             cause=str(event[2]) if death_causes.enabled(con) and event[2] else None
-        finally:
-            con.close()
-    else:
-        con=connect()
-        try:
+        else:
             low,high=autorolls.aging_death_window(
                 con,roll.get("sim_id"),due,roll.get("roll_type"),actual_roll)
             cause=death_causes.choose(con,roll.get("roll_type"))
-        finally:
+    finally:
+        if owns_connection:
             con.close()
     low,high=sorted((low,high))
     if sim and sim[0] is not None:
@@ -1163,7 +1168,7 @@ def render_today():
                             (str(pd.Timestamp.utcnow()),rid))
                 death_record=None
                 if rr.get("sim_id") and should_record_roll_death(rr,outcome):
-                    death_record=random_death_for_roll(rr,actual)
+                    death_record=random_death_for_roll(rr,actual,connection=con)
                     con.execute("""UPDATE sims SET death_global_day=COALESCE(death_global_day,?),
                                    death_date=COALESCE(death_date,?),cause_of_death=COALESCE(cause_of_death,?)
                                    WHERE sim_id=?""",(*death_record,rr.get("sim_id")))
@@ -1172,7 +1177,7 @@ def render_today():
                     st.success(f"Completed {rid}. Death recorded as {death_record[1]} (Global Day {death_record[0]}).")
                 else:
                     st.success(f"Completed {rid}.")
-                st.rerun()
+                rerun_current_fragment()
 
     if "Pregnancies due" in task_view:
         preg=q(f"""SELECT pregnancy_id,mother_id,mother_name,father_name,conception_global_day,due_global_day,
