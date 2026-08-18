@@ -1,0 +1,5 @@
+<I c="Buff" i="buff" m="buffs.buff" n="SeveralUDO:HCR_Moodlet_Smallpox" s="17845030171097445574">
+  <T n="buff_description">0x5616AE5F</T><T n="buff_name">0x312BD680</T>
+  <T n="icon">2f7d0004:00000000:d50d87a1c634f616</T>
+  <T n="mood_type">14646</T><T n="mood_weight">2</T><T n="visible">True</T>
+</I>

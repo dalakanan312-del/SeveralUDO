@@ -1,0 +1,5 @@
+<I c="Buff" i="buff" m="buffs.buff" n="SeveralUDO:HCR_Moodlet_Plague" s="17080226252045396426">
+  <T n="buff_description">0x2C577503</T><T n="buff_name">0xB0D95CAC</T>
+  <T n="icon">2f7d0004:00000000:d50d87a1c634f616</T>
+  <T n="mood_type">14646</T><T n="mood_weight">2</T><T n="visible">True</T>
+</I>

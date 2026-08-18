@@ -1,0 +1,5 @@
+<I c="Buff" i="buff" m="buffs.buff" n="SeveralUDO:HCR_Moodlet_ScarletFever" s="17405359189249379912">
+  <T n="buff_description">0x4FF8A159</T><T n="buff_name">0x1E038636</T>
+  <T n="icon">2f7d0004:00000000:d50d87a1c634f616</T>
+  <T n="mood_type">14646</T><T n="mood_weight">2</T><T n="visible">True</T>
+</I>

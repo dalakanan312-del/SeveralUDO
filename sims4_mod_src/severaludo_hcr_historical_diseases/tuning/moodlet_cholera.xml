@@ -1,0 +1,5 @@
+<I c="Buff" i="buff" m="buffs.buff" n="SeveralUDO:HCR_Moodlet_Cholera" s="14065302084697750750">
+  <T n="buff_description">0x55E27387</T><T n="buff_name">0x1D738CF8</T>
+  <T n="icon">2f7d0004:00000000:d50d87a1c634f616</T>
+  <T n="mood_type">14646</T><T n="mood_weight">2</T><T n="visible">True</T>
+</I>

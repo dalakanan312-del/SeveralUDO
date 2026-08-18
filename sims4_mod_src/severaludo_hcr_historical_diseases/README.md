@@ -1,4 +1,4 @@
-# SeveralUDO Historical Diseases for Healthcare Redux 0.3.0
+# SeveralUDO Historical Diseases for Healthcare Redux 0.4.0
 
 Unofficial, version-bound extension for **a.deep.indigo's Healthcare Redux**.
 It does not include or modify Healthcare Redux files. Healthcare Redux Core and
@@ -35,10 +35,16 @@ Smallpox, Cholera, Typhus, Dysentery, or Scarlet Fever to that specific Sim.
 `SeveralUDO: Clear Historical Diseases` removes the mapped disease buffs. These
 actions are intended for easy testing and are never selected autonomously.
 
+Each action also adds a visible **Uncomfortable +2** historical symptom
+moodlet with disease-specific wording. Healthcare Redux continues to control
+the underlying symptoms, diagnosis, treatment, progression, and mortality.
+The clear action removes both the HCR disease profile and its historical
+moodlet.
+
 ## Commands
 
 Open the cheat console with `Ctrl+Shift+C`. First run `severaludo.hcr.status`.
-It should show version 0.3.0, confirm Healthcare Redux was detected, and mark
+It should show version 0.4.0, confirm Healthcare Redux was detected, and mark
 each disease `ready`. If the cheat produces no output, verify that both **Script
 Mods Allowed** and **Custom Content and Mods** are enabled, then restart the
 game.

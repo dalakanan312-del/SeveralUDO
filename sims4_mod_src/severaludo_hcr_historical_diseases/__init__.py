@@ -12,7 +12,7 @@ from interactions.base.immediate_interaction import ImmediateSuperInteraction
 from sims4.localization import LocalizationHelperTuning
 
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # Historical labels mapped to the closest HCR disease model.  The HCR model is
 # shown in command output so the player always knows which mechanics apply.
@@ -23,6 +23,15 @@ DISEASES = {
     "typhus": (0x97C578AD63613C67, "Malaria", "severe fever disease"),
     "dysentery": (0xBA72B91AA6291334, "Gastroenteritis", "acute enteric disease"),
     "scarlet_fever": (0xFD2F68D2F98AFBE2, "Tonsillitis", "throat infection"),
+}
+
+HISTORICAL_MOODLETS = {
+    "plague": 0xED0927480477A9CA,
+    "smallpox": 0xF7A64864C26434C6,
+    "cholera": 0xC331FDB990F87CDE,
+    "typhus": 0x6BB3B4BD6227451B,
+    "dysentery": 0xF27E27596C6931B5,
+    "scarlet_fever": 0xF18C41F70F4A4E48,
 }
 
 
@@ -47,7 +56,10 @@ def _hcr_available():
 
 def _disease_tuning():
     manager = services.get_instance_manager(sims4.resources.Types.BUFF)
-    return {key: manager.get(data[0]) for key, data in DISEASES.items()}
+    return {
+        key: (manager.get(data[0]), manager.get(HISTORICAL_MOODLETS[key]))
+        for key, data in DISEASES.items()
+    }
 
 
 def _apply_profile_to_sim(sim, key):
@@ -59,6 +71,11 @@ def _apply_profile_to_sim(sim, key):
     if buff_type is None:
         return False
     sim.add_buff(buff_type)
+    moodlet_type = services.get_instance_manager(sims4.resources.Types.BUFF).get(
+        HISTORICAL_MOODLETS[key]
+    )
+    if moodlet_type is not None:
+        sim.add_buff(moodlet_type)
     return True
 
 
@@ -122,6 +139,10 @@ class ClearHistoricalDiseasesInteraction(_HistoricalDiseasePieInteraction):
             buff_type = manager.get(buff_id)
             if buff_type is not None and sim.has_buff(buff_type):
                 sim.remove_buff_by_type(buff_type)
+        for buff_id in set(HISTORICAL_MOODLETS.values()):
+            buff_type = manager.get(buff_id)
+            if buff_type is not None and sim.has_buff(buff_type):
+                sim.remove_buff_by_type(buff_type)
         return True
 
 
@@ -137,7 +158,8 @@ def list_historical_diseases(_connection=None):
     tunings = _disease_tuning()
     for key in sorted(DISEASES):
         _, hcr_name, model = DISEASES[key]
-        state = "ready" if tunings[key] is not None else "missing"
+        hcr_tuning, moodlet_tuning = tunings[key]
+        state = "ready" if hcr_tuning is not None and moodlet_tuning is not None else "missing"
         out("  {} -> HCR {} ({}) [{}]".format(key, hcr_name, model, state))
 
 
@@ -175,7 +197,7 @@ def apply_historical_disease(profile: str = "", _connection=None):
         return False
 
     try:
-        sim.add_buff(buff_type)
+        _apply_profile_to_sim(sim, key)
     except Exception as exc:
         out("Could not apply the profile: {}".format(exc))
         return False
@@ -206,6 +228,11 @@ def clear_historical_diseases(_connection=None):
     removed = 0
     manager = services.get_instance_manager(sims4.resources.Types.BUFF)
     for buff_id, _, _ in set(DISEASES.values()):
+        buff_type = manager.get(buff_id)
+        if buff_type is not None and sim.has_buff(buff_type):
+            sim.remove_buff_by_type(buff_type)
+            removed += 1
+    for buff_id in set(HISTORICAL_MOODLETS.values()):
         buff_type = manager.get(buff_id)
         if buff_type is not None and sim.has_buff(buff_type):
             sim.remove_buff_by_type(buff_type)
