@@ -8,6 +8,7 @@ $outputDir = Join-Path $repoRoot "dist\sims4_mods"
 $stagingDir = Join-Path ([System.IO.Path]::GetTempPath()) "severaludo_hcr_historical_diseases"
 $archivePath = Join-Path $outputDir "SeveralUDO_HCR_Historical_Diseases.zip"
 $scriptPath = Join-Path $outputDir "SeveralUDO_HCR_Historical_Diseases.ts4script"
+$packagePath = Join-Path $outputDir "SeveralUDO_HCR_Historical_Diseases.package"
 
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 if (Test-Path -LiteralPath $stagingDir) {
@@ -29,6 +30,11 @@ if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath
 if (Test-Path -LiteralPath $scriptPath) { Remove-Item -LiteralPath $scriptPath -Force }
 Compress-Archive -Path (Join-Path $stagingDir "severaludo_hcr_historical_diseases") -DestinationPath $archivePath
 Move-Item -LiteralPath $archivePath -Destination $scriptPath
+& $compiler (Join-Path $sourceRoot "build_package.py") (Join-Path $sourceRoot "tuning") $packagePath
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $packagePath)) {
+    throw "Failed to build the pie-menu tuning package."
+}
 Copy-Item -LiteralPath (Join-Path $sourceRoot "README.md") -Destination (Join-Path $outputDir "SeveralUDO_HCR_Historical_Diseases_README.md") -Force
 
 Write-Output $scriptPath
+Write-Output $packagePath

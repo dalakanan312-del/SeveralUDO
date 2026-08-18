@@ -1,0 +1,8 @@
+<I c="ApplyTyphusInteraction" i="interaction" m="severaludo_hcr_historical_diseases" n="SeveralUDO:HCR_Apply_Typhus" s="4218321947979730255">
+  <V n="_saveable" t="disabled" />
+  <T n="display_name">0x44D47B18</T>
+  <T n="allow_autonomous">False</T>
+  <T n="pie_menu_priority">10</T>
+  <U n="progress_bar_enabled"><T n="bar_enabled">False</T></U>
+  <E n="target_type">OBJECT</E>
+</I>

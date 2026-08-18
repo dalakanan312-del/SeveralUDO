@@ -1,4 +1,4 @@
-# SeveralUDO Historical Diseases for Healthcare Redux 0.2.0
+# SeveralUDO Historical Diseases for Healthcare Redux 0.3.0
 
 Unofficial, version-bound extension for **a.deep.indigo's Healthcare Redux**.
 It does not include or modify Healthcare Redux files. Healthcare Redux Core and
@@ -22,14 +22,23 @@ The backing model is always disclosed in game and in this table.
 ## Installation
 
 1. Install the current Healthcare Redux Core and Diseases module.
-2. Put `SeveralUDO_HCR_Historical_Diseases.ts4script` no more than one folder
-   deep inside the Sims 4 `Mods` folder.
-3. Enable **Script Mods Allowed**, then restart the game.
+2. Put both `SeveralUDO_HCR_Historical_Diseases.ts4script` and
+   `SeveralUDO_HCR_Historical_Diseases.package` no more than one folder deep
+   inside the Sims 4 `Mods` folder.
+3. Install XML Injector v4.2. Do not distribute or rename its script file.
+4. Enable **Script Mods Allowed**, then restart the game.
+
+## Sim pie menu
+
+Click any Sim and choose one of the `SeveralUDO:` actions to apply Plague,
+Smallpox, Cholera, Typhus, Dysentery, or Scarlet Fever to that specific Sim.
+`SeveralUDO: Clear Historical Diseases` removes the mapped disease buffs. These
+actions are intended for easy testing and are never selected autonomously.
 
 ## Commands
 
 Open the cheat console with `Ctrl+Shift+C`. First run `severaludo.hcr.status`.
-It should show version 0.2.0, confirm Healthcare Redux was detected, and mark
+It should show version 0.3.0, confirm Healthcare Redux was detected, and mark
 each disease `ready`. If the cheat produces no output, verify that both **Script
 Mods Allowed** and **Custom Content and Mods** are enabled, then restart the
 game.

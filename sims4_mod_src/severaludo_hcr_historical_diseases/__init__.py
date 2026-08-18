@@ -8,9 +8,11 @@ asks HCR to handle the actual illness once a historical profile is selected.
 import sims4.commands
 import sims4.resources
 import services
+from interactions.base.immediate_interaction import ImmediateSuperInteraction
+from sims4.localization import LocalizationHelperTuning
 
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 # Historical labels mapped to the closest HCR disease model.  The HCR model is
 # shown in command output so the player always knows which mechanics apply.
@@ -46,6 +48,81 @@ def _hcr_available():
 def _disease_tuning():
     manager = services.get_instance_manager(sims4.resources.Types.BUFF)
     return {key: manager.get(data[0]) for key, data in DISEASES.items()}
+
+
+def _apply_profile_to_sim(sim, key):
+    """Apply one mapped HCR disease to a specific Sim object."""
+    if sim is None or key not in DISEASES or not _hcr_available():
+        return False
+    buff_id, _, _ = DISEASES[key]
+    buff_type = services.get_instance_manager(sims4.resources.Types.BUFF).get(buff_id)
+    if buff_type is None:
+        return False
+    sim.add_buff(buff_type)
+    return True
+
+
+class _HistoricalDiseasePieInteraction(ImmediateSuperInteraction):
+    """Base for lightweight Sim pie-menu testing actions."""
+
+    profile = None
+    menu_label = "SeveralUDO Historical Diseases"
+
+    @classmethod
+    def _get_name(cls, inst, target, context, **interaction_parameters):
+        return LocalizationHelperTuning.get_raw_text(cls.menu_label)
+
+    def _run_interaction_gen(self, timeline):
+        if False:
+            yield None
+        return _apply_profile_to_sim(self.target, self.profile)
+
+
+class ApplyPlagueInteraction(_HistoricalDiseasePieInteraction):
+    profile = "plague"
+    menu_label = "SeveralUDO: Apply Plague"
+
+
+class ApplySmallpoxInteraction(_HistoricalDiseasePieInteraction):
+    profile = "smallpox"
+    menu_label = "SeveralUDO: Apply Smallpox"
+
+
+class ApplyCholeraInteraction(_HistoricalDiseasePieInteraction):
+    profile = "cholera"
+    menu_label = "SeveralUDO: Apply Cholera"
+
+
+class ApplyTyphusInteraction(_HistoricalDiseasePieInteraction):
+    profile = "typhus"
+    menu_label = "SeveralUDO: Apply Typhus"
+
+
+class ApplyDysenteryInteraction(_HistoricalDiseasePieInteraction):
+    profile = "dysentery"
+    menu_label = "SeveralUDO: Apply Dysentery"
+
+
+class ApplyScarletFeverInteraction(_HistoricalDiseasePieInteraction):
+    profile = "scarlet_fever"
+    menu_label = "SeveralUDO: Apply Scarlet Fever"
+
+
+class ClearHistoricalDiseasesInteraction(_HistoricalDiseasePieInteraction):
+    menu_label = "SeveralUDO: Clear Historical Diseases"
+
+    def _run_interaction_gen(self, timeline):
+        if False:
+            yield None
+        sim = self.target
+        if sim is None:
+            return False
+        manager = services.get_instance_manager(sims4.resources.Types.BUFF)
+        for buff_id, _, _ in set(DISEASES.values()):
+            buff_type = manager.get(buff_id)
+            if buff_type is not None and sim.has_buff(buff_type):
+                sim.remove_buff_by_type(buff_type)
+        return True
 
 
 @sims4.commands.Command(
