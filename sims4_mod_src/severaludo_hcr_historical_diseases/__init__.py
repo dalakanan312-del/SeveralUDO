@@ -10,6 +10,7 @@ import sims4.resources
 import services
 from interactions.base.immediate_interaction import ImmediateSuperInteraction
 from sims4.localization import LocalizationHelperTuning
+from sims4.utils import flexmethod
 
 
 VERSION = "0.4.0"
@@ -85,7 +86,7 @@ class _HistoricalDiseasePieInteraction(ImmediateSuperInteraction):
     profile = None
     menu_label = "SeveralUDO Historical Diseases"
 
-    @classmethod
+    @flexmethod
     def _get_name(cls, inst, target, context, **interaction_parameters):
         return LocalizationHelperTuning.get_raw_text(cls.menu_label)
 
