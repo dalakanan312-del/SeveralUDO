@@ -1034,6 +1034,59 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertGreaterEqual(sim.data["death_global_day"], save.global_day)
                 session.rollback()
 
+    def test_pan_european_famine_matches_england_and_deduplicates_imports(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(
+                    workspace_id=template.workspace_id,
+                    name="Pan-European famine roll test",
+                    global_day=141,
+                    start_year=1550,
+                    days_per_year=4,
+                    settings={},
+                )
+                session.add(save); session.flush()
+                household = Record(
+                    save_id=save.id, kind="household", label="English household",
+                    data={"location": "England", "active": True},
+                )
+                session.add(household); session.flush()
+                assigned = Record(
+                    save_id=save.id, kind="sim", label="Assigned English Sim", global_day=1,
+                    data={"birth_global_day": 1, "current_household_id": household.id},
+                )
+                unassigned = Record(
+                    save_id=save.id, kind="sim", label="Unassigned English Challenge Sim", global_day=1,
+                    data={"birth_global_day": 1},
+                )
+                event_data = {
+                    "start_global_day": 141, "end_global_day": 152,
+                    "scope": "Famine", "location": "Italy, France, Low Countries, Britain, Ireland",
+                    "affected_class": "All Sims / Households", "roll_required": True, "active": True,
+                    "notes": "Flip for household impact. D4 for all Sims; 3 means famine death.",
+                }
+                migrated = Record(
+                    save_id=save.id, kind="event", label="Pan-European Famine",
+                    global_day=141, data=dict(event_data),
+                )
+                catalog = Record(
+                    save_id=save.id, kind="event", label="Pan-European Famine", global_day=141,
+                    data={**event_data, "catalog_id": "EVT-0401"},
+                )
+                session.add_all([assigned, unassigned, migrated, catalog]); session.flush()
+
+                self.assertEqual(schedule_rolls(session, save), 2)
+                rolls = list(session.scalars(select(Record).where(
+                    Record.save_id == save.id, Record.kind == "roll",
+                    Record.data["event_id"].as_string() == catalog.id,
+                )))
+                self.assertEqual({item.data["sim_id"] for item in rolls}, {assigned.id, unassigned.id})
+                self.assertTrue(all(item.data["die"] == "d4" for item in rolls))
+                self.assertTrue(all(item.data["bad_results"] == "3" for item in rolls))
+                self.assertEqual(schedule_rolls(session, save), 0)
+                session.rollback()
+
     def test_first_clock_snapshot_preserves_death_and_significant_relationship(self):
         marker = uuid.uuid4().hex
         with TestClient(app):

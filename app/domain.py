@@ -711,8 +711,86 @@ def _event_is_global(event: Record) -> bool:
     return scope.startswith("global") or location.startswith("global") or scope in {"world", "worldwide", "all", "everyone", "all sims"}
 
 
+_EVENT_LOCATION_GROUPS = {
+    "britain": {
+        "britain", "great britain", "united kingdom", "uk", "british isles",
+        "england", "scotland", "wales",
+    },
+    "low countries": {
+        "low countries", "netherlands", "belgium", "luxembourg", "holland",
+    },
+    "europe": {
+        "europe", "britain", "great britain", "united kingdom", "uk", "british isles",
+        "england", "scotland", "wales", "ireland", "france", "germany", "italy",
+        "spain", "portugal", "netherlands", "belgium", "luxembourg", "holland",
+        "austria", "switzerland", "poland", "denmark", "norway", "sweden", "finland",
+        "iceland", "greece", "hungary", "bohemia", "czechia", "slovakia", "romania",
+        "bulgaria", "serbia", "croatia", "slovenia", "bosnia", "albania", "ukraine",
+        "belarus", "lithuania", "latvia", "estonia", "moldova", "russia", "persia",
+        "holy roman empire", "ottoman empire",
+    },
+}
+
+_EVENT_LOCATION_ALIASES = {
+    "pan european": "europe",
+    "pan-european": "europe",
+    "great britain": "britain",
+    "united kingdom": "britain",
+    "uk": "britain",
+    "british isles": "britain",
+    "holland": "netherlands",
+}
+
+
+def _normalized_location(value: object) -> str:
+    text = re.sub(r"[^a-z0-9 -]+", " ", str(value or "").casefold())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _location_parts(value: object) -> list[str]:
+    parts = []
+    for raw in re.split(r"[,/]", str(value or "")):
+        normalized = _normalized_location(raw)
+        if normalized and normalized not in {"see notes", "affected areas"}:
+            parts.append(_EVENT_LOCATION_ALIASES.get(normalized, normalized))
+    return parts
+
+
+def _event_location_matches(target: object, places: object) -> bool:
+    """Match historical regions without broadening country-specific events.
+
+    England is part of both Britain and Europe, but an event explicitly limited
+    to France must not become applicable merely because both are European.
+    Therefore only a *target* region expands to its member countries.
+    """
+    targets, recorded_places = _location_parts(target), _location_parts(places)
+    for target_part in targets:
+        members = _EVENT_LOCATION_GROUPS.get(target_part, {target_part})
+        for place in recorded_places:
+            place_alias = _EVENT_LOCATION_ALIASES.get(place, place)
+            if any(
+                member == place_alias or member in place_alias or place_alias in member
+                for member in members
+            ):
+                return True
+    return False
+
+
+def _event_occurrence_key(event: Record) -> tuple[str, int, int, str]:
+    data = event.data or {}
+    start = int(data.get("start_global_day", event.global_day) or 0)
+    end = int(data.get("end_global_day", start) or start)
+    return (
+        re.sub(r"\s+", " ", event.label.casefold()).strip(),
+        start,
+        end,
+        _normalized_location(data.get("location")),
+    )
+
+
 def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None = None,
-                   household: Record | None = None, save: ChronicleSave | None = None) -> bool:
+                   household: Record | None = None, save: ChronicleSave | None = None,
+                   fallback_location: str = "") -> bool:
     data, original = event.data or {}, sim.data or {}
     household_data = household.data if household else {}
     # Household and challenge defaults fill gaps but never replace explicit Sim data.
@@ -760,8 +838,10 @@ def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None 
         (challenge or {}).get("challenge_location"), (challenge or {}).get("location"),
         (challenge or {}).get("country"),
     )).casefold()
-    target_parts = [part.strip() for part in re.split(r"[,/]", target) if part.strip() and part.strip() not in {"see notes", "affected areas"}]
-    if target_parts and not any(part in places or places in part for part in target_parts if places):
+    if not places.strip():
+        places = fallback_location.casefold()
+    target_parts = _location_parts(target)
+    if target_parts and not _event_location_matches(target, places):
         return False
     social = str(sim_data.get("social_class") or household_data.get("social_class") or "").casefold()
     affected = str(data.get("affected_class") or "").casefold()
@@ -1368,33 +1448,59 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     created += schedule_occult_rolls(session, save, sims)
     # Reconcile every historical event reached so far. This also backfills a Sim
     # added after an event date, while the stable source key prevents duplicates.
-    events = list(session.scalars(select(Record).where(
+    event_candidates = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "event", Record.deleted.is_(False),
         Record.global_day.is_not(None), Record.global_day <= save.global_day,
     )))
+    event_candidates = [
+        event for event in event_candidates
+        if not event_is_ignored(event) and event.data.get("active", True) and event.data.get("roll_required")
+    ]
+    event_groups: dict[tuple[str, int, int, str], list[Record]] = {}
+    for event in event_candidates:
+        event_groups.setdefault(_event_occurrence_key(event), []).append(event)
+    events = []
+    for group in event_groups.values():
+        events.append(next((item for item in group if (item.data or {}).get("catalog_id")), group[0]))
     event_rules = _event_rule_map(session, save)
     households = {
         record.id: record for record in session.scalars(select(Record).where(
             Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
         ))
     }
+    household_locations = {
+        _normalized_location(value)
+        for household in households.values()
+        for value in (
+            (household.data or {}).get("country"),
+            (household.data or {}).get("location"),
+            (household.data or {}).get("world"),
+        )
+        if _normalized_location(value)
+    }
+    fallback_location = next(iter(household_locations)) if len(household_locations) == 1 else ""
     existing_event_sources = set(session.scalars(select(Record.data["source"].as_string()).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
         Record.data["source"].as_string().like("event:%"),
     )))
     for event in events:
-        if event_is_ignored(event) or not event.data.get("active", True) or not event.data.get("roll_required"):
-            continue
         due = int(event.data.get("start_global_day", event.global_day))
         rule_data = event_rules.get(event_key(event), {})
         spec = event_roll_configuration(event, rule_data)
+        equivalent_event_ids = {
+            equivalent.id for equivalent in event_groups[_event_occurrence_key(event)]
+        }
         for sim in sims:
             source = f"event:{event.id}:{sim.id}"
             death = sim.data.get("death_global_day")
             household = households.get(str((sim.data or {}).get("current_household_id") or ""))
             event_text=f"{event.label} {(event.data or {}).get('scope','')} {(event.data or {}).get('notes','')}".casefold()
             servo_exempt="Servo" in occult_rules.sim_occult_types(sim.data) and any(word in event_text for word in ("disease","illness","plague","epidemic","pandemic","famine","starvation","drown"))
-            if bool((sim.data or {}).get("game_was_dead")) or (death is not None and int(death) <= save.global_day) or source in existing_event_sources or servo_exempt or not _event_applies(event, sim, due, rule_data, household, save):
+            equivalent_source_exists = any(
+                f"event:{event_id}:{sim.id}" in existing_event_sources
+                for event_id in equivalent_event_ids
+            )
+            if bool((sim.data or {}).get("game_was_dead")) or (death is not None and int(death) <= save.global_day) or equivalent_source_exists or servo_exempt or not _event_applies(event, sim, due, rule_data, household, save, fallback_location):
                 continue
             roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {sim.label}", global_day=due, data={
                 "event_id": event.id, "source_id": event.id, "sim_id": sim.id, "sim_name": sim.label,
