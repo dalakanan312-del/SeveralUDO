@@ -1,12 +1,182 @@
-{% extends "base.html" %}{% block title %}Game Clock · Decades Tracker{% endblock %}{% block body %}
-<header class="hero compact"><p class="eyebrow">AUTOMATIC GAME CLOCK</p><h1>Game Clock</h1><p>The first report anchors the game calendar to this save. Later reports advance the tracker and detect game changes without ever rewinding it.</p></header>
+{% extends "base.html" %}
+{% block title %}Game Clock · Decades Tracker{% endblock %}
+{% block body %}
+<header class="hero compact">
+  <p class="eyebrow">AUTOMATIC GAME CLOCK</p>
+  <h1>Game Clock</h1>
+  <p>The first report anchors the game calendar to this save. Later reports advance the tracker and detect game changes without ever rewinding it.</p>
+</header>
 {% if clock_notice %}<div class="notice">{{clock_notice}}</div>{% endif %}
-<section class="metrics"><article><strong>{{'Active' if clock_link and clock_link.enabled else 'Not linked'}}</strong><span>receiver</span></article><article><strong>{{clock_link.last_game_day if clock_link and clock_link.last_game_day is not none else 'Waiting'}}</strong><span>last game day</span></article><article><strong>{{save.global_day}}</strong><span>tracker Global Day</span></article></section>
-{% if clock_link and clock_link.last_game_day is not none %}<div class="notice"><strong>{{sim_weekday(clock_link.last_game_day)}}</strong> · {{'%02d'|format(clock_link.last_game_hour or 0)}}:{{'%02d'|format(clock_link.last_game_minute or 0)}} · last report {{clock_link.last_seen_at}}</div>{% endif %}
-{% if clock_link and clock_link.last_game_day is not none %}<section class="panel"><h2>Clock alignment</h2><p>The current anchor projects tracker Global Day {{clock_projected_day}}.{% if clock_drift %} This is {{clock_drift|abs}} day{{'' if clock_drift|abs == 1 else 's'}} {{'behind' if clock_drift > 0 else 'ahead of'}} the open save.{% else %} It matches the open save.{% endif %}</p>{% if clock_drift %}<form action="/api/clock/reanchor" method="post" onsubmit="return confirm('Pair the last reported game day with the current tracker day? This does not rotate the private token or rewind the tracker.')"><button class="primary">Repair alignment from the last report</button></form><small>This changes only the calendar pairing. It does not alter Sims, records, or the game save.</small>{% endif %}</section>{% endif %}
-<section class="panel"><h2>Create the private link</h2><p>Create a new token, then place the downloaded configuration with the game bridge. Replacing it disables the previous token.</p><button id="create-clock" class="primary">Create or replace private clock link</button><div id="clock-result" class="secret-result" hidden></div></section>
-<section class="panel"><h2>Install the fully compatible bridge</h2><p>Clock Sync 2.0.1 sends pregnancy counts and progress, traits, skill levels, milestones, career, education, illness detail, occult state, death, household, location, parent and relationship details for active and played households. It recognizes supported occult states without requiring every pack and safely ignores unavailable packs or optional health mods.</p><p><a class="button primary" href="/downloads/clock-sync">Download Clock Sync 2.0.1</a></p><ol><li>Close The Sims 4 before changing Script Mods.</li><li>Replace <strong>SeveralUDOClockSync.ts4script</strong> in <strong>Documents → Electronic Arts → The Sims 4 → Mods → SeveralUDOClockSync</strong>. Keep your existing config.json and relay files.</li><li>Enable Script Mods in The Sims 4, then restart the game.</li><li>Create a private link above only if the current link is missing or needs to be replaced.</li><li>Start the local tracker and relay before the game when using the desktop edition.</li><li>Open a household and let live mode run briefly. The first successful report pairs the current game day with Global Day {{save.global_day}}.</li><li>Review detected details in Automation Inbox before accepting them.</li></ol><p><small>The game can still report if it was opened before the relay; start the relay, then change lots or let live mode advance to trigger another report.</small></p></section>
-{% if local_mode %}<section class="panel" id="save-scan"><p class="eyebrow">NO MOD REQUIRED · READ ONLY</p><h2>Scan a Sims 4 save file</h2><p>This supplements Clock Sync by reading the selected primary save without changing it. It can find active/player households, Sims, names, life stages, funds, spouses and the saved game day/time. Live illnesses, traits, skills, milestones, parent detail and moment-to-moment changes still come from Clock Sync.</p>{% if game_save_notice %}<div class="notice">{{game_save_notice}}</div>{% endif %}{% if game_save_files %}<form action="/api/game-save/scan" method="post"><label>Detected save<select name="file_name">{% for item in game_save_files %}<option value="{{item.path.name}}">{{item.path.name}} · {{item.modified_at.strftime('%b %d, %Y %I:%M %p')}} · {{(item.size/1048576)|round(1)}} MB</option>{% endfor %}</select></label><button class="primary">Preview newest saved data</button></form>{% else %}<div class="empty">No primary saves were found in Documents → Electronic Arts → The Sims 4 → saves.</div>{% endif %}
-{% if game_save_scan %}{% set slot=game_save_scan.slot %}<div class="metrics"><article><strong>{{slot.game_day}}</strong><span>saved game day</span></article><article><strong>{{'%02d:%02d'|format(slot.game_hour,slot.game_minute)}}</strong><span>saved game time</span></article><article><strong>{{game_save_scan.relevant_households|length}}</strong><span>player households</span></article><article><strong>{{game_save_scan.relevant_sims|length}}</strong><span>reviewable Sims</span></article></div><form action="/api/game-save/apply" method="post"><label class="check-row"><input type="checkbox" name="advance_clock" checked> Advance the tracker from this save-file clock (first scan anchors; later scans advance only)</label><div class="scan-list">{% for sim in game_save_scan.relevant_sims %}<label class="scan-row"><input type="checkbox" name="game_sim_id" value="{{sim.game_sim_id}}" checked><span><strong>{{sim.name}}</strong><small>{{sim.age_stage|replace('youngadult','young adult')|title}} · {{sim.game_household_id}}{% if sim.tracker_record_id %} · linked to {{sim.tracker_record_label}}{% else %} · review as new or match by exact name{% endif %}</small></span></label>{% endfor %}</div><button class="primary">Reconcile selected Sims</button><small>New Sims and uncertain changes go to Automation Inbox for approval.</small></form>{% endif %}</section>{% endif %}
-<script>document.getElementById('create-clock').addEventListener('click',async()=>{const box=document.getElementById('clock-result');box.hidden=false;box.textContent='Creating…';const response=await fetch('/api/clock/links',{method:'POST'});const data=await response.json();box.innerHTML=response.ok?`<strong>Save this now—the token is shown once.</strong><label>Endpoint<input readonly value="${data.endpoint}"></label><label>Token<input readonly value="${data.token}"></label>`:`<span class="error">${data.detail||'Could not create the link.'}</span>`})</script>
+
+<section class="metrics">
+  <article><strong>{{'Active' if clock_link and clock_link.enabled else 'Not linked'}}</strong><span>receiver</span></article>
+  <article><strong>{{clock_link.last_game_day if clock_link and clock_link.last_game_day is not none else 'Waiting'}}</strong><span>last game day</span></article>
+  <article><strong>{{save.global_day}}</strong><span>tracker Global Day</span></article>
+</section>
+{% if clock_link and clock_link.last_game_day is not none %}
+<div class="notice"><strong>{{sim_weekday(clock_link.last_game_day)}}</strong> · {{'%02d'|format(clock_link.last_game_hour or 0)}}:{{'%02d'|format(clock_link.last_game_minute or 0)}} · last report {{clock_link.last_seen_at}}</div>
+{% endif %}
+
+{% if clock_link and clock_link.last_game_day is not none %}
+<section class="panel">
+  <h2>Clock alignment</h2>
+  <p>The current anchor projects tracker Global Day {{clock_projected_day}}.{% if clock_drift %} This is {{clock_drift|abs}} day{{'' if clock_drift|abs == 1 else 's'}} {{'behind' if clock_drift > 0 else 'ahead of'}} the open save.{% else %} It matches the open save.{% endif %}</p>
+  {% if clock_drift %}
+  <form action="/api/clock/reanchor" method="post" onsubmit="return confirm('Pair the last reported game day with the current tracker day? This does not rotate the private token or rewind the tracker.')">
+    <button class="primary">Repair alignment from the last report</button>
+  </form>
+  <small>This changes only the calendar pairing. It does not alter Sims, records, or the game save.</small>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="panel">
+  <p class="eyebrow">RECOMMENDED · EVERYTHING INCLUDED</p>
+  <h2>Download a ready-to-install private kit</h2>
+  <p>This ZIP contains the Script Mod, local relay, hidden relay starter, detailed guides and a working <strong>config.json</strong> for <strong>{{save.name}}</strong>.</p>
+  <form action="/downloads/clock-sync/configured" method="post" onsubmit="return confirm('Create a fresh private Clock Sync token for this save? Any older config for this tracker save will stop working.')">
+    <button class="primary">Create link and download private kit</button>
+  </form>
+  <p><small>Private kits must not be shared: config.json connects directly to this tracker save. Creating another private kit invalidates the previous token.</small></p>
+</section>
+
+<section class="panel">
+  <p class="eyebrow">REUSABLE · NO PRIVATE TOKEN</p>
+  <h2>Download the complete reusable kit</h2>
+  <p>Use this for updates or public sharing. It includes every Clock Sync file and a blank configuration template, but no workspace or save credential.</p>
+  <p><a class="button primary" href="/downloads/clock-sync">Download Clock Sync 2.0.1 complete kit</a></p>
+  <details>
+    <summary>Download individual files</summary>
+    <div class="action-bar">
+      <a class="button" href="/downloads/clock-sync/script">Script Mod</a>
+      <a class="button" href="/downloads/clock-sync/relay">PowerShell relay</a>
+      <a class="button" href="/downloads/clock-sync/starter">Relay starter BAT</a>
+      <a class="button" href="/downloads/clock-sync/config-template">Config template</a>
+      <a class="button" href="/downloads/clock-sync/instructions">Installation guide</a>
+      <a class="button" href="/downloads/clock-sync/troubleshooting">Troubleshooting guide</a>
+    </div>
+  </details>
+</section>
+
+<section class="panel">
+  <h2>Create or replace only the private config</h2>
+  <p>Use this when the mod files are already installed and you only need to connect them to the currently selected tracker save.</p>
+  <button id="create-clock" class="primary">Create or replace private clock link</button>
+  <div id="clock-result" class="secret-result" hidden aria-live="polite"></div>
+</section>
+
+<section class="panel">
+  <p class="eyebrow">DETAILED INSTALLATION</p>
+  <h2>Install Clock Sync on Windows</h2>
+  <ol>
+    <li><strong>Close The Sims 4</strong> before installing or replacing the <code>.ts4script</code> file.</li>
+    <li>Download the <strong>ready-to-install private kit</strong> above. Open the ZIP and copy its <strong>SeveralUDOClockSync</strong> folder into <strong>Documents → Electronic Arts → The Sims 4 → Mods</strong>.</li>
+    <li>Confirm the file is no deeper than <strong>Mods → SeveralUDOClockSync → SeveralUDOClockSync.ts4script</strong>. Script Mods cannot be buried in extra folders.</li>
+    <li>In The Sims 4, open <strong>Game Options → Other</strong>. Enable both <strong>Custom Content and Mods</strong> and <strong>Script Mods Allowed</strong>, then restart the game if either setting changed.</li>
+    <li>Before opening the game, double-click <strong>Start SeveralUDO Clock Relay.bat</strong>. A window may flash and disappear; that is normal because the relay stays hidden.</li>
+    <li>Start The Sims 4, load a household, enter Live Mode and let in-game time move briefly. Changing lots also triggers a new report.</li>
+    <li>Return here. <strong>Receiver</strong> should say Active, and <strong>Last game day</strong> should no longer say Waiting.</li>
+    <li>Open <a href="/p/automation">Automation Inbox</a> to verify new Sims, pregnancies, illnesses, deaths, relationships and other detected details before accepting them.</li>
+  </ol>
+  <div class="notice"><strong>Already installed?</strong> During an update, replace the Script Mod and relay files but keep your working config.json. Replace config.json only when connecting a different tracker save or repairing a private link.</div>
+</section>
+
+<section class="grid">
+  <article class="panel">
+    <h2>What each file does</h2>
+    <dl>
+      <dt><strong>SeveralUDOClockSync.ts4script</strong></dt><dd>Reads supported game data and writes a local pending report.</dd>
+      <dt><strong>SeveralUDOClockRelay.ps1</strong></dt><dd>Sends that pending report to the configured tracker receiver.</dd>
+      <dt><strong>Start SeveralUDO Clock Relay.bat</strong></dt><dd>Starts the relay hidden. Running it twice is safe.</dd>
+      <dt><strong>config.json</strong></dt><dd>Contains the private endpoint and token for one tracker save. Never share it.</dd>
+      <dt><strong>README and TROUBLESHOOTING</strong></dt><dd>Offline copies of these instructions for installation and support.</dd>
+    </dl>
+  </article>
+  <article class="panel">
+    <h2>Normal daily use</h2>
+    <ol>
+      <li>Start the relay.</li>
+      <li>Open The Sims 4 and play in Live Mode.</li>
+      <li>Check the Game Clock status when convenient.</li>
+      <li>Review Automation Inbox before accepting uncertain changes.</li>
+    </ol>
+    <p>The tracker never edits or rewinds your Sims 4 save. Loading an older game save never rewinds Global Day automatically.</p>
+  </article>
+</section>
+
+<section class="panel">
+  <h2>Troubleshooting</h2>
+  <details open><summary>Receiver still says Waiting</summary><p>Start the BAT file, load a household in Live Mode and let time advance or change lots. Confirm config.json is beside the Script Mod. Refresh this page after the report.</p></details>
+  <details><summary>The BAT file flashes and disappears</summary><p>That is expected. The relay runs in a hidden PowerShell window. A built-in mutex prevents duplicate relay processes.</p></details>
+  <details><summary>pending_report.json remains in the folder</summary><p>Open last_result.json in Notepad. It records the most recent delivery error. Common causes are no internet connection, a stopped desktop tracker, an expired token or the wrong receiver URL. The relay retries after the cause is fixed.</p></details>
+  <details><summary>The wrong tracker save is advancing</summary><p>One config.json points to one tracker save. Open the correct save here and download its private kit, then replace the old config.json.</p></details>
+  <details><summary>The mod is missing from the game's startup list</summary><p>Enable Script Mods Allowed, keep the .ts4script no more than one folder beneath Mods, remove duplicate old copies and restart The Sims 4. If needed, close the game and remove localthumbcache.package.</p></details>
+  <details><summary>ModGuard or security software warns about networking</summary><p>Clock Sync 2.0.1 writes locally inside the game. The separate PowerShell relay performs the HTTPS request. Use only files downloaded from this tracker and never approve differently named scripts or executables.</p></details>
+</section>
+
+{% if local_mode %}
+<section class="panel" id="save-scan">
+  <p class="eyebrow">NO MOD REQUIRED · READ ONLY</p>
+  <h2>Scan a Sims 4 save file</h2>
+  <p>This supplements Clock Sync by reading the selected primary save without changing it. It can find active/player households, Sims, names, life stages, funds, spouses and the saved game day/time. Live illnesses, traits, skills, milestones, parent detail and moment-to-moment changes still come from Clock Sync.</p>
+  {% if game_save_notice %}<div class="notice">{{game_save_notice}}</div>{% endif %}
+  {% if game_save_files %}
+  <form action="/api/game-save/scan" method="post">
+    <label>Detected save<select name="file_name">{% for item in game_save_files %}<option value="{{item.path.name}}">{{item.path.name}} · {{item.modified_at.strftime('%b %d, %Y %I:%M %p')}} · {{(item.size/1048576)|round(1)}} MB</option>{% endfor %}</select></label>
+    <button class="primary">Preview newest saved data</button>
+  </form>
+  {% else %}<div class="empty">No primary saves were found in Documents → Electronic Arts → The Sims 4 → saves.</div>{% endif %}
+  {% if game_save_scan %}
+  {% set slot=game_save_scan.slot %}
+  <div class="metrics"><article><strong>{{slot.game_day}}</strong><span>saved game day</span></article><article><strong>{{'%02d:%02d'|format(slot.game_hour,slot.game_minute)}}</strong><span>saved game time</span></article><article><strong>{{game_save_scan.relevant_households|length}}</strong><span>player households</span></article><article><strong>{{game_save_scan.relevant_sims|length}}</strong><span>reviewable Sims</span></article></div>
+  <form action="/api/game-save/apply" method="post">
+    <label class="check-row"><input type="checkbox" name="advance_clock" checked> Advance the tracker from this save-file clock (first scan anchors; later scans advance only)</label>
+    <div class="scan-list">{% for sim in game_save_scan.relevant_sims %}<label class="scan-row"><input type="checkbox" name="game_sim_id" value="{{sim.game_sim_id}}" checked><span><strong>{{sim.name}}</strong><small>{{sim.age_stage|replace('youngadult','young adult')|title}} · {{sim.game_household_id}}{% if sim.tracker_record_id %} · linked to {{sim.tracker_record_label}}{% else %} · review as new or match by exact name{% endif %}</small></span></label>{% endfor %}</div>
+    <button class="primary">Reconcile selected Sims</button>
+    <small>New Sims and uncertain changes go to Automation Inbox for approval.</small>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+<script>
+document.getElementById('create-clock').addEventListener('click', async () => {
+  const box = document.getElementById('clock-result');
+  box.hidden = false;
+  box.textContent = 'Creating…';
+  const response = await fetch('/api/clock/links', {method: 'POST'});
+  const data = await response.json();
+  box.replaceChildren();
+  if (!response.ok) {
+    const error = document.createElement('span');
+    error.className = 'error';
+    error.textContent = data.detail || 'Could not create the link.';
+    box.append(error);
+    return;
+  }
+  const heading = document.createElement('strong');
+  heading.textContent = 'Save this now—the token is shown once.';
+  box.append(heading);
+  for (const [labelText, value] of [['Endpoint', data.endpoint], ['Token', data.token]]) {
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    const input = document.createElement('input');
+    input.readOnly = true;
+    input.value = value;
+    input.addEventListener('click', () => input.select());
+    label.append(input);
+    box.append(label);
+  }
+  const config = JSON.stringify({receiver_url: data.endpoint, sync_token: data.token, enabled: true}, null, 2) + '\n';
+  const download = document.createElement('a');
+  download.className = 'button primary';
+  download.download = 'config.json';
+  download.href = URL.createObjectURL(new Blob([config], {type: 'application/json'}));
+  download.textContent = 'Download private config.json';
+  box.append(download);
+  const warning = document.createElement('small');
+  warning.textContent = 'Put config.json beside the Script Mod and relay files. Never share it.';
+  box.append(warning);
+});
+</script>
 {% endblock %}

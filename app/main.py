@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, auth, automation, backup_service, calendar_utils, clock, dice, exports, game_metadata, names, notifications, occult_rules, portraits, save_scanner, sync, storyline, insights
+from . import accounts, auth, automation, backup_service, calendar_utils, clock, clock_bundle, dice, exports, game_metadata, names, notifications, occult_rules, portraits, save_scanner, sync, storyline, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -2549,17 +2549,25 @@ async def sync_push(request: Request, authorization: str | None = Header(None)):
         return {"results": results, **sync.pull(session, save.id, int(body.get("after", 0)))}
 
 
+def rotate_clock_link(session, save_id: str) -> str:
+    """Create a fresh one-time Clock Sync credential for a save."""
+    raw = token(32)
+    existing = session.scalar(select(ClockLink).where(ClockLink.save_id == save_id))
+    if existing:
+        existing.token_hash = hash_secret(raw)
+        existing.enabled = True
+    else:
+        session.add(ClockLink(save_id=save_id, token_hash=hash_secret(raw)))
+    session.flush()
+    return raw
+
+
 @app.post("/api/clock/links")
 def create_clock_link(request: Request):
     with db() as session:
         ctx = context(request, session)
         if not ctx["save"]: raise HTTPException(400)
-        existing = session.scalar(select(ClockLink).where(ClockLink.save_id == ctx["save"].id))
-        raw = token(32)
-        if existing:
-            existing.token_hash = hash_secret(raw); existing.enabled = True
-        else:
-            session.add(ClockLink(save_id=ctx["save"].id, token_hash=hash_secret(raw)))
+        raw = rotate_clock_link(session, ctx["save"].id)
         base_url = str(request.base_url).rstrip("/") if settings.local_mode else settings.public_url
         return {"token": raw, "endpoint": f"{base_url}/api/clock/report", "works_offline": settings.local_mode}
 
@@ -2640,10 +2648,54 @@ async def apply_game_save_scan(request: Request):
 def download_clock_sync(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package = ROOT / "clock_bridge" / "SeveralUDOClockSync.ts4script"
-    if not package.exists(): raise HTTPException(404, "Clock Sync package is unavailable in this build.")
-    return Response(package.read_bytes(), media_type="application/zip", headers={
-        "Content-Disposition": 'attachment; filename="SeveralUDOClockSync.ts4script"',
+    try:
+        package = clock_bundle.build_bundle()
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return Response(package, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="SeveralUDO-Clock-Sync-{clock_bundle.CLOCK_SYNC_VERSION}-Complete.zip"',
+        "Cache-Control": "no-store",
+    })
+
+
+@app.post("/downloads/clock-sync/configured")
+def download_configured_clock_sync(request: Request):
+    """Rotate the active save's token and return a private ready-to-install kit."""
+    with db() as session:
+        ctx = context(request, session)
+        save = ctx["save"]
+        if not save:
+            raise HTTPException(400, "Open a tracker save before creating a private Clock Sync kit.")
+        raw = rotate_clock_link(session, save.id)
+        base_url = str(request.base_url).rstrip("/") if settings.local_mode else settings.public_url
+        try:
+            package = clock_bundle.build_bundle(f"{base_url}/api/clock/report", raw)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+    return Response(package, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="SeveralUDO-Clock-Sync-{clock_bundle.CLOCK_SYNC_VERSION}-Private.zip"',
+        "Cache-Control": "no-store, private",
+    })
+
+
+@app.get("/downloads/clock-sync/{component}")
+def download_clock_sync_component(request: Request, component: str):
+    with db() as session:
+        if not signed_in(request, session): raise HTTPException(401)
+    if component == "config-template":
+        return Response(clock_bundle.config_document(), media_type="application/json", headers={
+            "Content-Disposition": 'attachment; filename="config-template.json"',
+            "Cache-Control": "no-store",
+        })
+    try:
+        source = clock_bundle.bridge_file(component)
+    except KeyError as exc:
+        raise HTTPException(404, "That Clock Sync file is not available.") from exc
+    if not source.is_file():
+        raise HTTPException(404, "That Clock Sync file is unavailable in this build.")
+    media_type = "application/zip" if component == "script" else "text/plain; charset=utf-8"
+    return Response(source.read_bytes(), media_type=media_type, headers={
+        "Content-Disposition": f'attachment; filename="{source.name}"',
         "Cache-Control": "no-store",
     })
 

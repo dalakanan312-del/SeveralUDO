@@ -1,0 +1,45 @@
+SEVERALUDO CLOCK SYNC 2.0.1 - TROUBLESHOOTING
+================================================
+
+RECEIVER SAYS WAITING
+- Confirm config.json is in Mods\SeveralUDOClockSync beside the .ts4script.
+- Double-click Start SeveralUDO Clock Relay.bat.
+- Load a household in Live Mode and let the game clock advance. If needed, change lots once.
+- A report is not generated while the game is fully paused on menus.
+
+THE BAT FILE FLASHES AND CLOSES
+This is normal. The starter launches the PowerShell relay in a hidden window. Starting it again is safe; a mutex prevents duplicate relays.
+
+PENDING_REPORT.JSON DOES NOT DISAPPEAR
+The mod wrote a report but the relay could not deliver it. Open last_result.json in Notepad and read the error. Common causes are no internet, a stopped local tracker, an expired/replaced private token, or an incorrect receiver URL. Fix the cause and leave the relay running; it retries automatically.
+
+WRONG TRACKER SAVE IS ADVANCING
+Each config belongs to one tracker save. Open the correct save's Game Clock page and download a new private kit or config.json. Replace the old config.json. The newly created link invalidates that save's previous token.
+
+THE MOD DOES NOT APPEAR AT GAME START
+- Confirm Script Mods Allowed is enabled.
+- The .ts4script must be no more than one folder beneath Mods.
+- Remove duplicate older SeveralUDOClockSync.ts4script copies.
+- Delete localthumbcache.package after closing the game if The Sims 4 is still loading an old copy.
+
+MODGUARD OR SECURITY SOFTWARE SHOWS A WARNING
+Clock Sync 2.0.1 does not make the HTTPS request from inside The Sims 4. The Script Mod writes pending_report.json locally; SeveralUDOClockRelay.ps1 sends it. Only use files downloaded from your tracker. Do not approve a differently named executable or script.
+
+REPORT SUCCEEDS BUT THE TRACKER STILL SAYS WAITING
+- Refresh the Game Clock page.
+- Confirm the endpoint in config.json belongs to the tracker edition you are viewing.
+- Check last_result.json: ok=true and receiver_ok=true confirm acceptance.
+- If you replaced the private link after installing config.json, download the new config again.
+
+THE TRACKER DAY IS MISALIGNED
+Use Repair alignment from the last report on the Game Clock page. It pairs the last reported game day with the current tracker Global Day without editing Sims or rewinding the game.
+
+GAME WAS OPENED BEFORE THE RELAY
+You normally do not need to restart. Start the relay, return to Live Mode, and let time advance or change lots. Restart the game only after replacing the .ts4script or when the mod was not loaded.
+
+SAFE FILES TO SHARE FOR SUPPORT
+- README - Install Clock Sync.txt
+- TROUBLESHOOTING.txt
+- A redacted last_result.json with private URLs/tokens removed
+
+NEVER SHARE config.json, sync_token, a private configured kit, or pending_report.json.

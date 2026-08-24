@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 import io
+import json
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -608,6 +609,30 @@ class CoreSmokeTests(unittest.TestCase):
                 save_id, before = save.id, save.global_day
                 session.execute(delete(ClockLink).where(ClockLink.save_id == save_id))
                 session.commit()
+            page = client.get("/p/clock")
+            self.assertIn("Download a ready-to-install private kit", page.text)
+            reusable = client.get("/downloads/clock-sync")
+            self.assertEqual(reusable.status_code, 200)
+            self.assertIn("Complete.zip", reusable.headers["content-disposition"])
+            with zipfile.ZipFile(io.BytesIO(reusable.content)) as package:
+                names = set(package.namelist())
+                self.assertIn("SeveralUDOClockSync/SeveralUDOClockSync.ts4script", names)
+                self.assertIn("SeveralUDOClockSync/SeveralUDOClockRelay.ps1", names)
+                self.assertIn("SeveralUDOClockSync/Start SeveralUDO Clock Relay.bat", names)
+                self.assertIn("SeveralUDOClockSync/config-template.json", names)
+                self.assertIn("SeveralUDOClockSync/README - Install Clock Sync.txt", names)
+                self.assertIn("SeveralUDOClockSync/TROUBLESHOOTING.txt", names)
+                self.assertNotIn("SeveralUDOClockSync/config.json", names)
+            configured = client.post("/downloads/clock-sync/configured")
+            self.assertEqual(configured.status_code, 200)
+            self.assertIn("Private.zip", configured.headers["content-disposition"])
+            with zipfile.ZipFile(io.BytesIO(configured.content)) as package:
+                private_config = json.loads(package.read("SeveralUDOClockSync/config.json"))
+                self.assertTrue(private_config["enabled"])
+                self.assertTrue(private_config["receiver_url"].endswith("/api/clock/report"))
+                self.assertGreaterEqual(len(private_config["sync_token"]), 32)
+            private_report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {private_config['sync_token']}"}, json={"game_day": 60, "hour": 12, "minute": 0, "household_members": []})
+            self.assertEqual(private_report.status_code, 200)
             clock_link = client.post("/api/clock/links").json()
             report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {clock_link['token']}"}, json={"game_day": 60, "hour": 13, "minute": 45, "household_members": []})
             self.assertEqual(report.status_code, 200)
