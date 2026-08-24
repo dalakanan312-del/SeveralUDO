@@ -19,7 +19,7 @@ from app import accounts, auth, automation, backup_service, exports, insights, l
 from app.automation import candidate as automation_candidate, reconcile_sim
 from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, receive as receive_clock
-from app.db import SessionLocal
+from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
 from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, occult_identity, readable_trait_labels, trait_illnesses
@@ -32,6 +32,11 @@ from app.save_scanner import _parse_save_slot, _parse_sim, protobuf_fields
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_v4_uses_explicit_public_schema_only_for_postgres(self):
+        self.assertEqual(application_schema("postgresql://example.invalid/decades"), "public")
+        self.assertEqual(application_schema("postgres://example.invalid/decades"), "public")
+        self.assertIsNone(application_schema("sqlite:///./data/decades-v4.db"))
+
     def test_family_tree_groups_couples_labels_kin_and_deduplicates_connections(self):
         marker=uuid.uuid4().hex
         mother=Record(id="mother-"+marker,kind="sim",label="Tree Mother",data={"sex":"Female","birth_global_day":1})

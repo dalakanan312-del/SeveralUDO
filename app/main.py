@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, auth, automation, backup_service, calendar_utils, clock, dice, exports, game_metadata, names, notifications, occult_rules, portraits, save_scanner, sync, storyline, insights
@@ -2623,4 +2624,11 @@ def generate_marriage_portrait(request: Request, relationship_id: str, first_sim
 
 @app.get("/healthz")
 def health():
-    return {"status": "ok", "version": app.version, "storage": "local" if settings.local_mode else "hosted", "google": settings.google_enabled, "portrait": portraits.provider_status()}
+    payload = {"status": "ok", "version": app.version, "storage": "local" if settings.local_mode else "hosted", "google": settings.google_enabled, "portrait": portraits.provider_status()}
+    try:
+        with engine.connect() as connection:
+            connection.execute(select(User.id).limit(1))
+    except SQLAlchemyError:
+        payload["status"] = "database-unavailable"
+        return JSONResponse(payload, status_code=503)
+    return payload
