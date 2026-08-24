@@ -28,6 +28,13 @@ def _database_url() -> str:
     return os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL") or "sqlite:///./data/decades-v4.db"
 
 
+def _automatic_snapshots(database_url: str | None = None) -> bool:
+    configured = os.getenv("DECADES_AUTOMATIC_SNAPSHOTS", "").strip().casefold()
+    if configured:
+        return configured in {"1", "true", "yes", "on"}
+    return (database_url or _database_url()).startswith("sqlite")
+
+
 def _public_url() -> str:
     configured = os.getenv("PUBLIC_URL", "").strip().rstrip("/")
     if configured:
@@ -65,6 +72,7 @@ class Settings:
         "https://github.com/dalakanan312-del/SeveralUDO/releases/download/v4.2.3/Decades-Tracker-4.2.3-Setup.exe",
     )
     skip_startup_migrations: bool = os.getenv("DECADES_SKIP_STARTUP_MIGRATIONS", "").casefold() in {"1","true","yes","on"}
+    automatic_snapshots: bool = _automatic_snapshots(database_url)
 
     @property
     def google_enabled(self) -> bool:

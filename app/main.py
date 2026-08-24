@@ -379,7 +379,8 @@ def startup() -> None:
                 existing_save.revision += domain.backfill_married_surnames(session,existing_save)
         from .sync_client import start
         start()
-    backup_service.start()
+    if settings.automatic_snapshots:
+        backup_service.start()
     notifications.start()
 
 

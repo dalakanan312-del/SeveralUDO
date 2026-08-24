@@ -20,6 +20,7 @@ from app import accounts, auth, automation, backup_service, exports, insights, l
 from app.automation import candidate as automation_candidate, reconcile_sim
 from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, receive as receive_clock
+from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
 from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
@@ -35,6 +36,15 @@ from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_automatic_snapshots_default_to_local_and_can_be_overridden(self):
+        with mock.patch.dict(os.environ, {"DECADES_AUTOMATIC_SNAPSHOTS": ""}):
+            self.assertTrue(_automatic_snapshots("sqlite:///./data/test.db"))
+            self.assertFalse(_automatic_snapshots("postgresql://example.invalid/tracker"))
+        with mock.patch.dict(os.environ, {"DECADES_AUTOMATIC_SNAPSHOTS": "true"}):
+            self.assertTrue(_automatic_snapshots("postgresql://example.invalid/tracker"))
+        with mock.patch.dict(os.environ, {"DECADES_AUTOMATIC_SNAPSHOTS": "false"}):
+            self.assertFalse(_automatic_snapshots("sqlite:///./data/test.db"))
+
     def test_stay_signed_in_cookie_policy_is_per_login(self):
         test_app = FastAPI()
         test_app.add_middleware(
