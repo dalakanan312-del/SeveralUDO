@@ -87,7 +87,11 @@ def due_on_today(record: Record, global_day: int) -> bool:
         return False
     data = record.data or {}
     if record.kind == "roll":
-        return not bool(data.get("completed"))
+        due_day = record.global_day if record.global_day is not None else data.get("due_global_day")
+        try:
+            return int(due_day) >= 1 and not bool(data.get("completed"))
+        except (TypeError, ValueError):
+            return False
     if record.kind == "pregnancy":
         return str(data.get("status") or "active").strip().casefold() not in CLOSED_PREGNANCIES
     if record.kind == "event":
@@ -582,6 +586,39 @@ def retire_dead_sim_rolls(session: Session, save: ChronicleSave, sims: list[Reco
         base = roll.version
         roll.deleted = True
         roll.data = {**data, "retired_reason": "Sim is deceased", "retired_global_day": save.global_day}
+        roll.version += 1
+        journal(session, roll, "delete", base)
+        changed += 1
+    return changed
+
+
+def retire_prechallenge_rolls(session: Session, save: ChronicleSave) -> int:
+    """Archive unfinished obligations dated before Global Day 1.
+
+    Events and Sims may legitimately retain pre-challenge dates for historical
+    context.  Those dates must never become actionable rolls, while completed
+    imported results remain part of the chronicle.
+    """
+    rolls = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False)
+    )))
+    changed = 0
+    for roll in rolls:
+        data = dict(roll.data or {})
+        raw_day = roll.global_day if roll.global_day is not None else data.get("due_global_day")
+        try:
+            due_day = int(raw_day)
+        except (TypeError, ValueError):
+            continue
+        if data.get("completed") or due_day >= 1:
+            continue
+        base = roll.version
+        roll.deleted = True
+        roll.data = {
+            **data,
+            "retired_reason": "Obligation predates challenge start",
+            "retired_global_day": save.global_day,
+        }
         roll.version += 1
         journal(session, roll, "delete", base)
         changed += 1
@@ -1430,6 +1467,8 @@ def _occult_rule_matches(rule: Record, year: int) -> bool:
 def _add_occult_roll(session: Session, save: ChronicleSave, rule: Record, sim: Record,
                      due: int, source: str, *, label: str | None = None,
                      overrides: dict | None = None) -> bool:
+    if int(due) < 1:
+        return False
     exists = session.scalar(select(Record.id).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
         Record.data["source"].as_string() == source,
@@ -1658,6 +1697,7 @@ def apply_occult_roll_result(session: Session, roll: Record, actual: int) -> int
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     rules = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False))))
     sims = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False))))
+    save.revision += retire_prechallenge_rolls(session, save)
     save.revision += retire_dead_sim_rolls(session, save, sims)
     created = 0
     for sim in sims:
@@ -1710,7 +1750,7 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
             mother = session.get(Record, pregnancy.data.get("mother_id"))
             birth = mother.data.get("birth_global_day", mother.global_day) if mother else None
             mother_death = mother.data.get("death_global_day") if mother else None
-            if due is None or birth is None or (mother and (bool((mother.data or {}).get("game_was_dead")) or "Servo" in occult_rules.sim_occult_types(mother.data))) or (mother_death is not None and int(mother_death) <= save.global_day) or (status in CLOSED_PREGNANCIES and int(due) < save.global_day):
+            if due is None or int(due) < 1 or birth is None or (mother and (bool((mother.data or {}).get("game_was_dead")) or "Servo" in occult_rules.sim_occult_types(mother.data))) or (mother_death is not None and int(mother_death) <= save.global_day) or (status in CLOSED_PREGNANCIES and int(due) < save.global_day):
                 continue
             age = int(due) - int(birth)
             stage = "preteen" if age < 52 else "teen" if age < 72 else "young adult" if age < 160 else "adult" if age < 240 else "elder"
@@ -1777,6 +1817,8 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     )))
     for event in events:
         due = int(event.data.get("start_global_day", event.global_day))
+        if due < 1:
+            continue
         rule_data = event_rules.get(event_key(event), {})
         spec = event_roll_configuration(event, rule_data)
         equivalent_event_ids = {

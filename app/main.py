@@ -1140,8 +1140,9 @@ def feature_page(request: Request, page: str):
             # Scheduling is idempotent. Remember the check in process instead
             # of rewriting the save's large settings JSON on every new day.
             # This keeps an ordinary GET read-only when there are no new rolls.
-            schedule_marker=(save.global_day,2)
+            schedule_marker=(save.global_day,3)
             if _TODAY_SCHEDULE_CHECKED.get(save.id) != schedule_marker:
+                save.revision += domain.retire_prechallenge_rolls(session,save)
                 domain.schedule_marriage_rolls(session,save)
                 _TODAY_SCHEDULE_CHECKED[save.id]=schedule_marker
             g = save.global_day
@@ -1193,8 +1194,9 @@ def feature_page(request: Request, page: str):
             pending_roll_keys = set()
             for candidate in all_rolls:
                 key = roll_identity(candidate)
+                candidate_due = int_or_none(candidate.global_day) or int_or_none((candidate.data or {}).get("due_global_day"))
                 post_death_roll = bool((candidate.data or {}).get("allow_after_death")) or (bool((candidate.data or {}).get("occult_roll")) and (candidate.data or {}).get("occult_rule_key") == "ghost_persistence")
-                if bool(candidate.data.get("completed")) or (candidate.data.get("sim_id") in dead_sim_ids and not post_death_roll) or key in completed_roll_keys or key in pending_roll_keys: continue
+                if candidate_due is None or candidate_due < 1 or bool(candidate.data.get("completed")) or (candidate.data.get("sim_id") in dead_sim_ids and not post_death_roll) or key in completed_roll_keys or key in pending_roll_keys: continue
                 pending_rolls.append(candidate); pending_roll_keys.add(key)
             def roll_category(roll):
                 if bool((roll.data or {}).get("pregnancy_count_roll")): return "pregnancy-count"

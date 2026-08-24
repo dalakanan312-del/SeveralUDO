@@ -956,6 +956,32 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(roll.data["due_global_day"], 10)
                 session.rollback()
 
+    def test_scheduler_never_creates_prechallenge_rolls_and_retires_pending_ones(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Challenge boundary rolls",global_day=20,start_year=1550,days_per_year=4,settings={"maternal_rolls_enabled":True})
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label="Pre-challenge Sim",global_day=-60,data={"birth_global_day":-60,"country":"England"})
+                pre_age=Record(save_id=save.id,kind="roll_rule",label="Early milestone",data={"age_days":20,"die":"d20","active":True})
+                post_age=Record(save_id=save.id,kind="roll_rule",label="Challenge milestone",data={"age_days":70,"die":"d20","active":True})
+                maternal=Record(save_id=save.id,kind="roll_rule",label="Maternal — Teen",data={"age_days":None,"die":"d20","bad_results":"1","active":True})
+                session.add_all([sim,pre_age,post_age,maternal]);session.flush()
+                pre_pregnancy=Record(save_id=save.id,kind="pregnancy",label="Before challenge",global_day=-2,data={"mother_id":sim.id,"due_global_day":-2,"status":"Active","maternal_rolls_required":True})
+                post_pregnancy=Record(save_id=save.id,kind="pregnancy",label="During challenge",global_day=4,data={"mother_id":sim.id,"due_global_day":4,"status":"Active","maternal_rolls_required":True})
+                pre_event=Record(save_id=save.id,kind="event",label="Earlier plague",global_day=-5,data={"start_global_day":-5,"end_global_day":-2,"scope":"Global","location":"Global","roll_required":True,"active":True})
+                post_event=Record(save_id=save.id,kind="event",label="Challenge plague",global_day=3,data={"start_global_day":3,"end_global_day":6,"scope":"Global","location":"Global","roll_required":True,"active":True})
+                stale=Record(save_id=save.id,kind="roll",label="Old pending obligation",global_day=-8,data={"sim_id":sim.id,"roll_type":"Old roll","due_global_day":-8,"source":"event:old","completed":False})
+                completed=Record(save_id=save.id,kind="roll",label="Completed historical result",global_day=-7,data={"sim_id":sim.id,"roll_type":"Historical roll","due_global_day":-7,"source":"aging:old","completed":True})
+                session.add_all([pre_pregnancy,post_pregnancy,pre_event,post_event,stale,completed]);session.flush()
+                self.assertEqual(schedule_rolls(session,save),3)
+                active_rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False))))
+                self.assertEqual(sorted(int(roll.global_day) for roll in active_rolls),[-7,3,4,10])
+                self.assertTrue(completed in active_rolls);self.assertTrue(stale.deleted)
+                self.assertNotIn("Earlier plague",{roll.label.split(" — ",1)[0] for roll in active_rolls})
+                self.assertEqual(schedule_rolls(session,save),0)
+                session.rollback()
+
     def test_scheduler_recognizes_imported_roll_without_source_token(self):
         with TestClient(app):
             with SessionLocal() as session:
