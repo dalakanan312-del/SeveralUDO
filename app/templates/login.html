@@ -1,2 +1,62 @@
-{% extends "base.html" %}{% block title %}Sign in · Decades Tracker{% endblock %}
-{% block body %}<section class="login panel"><p class="eyebrow">YOUR LIVING FAMILY CHRONICLE</p><h1>Decades Tracker</h1><p>Keep every generation, rule, roll and historical turning point in one private chronicle.</p>{% if error %}<div class="error">{{error}}</div>{% endif %}{% if not local_mode %}{% if google_enabled %}<a class="primary button" href="/auth/google">Continue with Google</a>{% endif %}<details open><summary>Create a new private workspace</summary><p>New to the tracker? Start with a private workspace and first chronicle. Your recovery key is shown once after creation—save it somewhere secure.</p><form action="/auth/register" method="post"><label>Your name<input name="display_name" autocomplete="name" required maxlength="160"></label><label>Email<input name="email" type="email" autocomplete="email" required></label><label>Workspace name<input name="workspace_name" placeholder="My Family Chronicle" maxlength="160"></label><label>First save name<input name="save_name" value="My Decades Challenge" required maxlength="160"></label><label>Challenge starting year<input name="start_year" type="number" min="-9999" max="9999" value="1300"></label><button class="primary">Create my workspace</button></form></details><details><summary>Open my existing online workspace</summary><p>Already used the older tracker? Enter its workspace code once. Your saves are copied into 4.x while the original Neon data remains untouched.</p><form action="/auth/legacy" method="post"><label>Email<input name="email" type="email" autocomplete="email" required></label><label>Old workspace code<input name="workspace_code" type="password" autocomplete="off" minlength="12" required></label><button class="primary">Connect my saves</button></form></details><details><summary>Sign in with my recovery key</summary><form action="/auth/recover" method="post"><label>Email<input name="email" type="email" autocomplete="email" required></label><label>Recovery key<input name="recovery_code" type="password" autocomplete="current-password" required></label><button>Open my workspace</button></form></details>{% endif %}</section>{% endblock %}
+{% extends "base.html" %}
+{% block title %}Sign in · Decades Tracker{% endblock %}
+{% block body %}
+<section class="login panel">
+  <p class="eyebrow">YOUR LIVING FAMILY CHRONICLE</p>
+  <h1>Decades Tracker</h1>
+  <p>Keep every generation, rule, roll and historical turning point in one private chronicle.</p>
+  {% if error %}<div class="error">{{error}}</div>{% endif %}
+  {% if not local_mode %}
+    {% if google_enabled %}
+    <form class="google-login-form" action="/auth/google" method="get">
+      <label class="stay-signed-in">
+        <input name="stay_signed_in" type="checkbox" value="on">
+        <span>Stay signed in on this device<small>Keep this device signed in for 90 days. Leave this off on shared devices.</small></span>
+      </label>
+      <button class="primary">Continue with Google</button>
+    </form>
+    {% endif %}
+    <details open>
+      <summary>Create a new private workspace</summary>
+      <p>New to the tracker? Start with a private workspace and first chronicle. Your recovery key is shown once after creation—save it somewhere secure.</p>
+      <form action="/auth/register" method="post">
+        <label>Your name<input name="display_name" autocomplete="name" required maxlength="160"></label>
+        <label>Email<input name="email" type="email" autocomplete="email" required></label>
+        <label>Workspace name<input name="workspace_name" placeholder="My Family Chronicle" maxlength="160"></label>
+        <label>First save name<input name="save_name" value="My Decades Challenge" required maxlength="160"></label>
+        <label>Challenge starting year<input name="start_year" type="number" min="-9999" max="9999" value="1300"></label>
+        <label class="stay-signed-in">
+          <input name="stay_signed_in" type="checkbox" value="on">
+          <span>Stay signed in on this device<small>Keep this device signed in for 90 days. Leave this off on shared devices.</small></span>
+        </label>
+        <button class="primary">Create my workspace</button>
+      </form>
+    </details>
+    <details>
+      <summary>Open my existing online workspace</summary>
+      <p>Already used the older tracker? Enter its workspace code once. Your saves are copied into 4.x while the original Neon data remains untouched.</p>
+      <form action="/auth/legacy" method="post">
+        <label>Email<input name="email" type="email" autocomplete="email" required></label>
+        <label>Old workspace code<input name="workspace_code" type="password" autocomplete="off" minlength="12" required></label>
+        <label class="stay-signed-in">
+          <input name="stay_signed_in" type="checkbox" value="on">
+          <span>Stay signed in on this device<small>Keep this device signed in for 90 days. Leave this off on shared devices.</small></span>
+        </label>
+        <button class="primary">Connect my saves</button>
+      </form>
+    </details>
+    <details>
+      <summary>Sign in with my recovery key</summary>
+      <form action="/auth/recover" method="post">
+        <label>Email<input name="email" type="email" autocomplete="email" required></label>
+        <label>Recovery key<input name="recovery_code" type="password" autocomplete="current-password" required></label>
+        <label class="stay-signed-in">
+          <input name="stay_signed_in" type="checkbox" value="on">
+          <span>Stay signed in on this device<small>Keep this device signed in for 90 days. Leave this off on shared devices.</small></span>
+        </label>
+        <button>Open my workspace</button>
+      </form>
+    </details>
+  {% endif %}
+</section>
+{% endblock %}

@@ -11,6 +11,7 @@ from unittest import mock
 os.environ["DATABASE_URL"] = "sqlite:///./data/automated-tests.db"
 os.environ["DECADES_SKIP_STARTUP_MIGRATIONS"] = "1"
 
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import delete, func, select
@@ -29,9 +30,38 @@ from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWork
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
 from app.save_scanner import _parse_save_slot, _parse_sim, protobuf_fields
+from app.session_policy import BROWSER_MODE, PERSISTENT_MODE, REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_stay_signed_in_cookie_policy_is_per_login(self):
+        test_app = FastAPI()
+        test_app.add_middleware(
+            SessionMiddleware,
+            secret_key="cookie-policy-test",
+            max_age=REMEMBER_DEVICE_SECONDS,
+        )
+        test_app.add_middleware(
+            StaySignedInMiddleware,
+            persistent_max_age=REMEMBER_DEVICE_SECONDS,
+        )
+
+        @test_app.get("/session/{mode}")
+        def choose_session_mode(request: Request, mode: str):
+            request.session["_session_mode"] = mode
+            request.session["user_id"] = "test-user"
+            return {"ok": True}
+
+        with TestClient(test_app) as client:
+            browser_cookie = client.get(f"/session/{BROWSER_MODE}").headers["set-cookie"].casefold()
+            self.assertNotIn("max-age=", browser_cookie)
+            self.assertIn("httponly", browser_cookie)
+
+            persistent_cookie = client.get(f"/session/{PERSISTENT_MODE}").headers["set-cookie"].casefold()
+            self.assertIn(f"max-age={REMEMBER_DEVICE_SECONDS}", persistent_cookie)
+            self.assertIn("httponly", persistent_cookie)
+
     def test_new_user_can_create_recovery_workspace_and_first_save(self):
         with TestClient(app):
             with SessionLocal() as session:

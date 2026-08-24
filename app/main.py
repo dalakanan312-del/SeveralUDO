@@ -25,6 +25,7 @@ from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
 from .security import hash_secret, token
+from .session_policy import REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware, set_session_mode
 
 
 FEATURES = {
@@ -65,7 +66,8 @@ KIND_BY_PAGE = {
 }
 
 app = FastAPI(title="Decades Tracker", version="4.2.3")
-app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=60 * 60 * 24 * 90, same_site="lax", https_only=not settings.local_mode)
+app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
+app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", StaticFiles(directory=ROOT / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=ROOT / "app" / "templates")
 _SAVE_SCAN_CACHE: dict[str, dict] = {}
@@ -457,6 +459,7 @@ def register_workspace(
     workspace_name: str = Form(""),
     save_name: str = Form(""),
     start_year: int = Form(1300),
+    stay_signed_in: str = Form(""),
 ):
     """Create a private hosted workspace without requiring a legacy code."""
     if settings.local_mode:
@@ -476,6 +479,7 @@ def register_workspace(
             request.session["user_id"] = user.id
             request.session["save_id"] = save.id
             request.session["new_recovery_code"] = recovery_code
+            set_session_mode(request, stay_signed_in)
     except ValueError as exc:
         with db() as session:
             return templates.TemplateResponse(
@@ -496,9 +500,10 @@ def register_workspace(
 
 
 @app.get("/auth/google")
-async def google_login(request: Request):
+async def google_login(request: Request, stay_signed_in: str = ""):
     if not settings.google_enabled:
         raise HTTPException(503, "Google sign-in has not been configured by the deployment owner.")
+    set_session_mode(request, stay_signed_in)
     return await auth.oauth.google.authorize_redirect(request, f"{settings.public_url}/auth/google/callback")
 
 
@@ -562,17 +567,19 @@ async def google_callback(request: Request):
 
 
 @app.post("/auth/recover")
-def recover(request: Request, email: str = Form(...), recovery_code: str = Form(...)):
+def recover(request: Request, email: str = Form(...), recovery_code: str = Form(...), stay_signed_in: str = Form("")):
     with db() as session:
         user = auth.recover_user(session, email, recovery_code)
         if not user:
             return templates.TemplateResponse(request, "login.html", context(request, session, error="Email and recovery key did not match."), status_code=401)
+        request.session.clear()
         request.session["user_id"] = user.id
+        set_session_mode(request, stay_signed_in)
     return RedirectResponse("/", status_code=303)
 
 
 @app.post("/auth/legacy")
-def legacy_workspace_login(request: Request, email: str = Form(...), workspace_code: str = Form(...)):
+def legacy_workspace_login(request: Request, email: str = Form(...), workspace_code: str = Form(...), stay_signed_in: str = Form("")):
     """First hosted 4.x sign-in for an existing 3.x workspace.
 
     The raw code is matched only by its one-way hash. The user record is keyed
@@ -608,6 +615,7 @@ def legacy_workspace_login(request: Request, email: str = Form(...), workspace_c
                 f"Connected {len(imported)} existing save{'s' if len(imported) != 1 else ''}. "
                 "Use this same email when Google sign-in is enabled."
             )
+            set_session_mode(request, stay_signed_in)
     except ValueError as exc:
         with db() as session:
             return templates.TemplateResponse(request, "login.html", context(request, session, error=str(exc)), status_code=400)

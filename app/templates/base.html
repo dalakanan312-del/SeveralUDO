@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="/static/occult-controls.css">
 <link rel="stylesheet" href="/static/storyline.css">
 <link rel="stylesheet" href="/static/ui-refresh.css">
+<link rel="stylesheet" href="/static/auth.css">
   <script src="/static/htmx.min.js" defer></script>
 </head>
 <body data-page="{{page or 'home'}}" {% if user and save %}data-notification-feed="/api/notifications" data-notification-cursor="{{notification_cursor}}" data-save-id="{{save.id}}"{% endif %}>
