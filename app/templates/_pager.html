@@ -1,0 +1,5 @@
+{% if list_pages is defined and list_pages>1 %}<nav class="pager" aria-label="Record pages">
+  {% if list_page>1 %}<a class="button" href="?list_page={{list_page-1}}{% if list_q %}&q={{list_q|urlencode}}{% endif %}{% if list_status and list_status!='all' %}&record_status={{list_status}}{% endif %}">← Newer</a>{% endif %}
+  <span>Page {{list_page}} of {{list_pages}}</span>
+  {% if list_page<list_pages %}<a class="button" href="?list_page={{list_page+1}}{% if list_q %}&q={{list_q|urlencode}}{% endif %}{% if list_status and list_status!='all' %}&record_status={{list_status}}{% endif %}">Older →</a>{% endif %}
+</nav>{% endif %}

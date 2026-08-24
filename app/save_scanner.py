@@ -1,0 +1,373 @@
+from __future__ import annotations
+
+"""Read a small, safe subset of an unmodified Sims 4 save.
+
+The scanner deliberately has no write path.  It reads the DBPF container and
+the few protobuf fields needed for a useful comparison with Clock Sync.  Any
+unknown or newly added game fields are skipped, so an unsupported game build
+produces an empty/partial preview instead of damaging a save.
+"""
+
+import os
+import struct
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .game_metadata import _dbpf_entries, _resource_bytes
+
+
+SAVE_GAME_DATA_RESOURCE = 0x0000000D
+MAX_SAVE_BYTES = 512 * 1024 * 1024
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+
+
+class SaveScanError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class SaveFile:
+    path: Path
+    modified_at: datetime
+    size: int
+
+
+def default_save_root() -> Path:
+    configured = os.environ.get("SIMS4_SAVES_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    profile = Path(os.environ.get("USERPROFILE") or Path.home())
+    return profile / "Documents" / "Electronic Arts" / "The Sims 4" / "saves"
+
+
+def discover_saves(root: Path | None = None) -> list[SaveFile]:
+    """Return primary slot saves newest first; automatic .ver backups are excluded."""
+    folder = Path(root) if root else default_save_root()
+    if not folder.is_dir():
+        return []
+    found: list[SaveFile] = []
+    try:
+        paths = folder.glob("Slot_*.save")
+        for path in paths:
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            found.append(SaveFile(path.resolve(), datetime.fromtimestamp(stat.st_mtime, timezone.utc), stat.st_size))
+    except OSError:
+        return []
+    return sorted(found, key=lambda item: item.modified_at, reverse=True)
+
+
+def _varint(data: bytes, cursor: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while cursor < len(data) and shift < 70:
+        byte = data[cursor]
+        cursor += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, cursor
+        shift += 7
+    raise SaveScanError("The save contains an invalid protobuf value.")
+
+
+def protobuf_fields(data: bytes) -> dict[int, list[tuple[int, int | bytes]]]:
+    """Decode protobuf wire values without relying on EA's bundled Python runtime."""
+    if len(data) > MAX_MESSAGE_BYTES:
+        raise SaveScanError("A save section is too large to inspect safely.")
+    cursor = 0
+    fields: dict[int, list[tuple[int, int | bytes]]] = {}
+    while cursor < len(data):
+        key, cursor = _varint(data, cursor)
+        number, wire = key >> 3, key & 7
+        if not number:
+            raise SaveScanError("The save contains an invalid field number.")
+        if wire == 0:
+            value, cursor = _varint(data, cursor)
+        elif wire == 1:
+            if cursor + 8 > len(data):
+                raise SaveScanError("The save ends inside a fixed-width value.")
+            value = int.from_bytes(data[cursor:cursor + 8], "little")
+            cursor += 8
+        elif wire == 2:
+            length, cursor = _varint(data, cursor)
+            if length > MAX_MESSAGE_BYTES or cursor + length > len(data):
+                raise SaveScanError("The save contains an invalid message length.")
+            value = data[cursor:cursor + length]
+            cursor += length
+        elif wire == 5:
+            if cursor + 4 > len(data):
+                raise SaveScanError("The save ends inside a fixed-width value.")
+            value = int.from_bytes(data[cursor:cursor + 4], "little")
+            cursor += 4
+        else:
+            raise SaveScanError(f"Unsupported protobuf wire type {wire}.")
+        fields.setdefault(number, []).append((wire, value))
+    return fields
+
+
+def _value(fields, number, default=None):
+    values = fields.get(number) or ()
+    return values[0][1] if values else default
+
+
+def _text(fields, number) -> str:
+    value = _value(fields, number, b"")
+    if not isinstance(value, bytes):
+        return ""
+    return value.decode("utf-8", errors="replace").strip("\x00 ")
+
+
+def _float32(fields, number) -> float | None:
+    value = _value(fields, number)
+    if value is None:
+        return None
+    try:
+        return struct.unpack("<f", int(value).to_bytes(4, "little"))[0]
+    except (OverflowError, struct.error, TypeError, ValueError):
+        return None
+
+
+def _id_list(raw: bytes) -> list[int]:
+    try:
+        fields = protobuf_fields(raw)
+    except SaveScanError:
+        return []
+    values: list[int] = []
+    for _, value in fields.get(1, ()):
+        if isinstance(value, int):
+            values.append(value)
+        elif isinstance(value, bytes):
+            # IdList.ids is repeated fixed64 and is normally packed.
+            values.extend(int.from_bytes(value[cursor:cursor + 8], "little")
+                          for cursor in range(0, len(value) - 7, 8))
+    return values
+
+
+def _parse_sim(raw: bytes) -> dict:
+    fields = protobuf_fields(raw)
+    sim_id = _value(fields, 1)
+    if not isinstance(sim_id, int):
+        return {}
+    first_name, last_name = _text(fields, 5), _text(fields, 6)
+    age_value = _value(fields, 8)
+    age_labels = {1: "newborn", 2: "infant", 4: "toddler", 8: "child", 16: "teen", 32: "youngadult", 64: "adult", 128: "elder"}
+    gender_labels = {4096: "Male", 8192: "Female"}
+    return {
+        "game_sim_id": str(sim_id),
+        "game_household_id": str(_value(fields, 4) or ""),
+        "first_name": first_name,
+        "last_name": last_name,
+        "name": " ".join(value for value in (first_name, last_name) if value).strip() or f"Game Sim {sim_id}",
+        "gender_value": _value(fields, 7),
+        "sex": gender_labels.get(_value(fields, 7), "Unknown"),
+        "age_value": age_value,
+        "age_stage": age_labels.get(age_value, "unknown"),
+        "is_baby": age_value == 1,
+        "age_progress": _float32(fields, 13),
+        "significant_other_game_id": str(_value(fields, 15) or ""),
+        "pregnancy_progress": _float32(fields, 48),
+    }
+
+
+def _parse_household(raw: bytes) -> dict:
+    fields = protobuf_fields(raw)
+    household_id = _value(fields, 2)
+    if not isinstance(household_id, int):
+        return {}
+    members_raw = _value(fields, 11, b"")
+    return {
+        "game_household_id": str(household_id),
+        "name": _text(fields, 3) or f"Game Household {household_id}",
+        "funds": _value(fields, 5),
+        "member_game_ids": [str(value) for value in _id_list(members_raw)] if isinstance(members_raw, bytes) else [],
+        "last_played_game_sim_id": str(_value(fields, 9) or ""),
+        "is_unplayed": bool(_value(fields, 14, 0)),
+        "is_player": bool(_value(fields, 31, 0)),
+    }
+
+
+def _parse_save_slot(raw: bytes) -> dict:
+    fields = protobuf_fields(raw)
+    game_ticks = None
+    gameplay = _value(fields, 8)
+    if isinstance(gameplay, bytes):
+        game_ticks = _value(protobuf_fields(gameplay), 1)
+    day = hour = minute = None
+    if isinstance(game_ticks, int):
+        # EA's DateAndTime clock uses 25 ticks per Sim second.
+        sim_seconds = game_ticks // 25
+        day = sim_seconds // 86_400
+        hour = (sim_seconds % 86_400) // 3_600
+        minute = (sim_seconds % 3_600) // 60
+    return {
+        "slot_name": _text(fields, 9),
+        "active_household_game_id": str(_value(fields, 11) or ""),
+        "game_ticks": game_ticks,
+        "game_day": day,
+        "game_hour": hour,
+        "game_minute": minute,
+    }
+
+
+def inspect_save(path: Path) -> dict:
+    """Inspect a save file and return a reconciliation preview.
+
+    This function opens the path read-only and never touches the file's metadata.
+    """
+    target = Path(path).expanduser().resolve()
+    save_root = default_save_root().resolve()
+    try:
+        target.relative_to(save_root)
+    except ValueError as exc:
+        raise SaveScanError("Only saves inside the configured Sims 4 saves folder can be scanned.") from exc
+    try:
+        stat = target.stat()
+    except OSError as exc:
+        raise SaveScanError("The selected Sims 4 save could not be opened.") from exc
+    if not target.is_file() or target.suffix.casefold() != ".save":
+        raise SaveScanError("Select a primary .save file, not a backup or unrelated file.")
+    if stat.st_size > MAX_SAVE_BYTES:
+        raise SaveScanError("The selected Sims 4 save is unexpectedly large.")
+    try:
+        raw = target.read_bytes()
+    except OSError as exc:
+        raise SaveScanError("The selected Sims 4 save could not be read.") from exc
+    if raw[:4] != b"DBPF":
+        raise SaveScanError("The selected file is not a Sims 4 DBPF save.")
+    resource = None
+    for entry in _dbpf_entries(raw) or ():
+        if entry[0] == SAVE_GAME_DATA_RESOURCE:
+            resource = _resource_bytes(raw, entry)
+            if resource:
+                break
+    if not resource:
+        raise SaveScanError("This game build's save summary could not be located.")
+    outer = protobuf_fields(resource)
+    slot_raw = _value(outer, 2, b"")
+    slot = _parse_save_slot(slot_raw) if isinstance(slot_raw, bytes) else {}
+    sims = [_parse_sim(value) for wire, value in outer.get(6, ()) if wire == 2 and isinstance(value, bytes)]
+    households = [_parse_household(value) for wire, value in outer.get(5, ()) if wire == 2 and isinstance(value, bytes)]
+    sims = [item for item in sims if item]
+    households = [item for item in households if item]
+    return {
+        "path": str(target),
+        "file_name": target.name,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+        "size": stat.st_size,
+        "sim_count": len(sims),
+        "household_count": len(households),
+        "slot": slot,
+        "sims": sims,
+        "households": households,
+        "limitations": "Read-only save scanning supplements Clock Sync. Exact live time, illnesses, traits and transient states still come from Clock Sync.",
+    }
+
+
+def relevant_population(scan: dict) -> tuple[list[dict], list[dict]]:
+    """Limit review to player-owned households, including the active household."""
+    active = str((scan.get("slot") or {}).get("active_household_game_id") or "")
+    households = [item for item in scan.get("households") or () if item.get("is_player") or item.get("game_household_id") == active]
+    household_ids = {str(item.get("game_household_id") or "") for item in households}
+    sims = [item for item in scan.get("sims") or () if str(item.get("game_household_id") or "") in household_ids]
+    return households, sims
+
+
+def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advance_clock: bool = True) -> dict:
+    """Apply a user-approved read-only scan to tracker records.
+
+    The source file remains untouched.  New people become review items; exact
+    name matches attach to imported people, and linked people receive only the
+    fields the save parser can determine reliably.
+    """
+    from sqlalchemy import select
+
+    from . import automation, clock, domain
+    from .models import Record
+
+    households, sims = relevant_population(scan)
+    household_by_id = {str(item["game_household_id"]): item for item in households}
+    slot = scan.get("slot") or {}
+    game_day = slot.get("game_day")
+    hour, minute = slot.get("game_hour"), slot.get("game_minute")
+    advanced = 0
+    settings = dict(save.settings or {})
+    if advance_clock and game_day is not None:
+        anchor_game = settings.get("save_scan_anchor_game_day")
+        anchor_tracker = settings.get("save_scan_anchor_tracker_day")
+        if anchor_game is None or anchor_tracker is None:
+            settings.update(save_scan_anchor_game_day=int(game_day), save_scan_anchor_tracker_day=int(save.global_day))
+        else:
+            target = int(anchor_tracker) + max(0, int(game_day) - int(anchor_game))
+            if target > save.global_day:
+                advanced = target - save.global_day
+                save.global_day = target
+        settings.update(
+            save_scan_last_file=scan.get("file_name"), save_scan_last_game_day=game_day,
+            save_scan_last_game_hour=hour, save_scan_last_game_minute=minute,
+            save_scan_last_modified_at=scan.get("modified_at"),
+        )
+        save.settings = settings
+    tracked = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    )))
+    by_game_id = {str(item.data.get("game_sim_id") or ""): item for item in tracked if item.data.get("game_sim_id")}
+    candidates = linked = updated = 0
+    journal_entries: list[str] = []
+    for item in sims:
+        game_id = str(item.get("game_sim_id") or "")
+        if not game_id or game_id not in selected_game_ids:
+            continue
+        home = household_by_id.get(str(item.get("game_household_id") or ""), {})
+        snapshot = {
+            **item,
+            "household_id": item.get("game_household_id"),
+            "household_name": home.get("name") or "",
+            "household_funds": home.get("funds"),
+            "detected_game_day": game_day,
+            "detected_game_hour": hour,
+            "detected_game_minute": minute,
+            "detected_tracker_global_day": save.global_day,
+            "telemetry_version": 0,
+            "source": "read-only Sims 4 save scan",
+        }
+        existing = by_game_id.get(game_id)
+        if not existing:
+            existing = clock.imported_sim_match(session, save, snapshot)
+            if existing:
+                clock.attach_game_identity(session, save, existing, snapshot)
+                by_game_id[game_id] = existing
+                linked += 1
+        if not existing:
+            pending = session.scalar(select(Record.id).where(
+                Record.save_id == save.id, Record.kind == "game_candidate", Record.deleted.is_(False),
+                Record.data["source_key"].as_string() == f"new_sim:{game_id}",
+            ).limit(1))
+            if pending:
+                continue
+            payload = {**snapshot, **clock.estimate_new_sim_birth(session, save, snapshot, save.global_day)}
+            candidate = Record(
+                save_id=save.id, kind="game_candidate", label=item.get("name") or f"Game Sim {game_id}",
+                global_day=save.global_day,
+                data={"action":"new_baby" if item.get("is_baby") else "new_sim", "payload":payload,
+                      "source_key":f"new_sim:{game_id}", "status":"pending", **snapshot},
+            )
+            session.add(candidate); session.flush(); domain.journal(session, candidate, "upsert", 0)
+            candidates += 1
+            continue
+        changes = automation.reconcile_sim(session, save, existing, snapshot)
+        candidates += len(changes)
+        updated += 1
+        journal_entries.extend(snapshot.get("_history_entries") or [])
+    if advanced:
+        made = domain.schedule_rolls(session, save)
+        journal_entries.append(f"The save-file clock advanced the tracker by {advanced} day(s); {made} obligation(s) were scheduled.")
+    if linked:
+        journal_entries.append(f"{linked} imported Sim(s) were matched to their game identities.")
+    if candidates:
+        journal_entries.append(f"{candidates} change(s) are ready for review in Automation Inbox.")
+    automation.session_journal(session, save, journal_entries, int(game_day or 0), hour, minute)
+    save.revision += linked + candidates + updated + bool(advanced)
+    return {"advanced":advanced, "linked":linked, "updated":updated, "candidates":candidates,
+            "selected":len(selected_game_ids), "global_day":save.global_day}

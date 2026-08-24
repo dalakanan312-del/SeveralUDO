@@ -1,0 +1,5 @@
+{% if list_count is defined %}<form method="get" action="/p/{{page}}" class="record-filter row">
+  <label>Find<input name="q" value="{{list_q}}" placeholder="Search names"></label>
+  {% if page=='rolls' %}<label>Status<select name="record_status"><option value="all">All</option><option value="pending" {% if list_status=='pending' %}selected{% endif %}>Waiting</option><option value="completed" {% if list_status=='completed' %}selected{% endif %}>Completed</option></select></label>{% endif %}
+  <button>Show</button>{% if list_q or list_status not in [None,'all'] %}<a class="button" href="/p/{{page}}">Clear</a>{% endif %}<small>{{list_count}} record{% if list_count!=1 %}s{% endif %}</small>
+</form>{% endif %}

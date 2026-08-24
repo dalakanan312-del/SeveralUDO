@@ -1,0 +1,99 @@
+.occult-quick-control {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 2px;
+  padding: 10px;
+  border: 1px solid #493b59;
+  border-radius: 11px;
+  background: #191721;
+}
+
+.occult-quick-control.is-on {
+  border-color: #8461a5;
+  background: #201928;
+}
+
+.occult-quick-control strong,
+.occult-quick-control small,
+.occult-today-control strong,
+.occult-today-control small {
+  display: block;
+}
+
+.occult-quick-control small {
+  font-size: 10px;
+}
+
+.occult-quick-control form,
+.occult-today-control form {
+  margin: 0;
+}
+
+.occult-quick-control > a {
+  grid-column: 1 / -1;
+  color: #c7a9e2;
+  font-size: 11px;
+}
+
+.occult-toggle-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.occult-toggle-button span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #777;
+}
+
+.occult-toggle-button.active span {
+  background: #a97bd0;
+  box-shadow: 0 0 8px #a97bd0;
+}
+
+.occult-today-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid #493b59;
+  border-radius: 14px;
+  background: #17151d;
+}
+
+.occult-today-control.is-on {
+  border-color: #8461a5;
+  background: linear-gradient(90deg, #21182b, #17191e);
+}
+
+.occult-today-control > div {
+  margin-right: auto;
+}
+
+.occult-today-control .button {
+  white-space: nowrap;
+}
+
+.occult-global-notice {
+  border-color: #8461a5;
+  background: #241b2e;
+}
+
+@media (max-width: 620px) {
+  .occult-today-control {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .occult-today-control .button,
+  .occult-today-control button {
+    width: 100%;
+  }
+}

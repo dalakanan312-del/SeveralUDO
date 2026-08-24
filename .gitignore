@@ -1,41 +1,20 @@
-# Secrets / local configuration
 .env
 .env.*
 !.env.example
-.neon_storage.json
-
-# User data / local databases
-local_data/
-*.db
-*.sqlite
-*.sqlite3
-saves/
-saves.json
-*.decades-save
-
-# Private runtime / caches
+.venv/
 .runtime/
+.test_runtime/
+data/
+save_backups/
+uploads/
+exports/
+backups/
+release/
+clock_bridge/config.json
+tools/InnoSetup/
+tools/*.exe
+build/
+dist/
 __pycache__/
-*.py[cod]
+*.pyc
 .pytest_cache/
-.mypy_cache/
-
-# Streamlit / editor / OS noise
-.streamlit/secrets.toml
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# Logs / temp
-*.log
-*.tmp
-.updates/
-app_source_uncommitted.py
-name_library.json
-event_library.json
-starter_seed.json
-
-# Local mod-development tools and inspected third-party files
-tools/
-tmp/

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Family Tree · Decades Tracker{% endblock %}
+{% block body %}
+<header class="hero compact">
+  <p class="eyebrow">{{save.name}}</p>
+  <h1>Family Tree</h1>
+  <p>Follow one family branch at a time. Generations stay on fixed rows, couples stay together, and every connection can be traced.</p>
+</header>
+
+<form method="get" class="panel form-grid tree-controls">
+  <label>Focus Sim<select name="focus">{% for sim in all_sims %}<option value="{{sim.id}}" {% if tree.focus and sim.id==tree.focus.id %}selected{% endif %}>{{sim.data.get('sim_number','')}} · {{sim.label}}</option>{% endfor %}</select></label>
+  <label>View<select name="mode"><option value="direct" {% if tree_mode=='direct' %}selected{% endif %}>Immediate family — clearest</option><option value="family" {% if tree_mode=='family' %}selected{% endif %}>Extended family branch</option><option value="ancestors" {% if tree_mode=='ancestors' %}selected{% endif %}>Ancestors only</option><option value="descendants" {% if tree_mode=='descendants' %}selected{% endif %}>Descendants only</option></select></label>
+  <label>Generations <small>for extended views</small><input name="depth" type="number" min="1" max="8" value="{{tree_depth}}" {% if tree_mode=='direct' %}disabled{% endif %}></label>
+  <label>Portraits<select name="photos"><option value="1" {% if tree_photos %}selected{% endif %}>Small thumbnails</option><option value="0" {% if not tree_photos %}selected{% endif %}>Hide portraits</option></select></label>
+  <label>Life dates<select name="dates"><option value="1" {% if tree_dates %}selected{% endif %}>Show</option><option value="0" {% if not tree_dates %}selected{% endif %}>Hide</option></select></label>
+  <button class="primary">Draw tree</button>
+</form>
+
+<section class="tree-key panel" aria-label="Family tree key">
+  <strong>Connections</strong>
+  <span><i class="tree-key-line parent"></i>Parent to child</span>
+  <span><i class="tree-key-line partner"></i>Partner or spouse</span>
+  <span><i class="tree-key-line former"></i>Ended relationship</span>
+  <span class="status alive">Living</span><span class="status dead">Deceased</span>
+</section>
+
+{% if tree.focus %}
+<section class="panel tree-at-glance" aria-labelledby="tree-family-summary">
+  <div class="section-heading"><div><p class="eyebrow">AT A GLANCE</p><h2 id="tree-family-summary">{{tree.focus.label}}’s immediate family</h2></div><p>Select a name to center their branch. The arrow opens their full profile.</p></div>
+  <div class="tree-relative-groups">
+    {% for group in tree.relationship_groups %}
+    <section class="tree-relative-group"><h3>{{group.label}} <span>{{group.members|length}}</span></h3>
+      <div class="tree-relative-list">
+      {% for sim in group.members %}<span class="tree-relative"><a href="/p/family-tree?focus={{sim.id}}&amp;mode=direct&amp;photos={{1 if tree_photos else 0}}&amp;dates={{1 if tree_dates else 0}}"><strong>{{sim.label}}</strong><small>{{sim_status(sim,save)}}</small></a><a class="tree-profile-arrow" href="/sims/{{sim.id}}" aria-label="Open {{sim.label}}’s profile">↗</a></span>{% else %}<small class="tree-none">None recorded</small>{% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+  </div>
+</section>
+<section class="tree-reading-guide panel">
+  <div><p class="eyebrow">TRACE MODE</p><strong id="tree-trace">Hover or keyboard-focus a person to isolate their immediate family connections.</strong></div>
+  <span>{{tree.visible_count}} visible people · {{tree.edges|length}} visible connections</span>
+</section>
+<div class="family-tree-shell" tabindex="0" aria-label="Scrollable family tree. Scroll sideways when a generation is wide.">
+  <section class="family-tree {% if not tree_photos %}without-photos{% endif %}" id="family-tree" aria-label="Family tree centered on {{tree.focus.label}}" style="--tree-width:{{tree.canvas_width}}px">
+    <svg class="tree-lines" aria-hidden="true"></svg>
+    {% for level in tree.levels %}
+    <div class="tree-generation" data-generation="{{level.level}}">
+      <div class="tree-generation-heading"><span>{{level.label}}</span><small>{{level.members|length}} {% if level.members|length == 1 %}person{% else %}people{% endif %}</small></div>
+      <div class="tree-people">
+        {% for sim in level.members %}{% set counts=tree.connection_counts.get(sim.id,{}) %}
+        <article class="tree-person {% if sim.id==tree.focus.id %}focus{% endif %}" data-sim-id="{{sim.id}}" data-related="{{tree.related.get(sim.id,[])|join(',')}}" data-person-name="{{sim.label}}" tabindex="0" {% if sim.id==tree.focus.id %}aria-current="true"{% endif %}>
+          {% if tree_photos %}<span class="tree-portrait">{% if sim.id in photo_record_ids %}<img src="/portraits/{{sim.id}}/current" alt="" loading="lazy">{% else %}<span>{{sim.label[:1]}}</span>{% endif %}</span>{% endif %}
+          <span class="tree-person-copy"><span class="tree-relation">{{tree.roles.get(sim.id,'Relative')}}</span><strong>{{sim.label}}</strong><small>{{sim.data.get('sim_number','No ID')}} · {{sim_status(sim,save)}}</small>{% if tree_dates %}<small class="tree-life-dates">{{sim_birth_display(save,sim)}}{% if sim.data.get('death_global_day') is not none %} – {{sim_death_display(save,sim)}}{% endif %}</small>{% endif %}</span>
+          <span class="tree-connection-count" aria-label="{{counts.get('parents',0)}} parents, {{counts.get('partners',0)}} partners, {{counts.get('children',0)}} children"><b>{{counts.get('parents',0)}}</b>↑ <b>{{counts.get('partners',0)}}</b>♡ <b>{{counts.get('children',0)}}</b>↓</span>
+          <span class="tree-card-actions"><a href="/p/family-tree?focus={{sim.id}}&amp;mode=direct&amp;photos={{1 if tree_photos else 0}}&amp;dates={{1 if tree_dates else 0}}">Center branch</a><a href="/sims/{{sim.id}}">Open profile</a></span>
+        </article>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+</div>
+<script>
+(()=>{
+  const root=document.getElementById('family-tree'), shell=root.closest('.family-tree-shell'), svg=root.querySelector('svg'), trace=document.getElementById('tree-trace'), edges={{tree.edges|tojson}};
+  const ns='http://www.w3.org/2000/svg';
+  function element(name,attrs={}){const node=document.createElementNS(ns,name);for(const [key,value] of Object.entries(attrs))node.setAttribute(key,value);return node}
+  function draw(){
+    const box=root.getBoundingClientRect(),width=root.scrollWidth,height=root.scrollHeight;
+    svg.setAttribute('viewBox',`0 0 ${width} ${height}`);svg.setAttribute('width',width);svg.setAttribute('height',height);svg.innerHTML='';
+    for(const edge of edges){
+      const a=root.querySelector(`[data-sim-id="${edge.from}"]`),b=root.querySelector(`[data-sim-id="${edge.to}"]`);if(!a||!b)continue;
+      const x=a.getBoundingClientRect(),y=b.getBoundingClientRect();let ax,ay,bx,by,pathData;
+      if(edge.type==='partner'){
+        const left=x.left<=y.left?x:y,right=x.left<=y.left?y:x;
+        ax=left.right-box.left+2;ay=left.top-box.top+left.height/2;bx=right.left-box.left-2;by=right.top-box.top+right.height/2;
+        pathData=`M ${ax} ${ay} L ${bx} ${by}`;
+      }else{
+        ax=x.left-box.left+x.width/2;ay=x.bottom-box.top+2;bx=y.left-box.left+y.width/2;by=y.top-box.top-2;
+        const hub=ay+(by-ay)/2;pathData=`M ${ax} ${ay} L ${ax} ${hub} L ${bx} ${hub} L ${bx} ${by}`;
+      }
+      const group=element('g',{'class':`tree-edge-group ${edge.type}${edge.active===false?' former':''}`,'data-from':edge.from,'data-to':edge.to});
+      const path=element('path',{'class':`tree-edge ${edge.type}`,'d':pathData});const title=element('title');title.textContent=edge.label||edge.role||'Family connection';path.appendChild(title);group.appendChild(path);
+      group.appendChild(element('circle',{'class':'tree-edge-node','cx':ax,'cy':ay,'r':3.5}));group.appendChild(element('circle',{'class':'tree-edge-node','cx':bx,'cy':by,'r':3.5}));svg.appendChild(group);
+    }
+  }
+  function clearTrace(){root.classList.remove('is-tracing');root.querySelectorAll('.tree-person').forEach(card=>card.classList.remove('trace-active'));svg.querySelectorAll('.tree-edge-group').forEach(edge=>edge.classList.remove('trace-active'));trace.textContent='Hover or keyboard-focus a person to isolate their immediate family connections.'}
+  function centerFocus(){const card=root.querySelector('.tree-person.focus');if(!card)return;const cardBox=card.getBoundingClientRect(),shellBox=shell.getBoundingClientRect();shell.scrollLeft=Math.max(0,shell.scrollLeft+(cardBox.left+cardBox.width/2)-(shellBox.left+shellBox.width/2))}
+  function showTrace(card){
+    const id=card.dataset.simId,related=new Set((card.dataset.related||'').split(',').filter(Boolean));related.add(id);root.classList.add('is-tracing');
+    root.querySelectorAll('.tree-person').forEach(person=>person.classList.toggle('trace-active',related.has(person.dataset.simId)));
+    const labels=[];svg.querySelectorAll('.tree-edge-group').forEach(edge=>{const active=edge.dataset.from===id||edge.dataset.to===id;edge.classList.toggle('trace-active',active);if(active){const source=edges.find(item=>item.from===edge.dataset.from&&item.to===edge.dataset.to);if(source?.label)labels.push(source.label)}});
+    trace.textContent=labels.length?labels.join(' · '):`${card.dataset.personName} has no visible direct connections in this view.`;
+  }
+  root.addEventListener('pointerover',event=>{const card=event.target.closest('.tree-person');if(card)showTrace(card)});root.addEventListener('pointerleave',clearTrace);
+  root.addEventListener('focusin',event=>{const card=event.target.closest('.tree-person');if(card)showTrace(card)});root.addEventListener('focusout',event=>{if(!root.contains(event.relatedTarget))clearTrace()});
+  requestAnimationFrame(()=>{draw();centerFocus()});addEventListener('resize',draw);new ResizeObserver(draw).observe(root);document.fonts?.ready.then(draw);
+})();
+</script>
+{% else %}
+<div class="empty"><h2>Add a Sim to begin the tree.</h2></div>
+{% endif %}
+{% endblock %}

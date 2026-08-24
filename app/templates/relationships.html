@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block body %}
+<header class="hero compact"><p class="eyebrow">{{save.name}}</p><h1>Relationships</h1><p>Marriages, partnerships, dates, status, children and portraits.</p></header>
+{% include "_record_filters.html" %}
+<details class="panel" open><summary>Add a relationship</summary><form action="/relationships" method="post" class="form-grid">
+  <label>First partner<select name="partner1_id" required>{% for sim in all_sims %}<option value="{{sim.id}}">{{sim.label}}</option>{% endfor %}</select></label>
+  <label>Second partner<select name="partner2_id" required>{% for sim in all_sims %}<option value="{{sim.id}}">{{sim.label}}</option>{% endfor %}</select></label>
+  <label>Type<select name="relationship_type"><option>Marriage</option><option>Betrothal</option><option>Partnership</option><option>Former marriage</option><option>Other</option></select></label>
+  <label>Status<select name="status"><option>Active</option><option>Ended</option><option>Widowed</option><option>Divorced</option><option>Annulled</option></select></label>
+  <label>Start / marriage Global Day<input name="start_global_day" type="number"></label><label>Marriage hour<input name="marriage_game_hour" type="number" min="0" max="23"></label><label>Marriage minute<input name="marriage_game_minute" type="number" min="0" max="59"></label>
+  <label>End Global Day<input name="end_global_day" type="number"></label><label>Location<input name="location"></label><label>Children together<input name="children_count" type="number" min="0" value="0"></label>
+  <label>Married surname convention<select name="surname_rule"><option value="automatic">Automatic historical convention</option><option value="partner1_takes_partner2">First partner takes second surname</option><option value="partner2_takes_partner1">Second partner takes first surname</option><option value="keep">Keep both birth surnames</option><option value="hyphenate">Both use hyphenated surname</option></select></label>
+  <label><input name="legally_married" type="checkbox" value="on"> Legally married</label><label class="wide">Notes<textarea name="notes"></textarea></label><button class="primary wide">Create relationship</button>
+</form></details>
+<section class="profile-grid">
+{% for rel in records %}<article class="profile-card relationship-card"><a class="portrait couple" href="/relationships/{{rel.id}}">{% if rel.id in photo_record_ids %}<img src="/portraits/{{rel.id}}/marriage" alt="Portrait of {{rel.label}}" loading="lazy">{% else %}<span>♡</span>{% endif %}</a><div><p class="eyebrow">{{rel.data.get('type','Relationship')}} · {{rel.data.get('status','')}}</p><h3><a href="/relationships/{{rel.id}}">{{rel.label}}</a></h3><p>{% if rel.global_day is not none %}{% if rel.data.get('legally_married') or 'marriage' in rel.data.get('type','')|lower %}Married {{relationship_date_display(save,rel)}}{% if rel.data.get('marriage_time') %} at {{rel.data.get('marriage_time')}}{% endif %}{% else %}Began {{historical_period(save,rel.global_day)}}{% endif %}{% endif %}{% if rel.data.get('location') %} · {{rel.data.location}}{% endif %}</p><a href="/relationships/{{rel.id}}">View and edit →</a></div></article>{% else %}<div class="empty">No relationships recorded.</div>{% endfor %}
+</section>
+{% if archived_count %}<details class="panel"><summary>Archived relationships ({{archived_count}})</summary><p>Archive hides a relationship without erasing its dates, notes, or portraits.</p>{% for item in archived_records %}<div class="list-row"><strong>{{item.label}}</strong><form action="/records/{{item.id}}/restore" method="post"><button>Restore</button></form></div>{% endfor %}</details>{% endif %}
+{% include "_pager.html" %}{% endblock %}

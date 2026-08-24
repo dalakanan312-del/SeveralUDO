@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block title %}Planting Reference · Decades Tracker{% endblock %}{% block body %}
+<header class="hero compact"><p class="eyebrow">YEAR {{planting.year}}</p><h1>Historical Planting Reference</h1><p>What can plausibly grow now in {{planting.region}}, alongside the Sims outdoor season.</p></header>
+<form method="get" class="panel row"><label>Challenge location<input name="location" value="{{save.settings.get('challenge_location','')}}" placeholder="England, France, Virginia…"></label><label>Historical region<select name="region">{% for region in planting.regions %}<option {% if region==planting.region %}selected{% endif %}>{{region}}</option>{% endfor %}</select></label><button class="primary">Update reference</button></form>
+<div class="notice"><strong>{{planting.available}}</strong> plants in the bundled catalog are historically available by this year.</div>
+<section class="reference-list">{% for item in planting.rows %}<article class="reference-row {% if item.Status=='Historically available' %}available{% elif item.Status.startswith('Not yet') %}locked{% endif %}"><div><p class="eyebrow">{{item.Pack}} · {{item['Sims outdoor season']}}</p><h3>{{item.Plant}}</h3><p>{{item['Historical note']}}</p></div><div><strong>{{item.Status}}</strong><small>{{item.Origin}}</small></div></article>{% endfor %}</section>
+{% endblock %}

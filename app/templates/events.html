@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Events · Decades Tracker{% endblock %}
+{% block body %}
+<header class="hero compact">
+  <p class="eyebrow">{{event_count}} HISTORICAL RECORDS</p>
+  <h1>Events</h1>
+  <p>Keep the history that matters to your challenge. Hidden events are retained safely but removed from Today, rolls, and the chronicle.</p>
+</header>
+{% if event_notice %}<div class="notice event-notice">{{event_notice}}</div>{% endif %}
+
+<section class="event-filter-panel">
+  <div class="event-filter-heading">
+    <div><p class="eyebrow">CATALOG FILTERS</p><h2>Find historical events</h2></div>
+    <div class="event-result-count"><strong>{{event_filtered}}</strong><span>of {{event_count}} shown</span></div>
+  </div>
+  <form method="get" class="event-filter-grid">
+    <label class="event-search">Search the catalog<input name="q" value="{{event_query}}" placeholder="Event name, place, scope or notes"></label>
+    <label>Historical year<input name="year" type="number" value="{{event_year if event_year is not none else ''}}" placeholder="{{save.start_year + ((save.global_day-1)//save.days_per_year)}}"></label>
+    <label>When it occurs<select name="status"><option value="all" {% if event_status=='all' %}selected{% endif %}>Any time</option><option value="active" {% if event_status=='active' %}selected{% endif %}>Active now</option><option value="upcoming" {% if event_status=='upcoming' %}selected{% endif %}>Upcoming</option><option value="past" {% if event_status=='past' %}selected{% endif %}>Past</option></select></label>
+    <label>Scope<select name="scope"><option value="all">Any scope</option>{% for value in event_scopes %}<option value="{{value}}" {% if event_scope|lower==value|lower %}selected{% endif %}>{{value}}</option>{% endfor %}</select></label>
+    <label>Location<select name="location"><option value="">Any location</option>{% for value in event_locations %}<option value="{{value}}" {% if event_location|lower==value|lower %}selected{% endif %}>{{value}}</option>{% endfor %}</select></label>
+    <label>Roll behavior<select name="rolls"><option value="all" {% if event_rolls=='all' %}selected{% endif %}>All events</option><option value="required" {% if event_rolls=='required' %}selected{% endif %}>Roll required</option><option value="reference" {% if event_rolls=='reference' %}selected{% endif %}>Reference only</option></select></label>
+    <label>Interest<select name="interest"><option value="shown" {% if event_interest=='shown' %}selected{% endif %}>Events I follow</option><option value="hidden" {% if event_interest=='hidden' %}selected{% endif %}>Hidden events</option><option value="all" {% if event_interest=='all' %}selected{% endif %}>Everything</option></select></label>
+    <label>Order<select name="sort"><option value="earliest" {% if event_sort=='earliest' %}selected{% endif %}>Earliest first</option><option value="latest" {% if event_sort=='latest' %}selected{% endif %}>Latest first</option><option value="name" {% if event_sort=='name' %}selected{% endif %}>Event name A–Z</option></select></label>
+    <div class="event-filter-actions"><button class="primary">Apply filters</button>{% if event_filters_active %}<a class="button" href="/p/events">Clear {{event_filters_active}} filter{{'' if event_filters_active==1 else 's'}}</a>{% endif %}</div>
+  </form>
+  <div class="event-quick-filters" aria-label="Quick event filters">
+    <span>Quick view</span>
+    <a href="/p/events?status=active">Active now</a>
+    <a href="/p/events?year={{save.start_year + ((save.global_day-1)//save.days_per_year)}}">Current year</a>
+    <a href="/p/events?rolls=required">Roll required</a>
+    <a href="/p/events?scope=Global">Global events</a>
+    <a href="/p/events?interest=hidden">Hidden ({{event_hidden_count}})</a>
+  </div>
+</section>
+
+<details class="panel"><summary>Add an event</summary><form action="/records/event/structured" method="post" class="form-grid"><input type="hidden" name="return_to" value="/p/events"><label class="wide">Event name<input name="label" required></label><label>Start Global Day<input name="start_global_day" type="number" value="{{save.global_day}}"></label><label>End Global Day<input name="end_global_day" type="number" value="{{save.global_day}}"></label><label>Location<input name="location"></label><label>Scope<select name="scope"><option>Global</option><option>Country</option><option>Region</option><option>Household</option><option>Individual</option></select></label><label>Die<input name="die" placeholder="d20"></label><label>Bad results<input name="bad_results" placeholder="1–4"></label><input type="hidden" name="active" value="false"><label><input type="checkbox" name="active" value="true" checked> Active</label><input type="hidden" name="roll_required" value="false"><label><input type="checkbox" name="roll_required" value="true"> Generate applicable rolls</label><label class="wide">Notes<textarea name="notes"></textarea></label><button class="primary">Add event</button></form></details>
+
+{% if event_filters_active %}
+<div class="active-event-filters" aria-label="Active event filters">
+  <span>Filtered by</span>
+  {% if event_query %}<b>“{{event_query}}”</b>{% endif %}
+  {% if event_year is not none %}<b>Year {{event_year}}</b>{% endif %}
+  {% if event_status!='all' %}<b>{{event_status|title}}</b>{% endif %}
+  {% if event_scope!='all' %}<b>{{event_scope}}</b>{% endif %}
+  {% if event_location %}<b>{{event_location}}</b>{% endif %}
+  {% if event_rolls!='all' %}<b>{{event_rolls|title}}</b>{% endif %}
+  {% if event_interest!='shown' %}<b>{{'Hidden events' if event_interest=='hidden' else 'Including hidden'}}</b>{% endif %}
+  {% if event_sort!='earliest' %}<b>{{'Latest first' if event_sort=='latest' else 'A–Z'}}</b>{% endif %}
+</div>
+{% endif %}
+
+<section class="list event-catalog">
+  {% for item in event_records %}{% set spec=event_specs.get(item.id,{}) %}
+  <details class="list-row record-editor event-record{% if item.data.get('ignored') %} event-record-hidden{% endif %}">
+    <summary>
+      <span><span class="eyebrow">GD {{item.data.get('start_global_day',item.global_day)}}–{{item.data.get('end_global_day',item.global_day)}} · {{item.data.get('scope','EVENT')}}{% if item.data.get('location') %} · {{item.data.location}}{% endif %}</span><strong>{{item.label}}</strong></span>
+      <span class="event-record-kind">{% if item.data.get('ignored') %}Hidden{% elif item.data.get('roll_required') %}🎲 {{spec.get('die','d20')}}{% else %}Reference{% endif %}</span>
+    </summary>
+    <form action="/records/{{item.id}}/edit" method="post" class="form-grid"><input type="hidden" name="return_to" value="/p/events?{{event_filter_query}}&event_page={{event_page}}"><label class="wide">Name<input name="label" value="{{item.label}}"></label><label>Start GD<input name="start_global_day" type="number" value="{{item.data.get('start_global_day',item.global_day)}}"></label><label>End GD<input name="end_global_day" type="number" value="{{item.data.get('end_global_day',item.global_day)}}"></label><label>Location<input name="location" value="{{item.data.get('location','')}}"></label><label>Scope<input name="scope" value="{{item.data.get('scope','Global')}}"></label><label>Die<input name="die" value="{{spec.get('die','')}}"></label><label>Result table / bad results<input name="bad_results" value="{{spec.get('result_rules') or spec.get('bad_results','')}}"></label><input type="hidden" name="active" value="false"><label><input type="checkbox" name="active" value="true" {% if item.data.get('active',True) %}checked{% endif %}> Active</label><input type="hidden" name="roll_required" value="false"><label><input type="checkbox" name="roll_required" value="true" {% if item.data.get('roll_required') %}checked{% endif %}> Roll required</label>{% if spec.get('event_rule_id') %}<div class="notice wide">Using the recovered editable event rule. Saving a die or result here creates an override for this event.</div>{% endif %}<label class="wide">Notes<textarea name="notes">{{item.data.get('notes','')}}</textarea></label><button class="primary">Save changes</button>{% if item.data.get('ignored') %}<button class="event-interest-action" formaction="/api/events/{{item.id}}/interest" name="hidden" value="false">Show event again</button>{% else %}<button class="event-interest-action" formaction="/api/events/{{item.id}}/interest" name="hidden" value="true" onclick="return confirm('Hide this event from Today, rolls, and the chronicle? You can restore it later.')">Hide this event</button>{% endif %}<button formaction="/records/{{item.id}}/delete" onclick="return confirm('Permanently archive this event record?')">Archive record</button></form>
+  </details>
+  {% else %}<div class="empty"><h2>{{'No hidden events' if event_interest=='hidden' else 'No events match'}}</h2><p>{{'Events you hide will remain safely available here.' if event_interest=='hidden' else 'Try removing a location, year, scope, interest, or roll filter.'}}</p><a class="button" href="/p/events">Return to followed events</a></div>{% endfor %}
+</section>
+
+{% if event_pages>1 %}<nav class="pager event-pager" aria-label="Event result pages">{% if event_page>1 %}<a class="button" href="/p/events?{{event_filter_query}}&event_page={{event_page-1}}">← Previous</a>{% endif %}<span>Page {{event_page}} of {{event_pages}}</span>{% if event_page<event_pages %}<a class="button" href="/p/events?{{event_filter_query}}&event_page={{event_page+1}}">Next →</a>{% endif %}</nav>{% endif %}
+{% endblock %}

@@ -1,0 +1,34 @@
+.roll-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+.roll-actions form { margin: 0; }
+.roll-actions details { min-width: 150px; }
+.roll-actions details summary { cursor: pointer; color: var(--muted); }
+.roll-actions input { max-width: 105px; }
+.dice-button { min-width: 110px; }
+.roll-row { min-height: 108px; }
+.roll-reveal {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 24px 30px;
+  margin: -8px 0 24px;
+  border: 1px solid #7b5a2e;
+  border-radius: 18px;
+  background: radial-gradient(circle at 12% 35%, #392819 0, #201a17 32%, #151619 78%);
+  box-shadow: inset 0 0 36px #0008, 0 12px 28px #0005;
+}
+.roll-reveal.failed { border-color: #8f3f43; background: radial-gradient(circle at 12% 35%, #482024 0, #25191a 34%, #151619 78%); }
+.die-illustration { width: 150px; height: 150px; flex: 0 0 150px; filter: drop-shadow(0 10px 12px #0009); }
+.die-illustration svg { display: block; width: 100%; height: 100%; }
+.die-illustration text { fill: #f5e8cf; font: 700 46px Georgia, serif; text-shadow: 0 2px 2px #000; }
+.roll-reveal h2 { font-size: 2rem; }
+@media (max-width: 800px) {
+  .roll-actions { width: 100%; align-items: stretch; flex-direction: column; }
+  .dice-button { width: 100%; }
+  .roll-reveal { align-items: flex-start; gap: 14px; padding: 18px; }
+  .die-illustration { width: 100px; height: 100px; flex-basis: 100px; }
+}

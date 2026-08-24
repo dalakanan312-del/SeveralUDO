@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Storyline · Decades Tracker{% endblock %}
+{% block body %}
+<header class="storyline-hero">
+  <div class="storyline-hero-copy">
+    <p class="eyebrow">THE LIVING CHRONICLE · REVISION {{story.revision}}</p>
+    <h1>The Chronicle of<br><span>{{save.name}}</span></h1>
+    <p class="storyline-deck">A living history assembled from every life, loss, relationship, illness, roll and world event in your save.</p>
+    <div class="storyline-actions">
+      <a class="button primary" href="#year-chronicle">Begin reading</a>
+      <a class="button" href="/storyline/export">Download chronicle</a>
+    </div>
+  </div>
+  <div class="storyline-current-year" aria-label="Current chapter year">
+    <span>Current chapter</span>
+    <strong>{{story.year}}</strong>
+    <small>Global Day {{save.global_day}}</small>
+  </div>
+</header>
+
+{% if storyline_notice %}<div class="notice storyline-notice" role="status">{{storyline_notice}}</div>{% endif %}
+
+<section class="storyline-vitals" aria-label="Chronicle overview">
+  <article><span>Living figures</span><strong>{{story.living}}</strong><small>people shaping the present</small></article>
+  <article><span>Households</span><strong>{{story.households}}</strong><small>homes in the record</small></article>
+  <article><span>World events</span><strong>{{story.active_events}}</strong><small>shaping {{story.year}}</small></article>
+  <article><span>Family pressures</span><strong>{{story.pregnancies + story.illnesses}}</strong><small>pregnancies and illnesses</small></article>
+</section>
+
+<nav class="storyline-jump" aria-label="Storyline sections">
+  <a href="#year-chronicle"><span>01</span>Yearly chronicle</a>
+  <a href="#story-threads"><span>02</span>Story threads</a>
+  <a href="#people-records"><span>03</span>People & records</a>
+  <a href="#writing-desk"><span>04</span>Writing desk</a>
+</nav>
+
+<section class="storyline-opening" aria-labelledby="opening-title">
+  <div class="storyline-quill" aria-hidden="true">❧</div>
+  <div>
+    <p class="eyebrow" id="opening-title">FROM THE CHRONICLER’S HAND</p>
+    <blockquote>{{story.opening}}</blockquote>
+  </div>
+</section>
+
+<section id="year-chronicle" class="storyline-section yearly-section">
+  <div class="storyline-section-heading">
+    <div>
+      <p class="eyebrow">THE STORY SO FAR</p>
+      <h2>A chapter for every year</h2>
+      <p>Every year from {{save.start_year}} through {{story.year}} remains in the record—even the quiet ones.</p>
+    </div>
+    <div class="year-count"><strong>{{story.chapter_total}}</strong><span>year{{'' if story.chapter_total==1 else 's'}} recorded</span></div>
+  </div>
+
+  <div class="storyline-year-index" aria-label="Years on this page">
+    <span>On this page</span>
+    {% for chapter in story.chapter_page_items %}<a href="#story-year-{{chapter.year}}">{{chapter.year}}</a>{% endfor %}
+  </div>
+
+  {% if story.chapter_pages>1 %}
+  <nav class="annual-pager annual-pager-top" aria-label="Annual chronicle pages">
+    {% if story.chapter_page>1 %}<a class="button" href="/p/storyline?chapter_page={{story.chapter_page-1}}#year-chronicle">← Newer years</a>{% else %}<span></span>{% endif %}
+    <strong>Volume {{story.chapter_page}} <small>of {{story.chapter_pages}}</small></strong>
+    {% if story.chapter_page<story.chapter_pages %}<a class="button" href="/p/storyline?chapter_page={{story.chapter_page+1}}#year-chronicle">Older years →</a>{% else %}<span></span>{% endif %}
+  </nav>
+  {% endif %}
+
+  <div class="annual-chronicle">
+    {% for chapter in story.chapter_page_items %}
+    <article id="story-year-{{chapter.year}}" class="year-chapter {% if loop.first and story.chapter_page==1 %}current{% endif %}">
+      <div class="year-chapter-marker">
+        <span>YEAR</span>
+        <strong>{{chapter.year}}</strong>
+        {% if loop.first and story.chapter_page==1 %}<small>Present</small>{% endif %}
+      </div>
+      <div class="year-chapter-copy">
+        <p class="year-kicker">ANNUAL CHAPTER</p>
+        <h3>{{chapter.headline}}</h3>
+        <p class="year-narrative">{{chapter.paragraph}}</p>
+        {% if chapter.entries %}
+        <details class="chapter-sources">
+          <summary><span>View source records</span><strong>{{chapter.entry_count}}</strong></summary>
+          <ul>{% for entry in chapter.entries %}<li><span>{{entry.label}}</span><small>{{entry.kind.replace('_',' ')}}</small></li>{% endfor %}</ul>
+          {% if chapter.entry_count>chapter.entries|length %}<p>Showing the first {{chapter.entries|length}} of {{chapter.entry_count}} source records.</p>{% endif %}
+        </details>
+        {% endif %}
+      </div>
+    </article>
+    {% else %}<div class="empty">No annual chapters have formed yet.</div>{% endfor %}
+  </div>
+
+  {% if story.chapter_pages>1 %}
+  <nav class="annual-pager" aria-label="Annual chronicle pages">
+    {% if story.chapter_page>1 %}<a class="button" href="/p/storyline?chapter_page={{story.chapter_page-1}}#year-chronicle">← Newer years</a>{% else %}<span></span>{% endif %}
+    <strong>Volume {{story.chapter_page}} <small>of {{story.chapter_pages}}</small></strong>
+    {% if story.chapter_page<story.chapter_pages %}<a class="button" href="/p/storyline?chapter_page={{story.chapter_page+1}}#year-chronicle">Older years →</a>{% else %}<span></span>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+
+<section id="story-threads" class="storyline-section">
+  <div class="storyline-section-heading">
+    <div><p class="eyebrow">THE PRESENT MOMENT</p><h2>Threads still in motion</h2><p>The choices, dangers and questions presently shaping the family.</p></div>
+  </div>
+  <div class="story-thread-layout">
+    <div class="story-thread-grid">
+      {% for hook in story.hooks %}
+      <article class="story-hook {{hook.tone}}"><span class="thread-type">{{hook.tone|upper}}</span><h3>{{hook.title}}</h3><p>{{hook.text}}</p></article>
+      {% else %}<div class="empty">Add family or world data and the first storyline will emerge.</div>{% endfor %}
+    </div>
+    {% if story.arcs %}
+    <aside class="arc-ledger">
+      <p class="eyebrow">LONG-RUNNING ARCS</p>
+      <h3>The open ledger</h3>
+      {% for arc in story.arcs %}<div class="arc-row"><span><strong>{{arc.title}}</strong><small>{{arc.stakes}}</small></span><em>{{arc.status|title}}</em></div>{% endfor %}
+    </aside>
+    {% endif %}
+  </div>
+</section>
+
+<section id="people-records" class="storyline-section">
+  <div class="storyline-section-heading">
+    <div><p class="eyebrow">BENEATH THE NARRATIVE</p><h2>People & supporting records</h2><p>Open only the ledgers you want to consult. Everything remains available without crowding the main story.</p></div>
+  </div>
+  <div class="storyline-drawers">
+    {% if story.personal_threads %}
+    <details class="story-drawer">
+      <summary><span><b>Personal chronicles</b><small>Recent changes in individual lives</small></span><strong>{{story.personal_threads|length}}</strong></summary>
+      <div class="drawer-content personal-thread-grid">{% for thread in story.personal_threads %}<article><h3><a href="/sims/{{thread.sim.id}}">{{thread.sim.label}}</a></h3>{% if thread.current %}<p>{{thread.current}}</p>{% endif %}{% for entry in thread.entries %}<div class="story-record"><span>{{entry.label}}</span><time>GD {{entry.global_day}}</time></div>{% endfor %}</article>{% endfor %}</div>
+    </details>
+    {% endif %}
+    {% if story.recent_game_history %}
+    <details class="story-drawer">
+      <summary><span><b>Clock Sync record</b><small>Recent game changes that shaped the account</small></span><strong>{{story.recent_game_history|length}}</strong></summary>
+      <div class="drawer-content record-ledger">{% for entry in story.recent_game_history %}<div class="story-record"><span><b>{{entry.data.get('category','Life event').replace('_',' ')|title}}</b><small>{{entry.label}}</small></span><time>GD {{entry.global_day}}{% if entry.data.get('detected_game_time') %} · {{entry.data.detected_game_time}}{% endif %}</time></div>{% endfor %}</div>
+    </details>
+    {% endif %}
+    {% if story.occult_outcomes %}
+    <details class="story-drawer occult-drawer">
+      <summary><span><b>The hidden world</b><small>Resolved occult outcomes; pending rolls stay out of the chronicle</small></span><strong>{{story.occult_outcomes|length}}</strong></summary>
+      <div class="drawer-content record-ledger">{% for entry in story.occult_outcomes %}<div class="story-record"><span><b>{{entry.label}}</b><small>{{entry.data.get('occult_type','Occult')}} · {{entry.data.get('die','die')}} rolled {{entry.data.get('actual')}} · {{entry.data.get('outcome','Resolved')}}</small></span><time>GD {{entry.data.get('completed_global_day',entry.global_day)}} · {{historical_period(save,entry.data.get('completed_global_day',entry.global_day))}}</time></div>{% endfor %}</div>
+    </details>
+    {% endif %}
+    <details class="story-drawer">
+      <summary><span><b>Living family lines</b><small>The surnames carrying the dynasty forward</small></span><strong>{{story.dominant_lines|length}}</strong></summary>
+      <div class="drawer-content dynasty-ledger">{% for name,count in story.dominant_lines %}<div class="dynasty-row"><span>{{name}}</span><div><i style="--value:{{count}}"></i></div><strong>{{count}}</strong></div>{% else %}<p>No living surnames yet.</p>{% endfor %}</div>
+    </details>
+  </div>
+</section>
+
+<section id="writing-desk" class="storyline-section">
+  <div class="storyline-section-heading">
+    <div><p class="eyebrow">THE WRITING DESK</p><h2>Shape the chronicle</h2><p>Generate a grounded chapter, write in character, or let Clock Sync continue the story.</p></div>
+  </div>
+  <div class="writing-desk-grid">
+    <article class="desk-card featured">
+      <span class="desk-number">01</span><p class="eyebrow">GENERATIVE CHRONICLER</p><h3>Write from recorded facts</h3><p>The offline writer is free and deterministic. The optional AI pass never receives permission to invent dates or events.</p>
+      <form action="/storyline/generate" method="post"><label>Narrator<select name="narrator_sim_id"><option value="">Household chronicler</option>{% for sim in all_sims %}<option value="{{sim.id}}">{{sim.label}}</option>{% endfor %}</select></label><label>Tone<select name="tone"><option>intimate</option><option>dramatic</option><option>formal</option><option>hopeful</option></select></label><label class="story-check"><input type="checkbox" name="use_ai"><span>Use configured OpenAI text generation</span></label><button class="primary">Generate grounded chapter</button></form>
+    </article>
+    <article class="desk-card">
+      <span class="desk-number">02</span><p class="eyebrow">AUTOMATION</p><h3>Keep the story growing</h3><p>Add a new offline passage whenever Clock Sync advances to a new day.</p>
+      <form action="/storyline/settings" method="post"><label class="story-check"><input type="checkbox" name="automatic_storyline" {% if save.settings.get('automatic_storyline') %}checked{% endif %}><span>Automatically add daily chapters</span></label><button>Save automation setting</button></form>
+    </article>
+    <article class="desk-card wide">
+      <span class="desk-number">03</span><p class="eyebrow">WRITE IN CHARACTER</p><h3>Add a journal passage</h3>
+      <form action="/records/story_entry/structured" method="post" class="story-entry-form"><input type="hidden" name="return_to" value="/p/storyline"><label>Entry title<input name="label" required></label><label>Global Day<input type="number" name="global_day" value="{{save.global_day}}" required></label><label>Narrator<select name="narrator_sim_id"><option value="">Household chronicler</option>{% for sim in all_sims %}<option value="{{sim.id}}">{{sim.label}}</option>{% endfor %}</select></label><label class="passage">Passage<textarea name="body" placeholder="Write as the person who witnessed it…" required></textarea></label><button class="primary">Add to the chronicle</button></form>
+    </article>
+  </div>
+</section>
+
+{% if story.authored_entries %}
+<section class="storyline-section authored-section">
+  <div class="storyline-section-heading"><div><p class="eyebrow">IN THEIR OWN WORDS</p><h2>Written passages</h2></div><strong>{{story.authored_entries|length}}</strong></div>
+  <div class="authored-grid">{% for entry in story.authored_entries %}<article><time>{{historical_period(save,entry.global_day)}}{% if entry.data.get('narrator_name') %} · {{entry.data.narrator_name}}{% endif %}</time><details><summary><h3>{{entry.label}}</h3><span>Open passage</span></summary><form action="/records/{{entry.id}}/edit" method="post"><input type="hidden" name="return_to" value="/p/storyline"><label>Title<input name="label" value="{{entry.label}}"></label><label>Global Day<input name="global_day" type="number" value="{{entry.global_day}}"></label><label>Passage<textarea name="body">{{entry.data.get('body','')}}</textarea></label><div class="storyline-actions"><button class="primary">Save correction</button><button formaction="/records/{{entry.id}}/delete" onclick="return confirm('Archive this passage?')">Archive</button></div></form></details></article>{% endfor %}</div>
+</section>
+{% endif %}
+{% endblock %}
