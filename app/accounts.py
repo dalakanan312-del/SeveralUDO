@@ -42,6 +42,45 @@ def role_for(session: Session, user_id: str, workspace_id: str) -> str | None:
     return row.role if row else None
 
 
+def create_recovery_workspace(
+    session: Session,
+    email: str,
+    display_name: str = "",
+    workspace_name: str = "",
+    save_name: str = "",
+    start_year: int = 1300,
+) -> tuple[User, Workspace, ChronicleSave, str]:
+    """Create a first hosted workspace whose secret is shown only once."""
+    normalized = email.strip().casefold()
+    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+        raise ValueError("Enter a valid email address.")
+    if session.scalar(select(User).where(User.email == normalized)):
+        raise ValueError("That email already has an account. Use recovery access or Google sign-in instead.")
+    name = display_name.strip() or normalized.split("@", 1)[0]
+    if len(name) > 160:
+        raise ValueError("Display names must be 160 characters or fewer.")
+    recovery_code = token(24)
+    user = User(
+        email=normalized,
+        display_name=name,
+        recovery_hash=hash_secret(recovery_code),
+    )
+    workspace = Workspace(name=(workspace_name.strip() or f"{name}'s Chronicle")[:160])
+    session.add_all([user, workspace])
+    session.flush()
+    session.add(Membership(user_id=user.id, workspace_id=workspace.id, role="owner"))
+    save = ChronicleSave(
+        workspace_id=workspace.id,
+        name=(save_name.strip() or "My Decades Challenge")[:160],
+        start_year=max(-9999, min(9999, int(start_year))),
+        days_per_year=4,
+        pregnancy_days=4,
+    )
+    session.add(save)
+    session.flush()
+    return user, workspace, save, recovery_code
+
+
 def require_owner(session: Session, user_id: str, workspace_id: str) -> Membership:
     row = session.scalar(select(Membership).where(
         Membership.user_id == user_id,

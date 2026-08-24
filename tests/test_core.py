@@ -32,6 +32,23 @@ from app.save_scanner import _parse_save_slot, _parse_sim, protobuf_fields
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_new_user_can_create_recovery_workspace_and_first_save(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                email=f"new-{uuid.uuid4().hex}@example.test"
+                user,workspace,save,recovery=accounts.create_recovery_workspace(
+                    session,email,"New Historian","New Chronicle","First Challenge",1450,
+                )
+                session.flush()
+                self.assertEqual((user.email,user.display_name),(email,"New Historian"))
+                self.assertEqual((workspace.name,save.name,save.start_year),("New Chronicle","First Challenge",1450))
+                membership=session.scalar(select(Membership).where(Membership.user_id==user.id,Membership.workspace_id==workspace.id))
+                self.assertEqual(membership.role,"owner")
+                self.assertEqual(auth.recover_user(session,email,recovery).id,user.id)
+                with self.assertRaisesRegex(ValueError,"already has an account"):
+                    accounts.create_recovery_workspace(session,email)
+                session.rollback()
+
     def test_duplicate_event_repair_repoints_links_and_archives_extra_event_rolls(self):
         with TestClient(app):
             with SessionLocal() as session:

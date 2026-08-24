@@ -449,6 +449,52 @@ def home(request: Request):
         return templates.TemplateResponse(request, "dashboard.html", {**ctx, "counts": counts})
 
 
+@app.post("/auth/register")
+def register_workspace(
+    request: Request,
+    email: str = Form(...),
+    display_name: str = Form(""),
+    workspace_name: str = Form(""),
+    save_name: str = Form(""),
+    start_year: int = Form(1300),
+):
+    """Create a private hosted workspace without requiring a legacy code."""
+    if settings.local_mode:
+        raise HTTPException(404)
+    try:
+        with db() as session:
+            user, _workspace, save, recovery_code = accounts.create_recovery_workspace(
+                session,
+                email=email,
+                display_name=display_name,
+                workspace_name=workspace_name,
+                save_name=save_name,
+                start_year=start_year,
+            )
+            domain.seed_defaults(session, save)
+            request.session.clear()
+            request.session["user_id"] = user.id
+            request.session["save_id"] = save.id
+            request.session["new_recovery_code"] = recovery_code
+    except ValueError as exc:
+        with db() as session:
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                context(request, session, error=str(exc)),
+                status_code=400,
+            )
+    except SQLAlchemyError as exc:
+        with db() as session:
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                context(request, session, error=accounts.legacy_database_error_message(exc)),
+                status_code=503,
+            )
+    return RedirectResponse("/", status_code=303)
+
+
 @app.get("/auth/google")
 async def google_login(request: Request):
     if not settings.google_enabled:
@@ -504,6 +550,14 @@ async def google_callback(request: Request):
                 request.session["account_notice"] = str(exc)
         if recovery:
             request.session["new_recovery_code"] = recovery
+        opened = session.scalar(select(ChronicleSave).where(
+            ChronicleSave.workspace_id.in_(select(Membership.workspace_id).where(Membership.user_id == user.id)),
+        ).order_by(ChronicleSave.updated_at.desc()))
+        if not opened:
+            membership = session.scalar(select(Membership).where(Membership.user_id == user.id).order_by(Membership.role.desc()))
+            opened = ChronicleSave(workspace_id=membership.workspace_id, name="My Decades Challenge")
+            session.add(opened);session.flush();domain.seed_defaults(session,opened)
+        request.session["save_id"] = opened.id
     return RedirectResponse("/", status_code=303)
 
 
