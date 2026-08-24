@@ -26,7 +26,7 @@ from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
 from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, occult_identity, readable_trait_labels, trait_illnesses
-from app.insights import household_census, illness_statistics, pregnancy_dashboard
+from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, sim_weekday
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Record, User, Workspace
 from app.portraits import normalize_image
@@ -1685,6 +1685,28 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(stats["recovered"],1)
                 self.assertEqual(stats["average_duration"],2)
                 session.rollback()
+
+    def test_complete_statistics_dashboard_summarizes_every_challenge_system(self):
+        save=ChronicleSave(id="stats-save",workspace_id="stats-workspace",name="Statistics",global_day=20,start_year=1600,days_per_year=4)
+        home=Record(id="stats-home",save_id=save.id,kind="household",label="Census House",data={})
+        parent=Record(id="stats-parent",save_id=save.id,kind="sim",label="Living Parent",global_day=1,data={"birth_global_day":1,"generation":1,"sex":"Female","current_household_id":home.id})
+        child=Record(id="stats-child",save_id=save.id,kind="sim",label="Lost Child",global_day=5,data={"birth_global_day":5,"death_global_day":10,"cause_of_death":"Fever","generation":2,"sex":"Male","mother_id":parent.id,"current_household_id":home.id})
+        records=[home,parent,child,
+            Record(id="stats-relation",save_id=save.id,kind="relationship",label="Marriage",global_day=4,data={"type":"Marriage","status":"Active","legally_married":True,"start_global_day":4}),
+            Record(id="stats-pregnancy",save_id=save.id,kind="pregnancy",label="Twin pregnancy",global_day=6,data={"mother_id":parent.id,"status":"Delivered","end_global_day":6,"babies_expected":2,"babies_delivered":2}),
+            Record(id="stats-illness",save_id=save.id,kind="illness",label="Fever",global_day=7,data={"sim_id":child.id,"illness_name":"Fever","status":"Recovered","onset_global_day":7,"end_global_day":9,"source":"Clock Sync"}),
+            Record(id="stats-event",save_id=save.id,kind="event",label="Famine",global_day=20,data={"start_global_day":20,"end_global_day":21,"category":"Famine","location":"Europe","roll_required":True}),
+            Record(id="stats-roll",save_id=save.id,kind="roll",label="Famine roll",global_day=20,data={"roll_type":"Event — Famine","die":"d20","actual":1,"bad_results":"1","outcome":"Failed","completed":True,"completed_global_day":20,"event_id":"stats-event"}),
+        ]
+        result=challenge_statistics(records,save)
+        self.assertEqual((result["living"],result["deceased"]),(1,1))
+        self.assertEqual(result["challenge_net_growth"],1)
+        self.assertEqual(result["pregnancy"]["delivered_babies"],2)
+        self.assertEqual(result["relationship"]["active_marriages"],1)
+        self.assertEqual(result["illness"]["recovered"],1)
+        self.assertEqual(result["rolls"]["failed"],1)
+        self.assertEqual(result["event_categories"][0],("Famine",1))
+        self.assertTrue(result["yearly_activity"])
 
     def test_populated_telemetry_dashboards_and_profiles_render(self):
         marker=uuid.uuid4().hex

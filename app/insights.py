@@ -262,41 +262,108 @@ def family_view(records: list[Record], focus_id: str | None, mode: str = "family
 
 
 def statistics(records: list[Record], save: ChronicleSave) -> dict:
-    sims = [item for item in records if item.kind == "sim" and not item.deleted]
     current = save.global_day
-    living, deceased, future = [], [], []
-    ages, death_ages = [], []
-    births = Counter(); deaths = Counter(); causes = Counter(); generations = Counter(); stages = Counter(); sexes = Counter(); generation_survival=defaultdict(lambda:{"living":0,"deceased":0})
-    children_by_parent = defaultdict(list)
+    sims = [item for item in records if item.kind == "sim" and not item.deleted]
+    sims_by_id = {item.id: item for item in sims}
+    households = [item for item in records if item.kind == "household" and not item.deleted]
+    relationships = [item for item in records if item.kind == "relationship" and not item.deleted]
+    pregnancies = [item for item in records if item.kind == "pregnancy" and not item.deleted]
+    illnesses = [item for item in records if item.kind == "illness" and not item.deleted]
+    rolls = [item for item in records if item.kind == "roll" and not item.deleted]
+    events = [item for item in records if item.kind == "event" and not item.deleted]
+
+    living: list[Record] = []
+    deceased: list[Record] = []
+    future: list[Record] = []
+    ages: list[int] = []
+    death_ages: list[int] = []
+    births = Counter(); deaths = Counter(); causes = Counter(); death_stages = Counter()
+    generations = Counter(); stages = Counter(); sexes = Counter(); species = Counter()
+    generation_survival = defaultdict(lambda: {"living": 0, "deceased": 0, "total": 0, "survival_rate": 0.0})
+    children_by_parent: dict[str, set[str]] = defaultdict(set)
+    household_population = defaultdict(lambda: {"living": 0, "deceased": 0, "total": 0})
+    living_ages: list[tuple[int, str, str]] = []
+    completed_lifespans: list[tuple[int, str, str]] = []
+    challenge_births = challenge_deaths = 0
+    missing_birth = missing_generation = missing_household = missing_death_cause = 0
+
     for sim in sims:
-        data = sim.data or {}; birth = integer(data.get("birth_global_day", sim.global_day)); death = integer(data.get("death_global_day"))
+        data = sim.data or {}
+        birth = integer(data.get("birth_global_day", sim.global_day))
+        death = integer(data.get("death_global_day"))
+        if birth is None:
+            missing_birth += 1
+        if data.get("generation") in (None, ""):
+            missing_generation += 1
+        if not data.get("current_household_id"):
+            missing_household += 1
         if birth is not None and birth > current:
-            future.append(sim); continue
-        if death is not None and death <= current:
+            future.append(sim)
+            continue
+
+        dead_now = death is not None and death <= current
+        if dead_now:
             deceased.append(sim)
+            if not str(data.get("cause_of_death") or "").strip():
+                missing_death_cause += 1
             if birth is not None:
-                death_ages.append(max(0, death - birth))
-            deaths[historical_year(save, death)] += 1
-            causes[str(data.get("cause_of_death") or "Unknown")] += 1
+                lifespan = max(0, death - birth)
+                death_ages.append(lifespan)
+                completed_lifespans.append((lifespan, sim.label, sim.id))
+                stage_at_death = LIFE_STAGES[0][0]
+                for label, minimum in LIFE_STAGES:
+                    if lifespan >= minimum:
+                        stage_at_death = label
+                death_stages[stage_at_death] += 1
+            year = historical_year(save, death)
+            if year is not None:
+                deaths[year] += 1
+            if 1 <= death <= current:
+                challenge_deaths += 1
+            causes[str(data.get("cause_of_death") or "Unknown").strip() or "Unknown"] += 1
         else:
             living.append(sim)
             if birth is not None:
-                ages.append(max(0, current - birth))
+                age = max(0, current - birth)
+                ages.append(age)
+                living_ages.append((age, sim.label, sim.id))
+
         if birth is not None:
-            births[historical_year(save, birth)] += 1
-        generations[str(data.get("generation") if data.get("generation") not in (None, "") else "Unknown")] += 1
-        generation_key=str(data.get("generation") if data.get("generation") not in (None,"") else "Unknown")
-        generation_survival[generation_key]["deceased" if death is not None and death<=current else "living"]+=1
+            year = historical_year(save, birth)
+            if year is not None:
+                births[year] += 1
+            if 1 <= birth <= current:
+                challenge_births += 1
+        generation_key = str(data.get("generation") if data.get("generation") not in (None, "") else "Unknown")
+        generations[generation_key] += 1
+        generation_survival[generation_key]["deceased" if dead_now else "living"] += 1
+        generation_survival[generation_key]["total"] += 1
         sexes[str(data.get("sex") or "Unspecified")] += 1
         stages[life_stage(sim, current)] += 1
+        occult_types = data.get("game_occult_types")
+        if isinstance(occult_types, (list, tuple, set)) and occult_types:
+            species_label = " / ".join(str(value) for value in occult_types if value)
+        else:
+            species_label = str(data.get("species_occult") or data.get("species") or "Human")
+        species[species_label or "Human"] += 1
         for parent in (data.get("mother_id"), data.get("father_id")):
             if parent:
-                children_by_parent[parent].append(sim)
+                children_by_parent[str(parent)].add(sim.id)
+        household_id = str(data.get("current_household_id") or "")
+        if household_id:
+            household_population[household_id]["deceased" if dead_now else "living"] += 1
+            household_population[household_id]["total"] += 1
+
+    for values in generation_survival.values():
+        values["survival_rate"] = round(values["living"] * 100 / values["total"], 1) if values["total"] else 0.0
+
     adulthood = 72
     survived = died_young = pending = 0
     for child in sims:
-        data = child.data or {}; birth = integer(data.get("birth_global_day", child.global_day)); death = integer(data.get("death_global_day"))
-        if birth is None:
+        data = child.data or {}
+        birth = integer(data.get("birth_global_day", child.global_day))
+        death = integer(data.get("death_global_day"))
+        if birth is None or birth > current:
             continue
         if death is not None and death < birth + adulthood:
             died_young += 1
@@ -304,42 +371,232 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
             pending += 1
         else:
             survived += 1
-    households = [item for item in records if item.kind == "household" and not item.deleted]
-    relationships = [item for item in records if item.kind == "relationship" and not item.deleted]
-    pregnancies = [item for item in records if item.kind == "pregnancy" and not item.deleted]
-    rolls = [item for item in records if item.kind == "roll" and not item.deleted]
-    events = [item for item in records if item.kind == "event" and not item.deleted]
-    pregnancy_statuses=Counter(str((item.data or {}).get("status") or "Active") for item in pregnancies)
-    relationship_types=Counter(str((item.data or {}).get("type") or "Relationship") for item in relationships)
-    relationship_statuses=Counter(str((item.data or {}).get("status") or "Active") for item in relationships)
-    household_sizes=[]
-    for home in households:
-        members=[sim for sim in sims if (sim.data or {}).get("current_household_id")==home.id]
-        living_members=sum(integer((sim.data or {}).get("death_global_day")) is None or integer((sim.data or {}).get("death_global_day"))>current for sim in members)
-        household_sizes.append((home.label,living_members,len(members)))
-    event_states=Counter()
+
+    closed_relationship_statuses = {"ended", "divorced", "annulled", "separated", "widowed", "closed", "inactive"}
+    relationship_types = Counter(); relationship_statuses = Counter(); marriage_years = Counter()
+    marriage_durations: list[int] = []; active_marriages = ended_marriages = 0
+    for relationship in relationships:
+        data = relationship.data or {}
+        relationship_type = str(data.get("type") or "Relationship")
+        status = str(data.get("status") or "Active")
+        folded_status = status.casefold()
+        relationship_types[relationship_type] += 1
+        relationship_statuses[status] += 1
+        married = bool(data.get("legally_married")) or "marriage" in relationship_type.casefold() or "married" in folded_status
+        if not married:
+            continue
+        if folded_status in closed_relationship_statuses:
+            ended_marriages += 1
+        else:
+            active_marriages += 1
+        start = integer(data.get("start_global_day", relationship.global_day))
+        end = integer(data.get("end_global_day"))
+        if start is not None:
+            year = historical_year(save, start)
+            if year is not None:
+                marriage_years[year] += 1
+            marriage_durations.append(max(0, min(end, current) - start) if end is not None else max(0, current - start))
+
+    pregnancy_statuses = Counter(); pregnancy_years = Counter(); pregnancy_by_mother = Counter()
+    active_pregnancies = delivered_pregnancies = losses = expected_babies = delivered_babies = multiple_births = 0
+    closed_pregnancy_statuses = {"delivered", "miscarriage", "stillbirth", "cancelled", "canceled", "ended", "closed", "complete"}
+    for pregnancy in pregnancies:
+        data = pregnancy.data or {}
+        status = str(data.get("status") or "Active")
+        folded_status = status.casefold()
+        pregnancy_statuses[status] += 1
+        active_pregnancies += folded_status not in closed_pregnancy_statuses
+        delivered_pregnancies += folded_status in {"delivered", "complete"}
+        losses += folded_status in {"miscarriage", "stillbirth"}
+        expected = max(0, integer(data.get("babies_expected"), 0) or 0)
+        delivered_count = max(0, integer(data.get("babies_delivered"), 0) or 0)
+        expected_babies += expected
+        delivered_babies += delivered_count
+        multiple_births += max(expected, delivered_count) > 1
+        if data.get("mother_id"):
+            pregnancy_by_mother[str(data["mother_id"])] += 1
+        outcome_day = integer(data.get("end_global_day") or data.get("due_global_day") or pregnancy.global_day)
+        year = historical_year(save, outcome_day)
+        if year is not None:
+            pregnancy_years[year] += 1
+
+    completed_rolls: list[Record] = []
+    passed = failed_count = 0
+    roll_types = defaultdict(lambda: {"total": 0, "completed": 0, "passed": 0, "failed": 0})
+    roll_dice = Counter(); roll_sources = Counter(); roll_years = Counter()
+    pending_due = pending_future = event_rolls = 0
+    missing_roll_die = missing_roll_results = 0
+    for roll in rolls:
+        data = roll.data or {}
+        roll_type = str(data.get("roll_type") or "Unclassified roll")
+        die = str(data.get("die") or "Not recorded")
+        source = str(data.get("source_type") or data.get("source") or "Tracker")
+        completed = bool(data.get("completed"))
+        roll_types[roll_type]["total"] += 1
+        roll_dice[die] += 1
+        roll_sources[source] += 1
+        if not data.get("die"):
+            missing_roll_die += 1
+        if data.get("event_id") or roll_type.casefold().startswith("event"):
+            event_rolls += 1
+        if not completed:
+            if integer(roll.global_day, current) <= current:
+                pending_due += 1
+            else:
+                pending_future += 1
+            continue
+        completed_rolls.append(roll)
+        roll_types[roll_type]["completed"] += 1
+        actual = integer(data.get("actual"))
+        outcome = str(data.get("outcome") or "").casefold()
+        did_fail = "fail" in outcome or "death" in outcome or (
+            actual is not None and domain.failed(actual, str(data.get("bad_results") or ""))
+        )
+        if did_fail:
+            failed_count += 1
+            roll_types[roll_type]["failed"] += 1
+        else:
+            passed += 1
+            roll_types[roll_type]["passed"] += 1
+        if not str(data.get("outcome") or "").strip() and actual is None:
+            missing_roll_results += 1
+        completed_day = integer(data.get("completed_global_day"), roll.global_day)
+        year = historical_year(save, completed_day)
+        if year is not None:
+            roll_years[year] += 1
+
+    top_roll_types = []
+    for label, values in sorted(roll_types.items(), key=lambda pair: (pair[1]["total"], pair[0]), reverse=True)[:15]:
+        values = dict(values)
+        values["completion_rate"] = round(values["completed"] * 100 / values["total"], 1) if values["total"] else 0.0
+        values["failure_rate"] = round(values["failed"] * 100 / values["completed"], 1) if values["completed"] else 0.0
+        top_roll_types.append((label, values))
+
+    event_states = Counter(); event_categories = Counter(); event_locations = Counter(); event_roll_required = 0
     for event in events:
-        start=integer((event.data or {}).get("start_global_day",event.global_day));end=integer((event.data or {}).get("end_global_day",start),start)
-        event_states["Upcoming" if start is not None and start>current else "Past" if end is not None and end<current else "Active"]+=1
-    completed_rolls = [item for item in rolls if (item.data or {}).get("completed")]
-    passed = sum(str((item.data or {}).get("outcome") or "").casefold() in {"passed", "pass", "safe result", "safe"} for item in completed_rolls)
-    living_ages=[(max(0,current-integer((sim.data or {}).get("birth_global_day",sim.global_day),current)),sim.label) for sim in living]
-    completed_lifespans=[(max(0,integer((sim.data or {}).get("death_global_day"),current)-integer((sim.data or {}).get("birth_global_day",sim.global_day),current)),sim.label) for sim in deceased]
-    family_sizes=sorted(((len(children),next((sim.label for sim in sims if sim.id==parent),"Unknown")) for parent,children in children_by_parent.items()),reverse=True)
+        data = event.data or {}
+        start = integer(data.get("start_global_day", event.global_day))
+        end = integer(data.get("end_global_day", start), start)
+        state = "Upcoming" if start is not None and start > current else "Past" if end is not None and end < current else "Active"
+        event_states[state] += 1
+        event_categories[str(data.get("category") or data.get("event_type") or "Other")] += 1
+        event_locations[str(data.get("location") or data.get("country") or "All locations")] += 1
+        event_roll_required += bool(data.get("roll_required"))
+
+    illness_summary = illness_statistics(records, save)
+    active_illness_statuses = {"active", "chronic", "improving", "worsening"}
+    illness_severities = Counter(); active_contagious = 0
+    for illness in illnesses:
+        data = illness.data or {}
+        if str(data.get("status") or "Active").casefold() in active_illness_statuses:
+            illness_severities[str(data.get("severity") or "Unspecified")] += 1
+            active_contagious += bool(data.get("contagious"))
+
+    household_sizes = []
+    for home in households:
+        values = household_population[home.id]
+        household_sizes.append((home.label, values["living"], values["total"], home.id))
+    assigned_living = sum(values["living"] for values in household_population.values())
+    unassigned_living = max(0, len(living) - assigned_living)
+    average_household_size = round(assigned_living / len(households), 1) if households else None
+
+    family_sizes = sorted(
+        ((len(children), sims_by_id[parent].label if parent in sims_by_id else "Unknown", parent) for parent, children in children_by_parent.items()),
+        reverse=True,
+    )
+    mother_pregnancy_leaders = sorted(
+        ((count, sims_by_id[mother].label if mother in sims_by_id else "Unknown", mother) for mother, count in pregnancy_by_mother.items()),
+        reverse=True,
+    )
+
+    illness_years = dict(illness_summary["episodes_by_year"])
+    activity_years = sorted(
+        set(births)
+        | set(deaths)
+        | set(marriage_years)
+        | set(pregnancy_years)
+        | set(illness_years)
+        | set(roll_years)
+    )
+    yearly_activity = [{
+        "year": year,
+        "births": births[year], "deaths": deaths[year], "net": births[year] - deaths[year],
+        "marriages": marriage_years[year], "pregnancies": pregnancy_years[year],
+        "illnesses": illness_years.get(year, 0), "rolls": roll_years[year],
+    } for year in activity_years]
+
+    current_year_value = current_year(save)
+    current_year_activity = next((row for row in yearly_activity if row["year"] == current_year_value), {
+        "year": current_year_value, "births": 0, "deaths": 0, "net": 0,
+        "marriages": 0, "pregnancies": 0, "illnesses": 0, "rolls": 0,
+    })
+    child_total = survived + died_young + pending
+    resolved_children = survived + died_young
+    quality_items = [
+        ("Sims missing birth dates", missing_birth),
+        ("Sims missing generations", missing_generation),
+        ("Sims without a current household", missing_household),
+        ("Deaths missing a cause", missing_death_cause),
+        ("Rolls missing a die", missing_roll_die),
+        ("Completed rolls missing a result", missing_roll_results),
+    ]
     return {
         "population": len(sims), "living": len(living), "deceased": len(deceased), "future": len(future),
-        "households": len(households), "relationships": len(relationships), "pregnancies": len(pregnancies), "events": len(events),
+        "current_population": len(living) + len(deceased), "households": len(households),
+        "relationships": len(relationships), "pregnancies": len(pregnancies), "events": len(events),
+        "current_year": current_year_value, "current_global_day": current,
+        "survival_rate": round(len(living) * 100 / (len(living) + len(deceased)), 1) if living or deceased else 0.0,
+        "challenge_births": challenge_births, "challenge_deaths": challenge_deaths,
+        "challenge_net_growth": challenge_births - challenge_deaths,
         "average_living_age": round(mean(ages), 1) if ages else None,
+        "average_death_age": round(mean(death_ages), 1) if death_ages else None,
         "median_death_age": round(median(death_ages), 1) if death_ages else None,
         "births": sorted(births.items()), "deaths": sorted(deaths.items()), "causes": causes.most_common(),
-        "generations": sorted(generations.items()), "stages": stages.most_common(), "sexes": sexes.most_common(),
-        "children": {"total": survived + died_young + pending, "survived": survived, "died_young": died_young, "pending": pending},
-        "rolls": {"total": len(rolls), "completed": len(completed_rolls), "passed": passed, "failed": len(completed_rolls) - passed},
-        "largest_families": sorted(((next((sim.label for sim in sims if sim.id == parent), "Unknown"), len(children)) for parent, children in children_by_parent.items()), key=lambda item: item[1], reverse=True)[:10],
-        "pregnancy_statuses":pregnancy_statuses.most_common(),"relationship_types":relationship_types.most_common(),"relationship_statuses":relationship_statuses.most_common(),
-        "household_sizes":sorted(household_sizes,key=lambda item:(item[1],item[2]),reverse=True)[:10],"event_states":event_states.most_common(),
-        "generation_survival":sorted(generation_survival.items()),
-        "record_holders":{"oldest_living":max(living_ages,default=None),"longest_lived":max(completed_lifespans,default=None),"most_children":family_sizes[0] if family_sizes else None},
+        "death_stages": death_stages.most_common(),
+        "generations": sorted(generations.items(), key=lambda item: (item[0] == "Unknown", integer(item[0], 10**9))),
+        "stages": stages.most_common(), "sexes": sexes.most_common(), "species": species.most_common(),
+        "children": {
+            "total": child_total, "survived": survived, "died_young": died_young, "pending": pending,
+            "survival_rate": round(survived * 100 / resolved_children, 1) if resolved_children else None,
+        },
+        "rolls": {
+            "total": len(rolls), "completed": len(completed_rolls), "pending": len(rolls) - len(completed_rolls),
+            "pending_due": pending_due, "pending_future": pending_future, "passed": passed, "failed": failed_count,
+            "completion_rate": round(len(completed_rolls) * 100 / len(rolls), 1) if rolls else 0.0,
+            "failure_rate": round(failed_count * 100 / len(completed_rolls), 1) if completed_rolls else 0.0,
+            "event_rolls": event_rolls, "types": top_roll_types, "dice": roll_dice.most_common(),
+            "sources": roll_sources.most_common(),
+        },
+        "largest_families": [(name, count, parent_id) for count, name, parent_id in family_sizes[:10]],
+        "pregnancy": {
+            "total": len(pregnancies), "active": active_pregnancies, "delivered": delivered_pregnancies,
+            "losses": losses, "expected_babies": expected_babies, "delivered_babies": delivered_babies,
+            "multiple_births": multiple_births,
+            "average_babies": round(delivered_babies / delivered_pregnancies, 2) if delivered_pregnancies else None,
+            "mothers": len(pregnancy_by_mother),
+            "leaders": [(name, count, mother_id) for count, name, mother_id in mother_pregnancy_leaders[:10]],
+        },
+        "pregnancy_statuses": pregnancy_statuses.most_common(),
+        "relationship": {
+            "active_marriages": active_marriages, "ended_marriages": ended_marriages,
+            "average_marriage_duration": round(mean(marriage_durations), 1) if marriage_durations else None,
+        },
+        "relationship_types": relationship_types.most_common(), "relationship_statuses": relationship_statuses.most_common(),
+        "household_sizes": sorted(household_sizes, key=lambda item: (item[1], item[2]), reverse=True)[:15],
+        "household": {"assigned_living": assigned_living, "unassigned_living": unassigned_living, "average_size": average_household_size},
+        "event_states": event_states.most_common(), "event_categories": event_categories.most_common(12),
+        "event_locations": event_locations.most_common(12), "event_roll_required": event_roll_required,
+        "illness": {**illness_summary, "active_contagious": active_contagious, "severities": illness_severities.most_common()},
+        "generation_survival": sorted(generation_survival.items(), key=lambda item: (item[0] == "Unknown", integer(item[0], 10**9))),
+        "yearly_activity": yearly_activity, "current_year_activity": current_year_activity,
+        "data_quality": {"issues": sum(value for _, value in quality_items), "items": quality_items},
+        "record_holders": {
+            "oldest_living": max(living_ages, default=None),
+            "longest_lived": max(completed_lifespans, default=None),
+            "youngest_death": min(completed_lifespans, default=None),
+            "most_children": family_sizes[0] if family_sizes else None,
+            "most_pregnancies": mother_pregnancy_leaders[0] if mother_pregnancy_leaders else None,
+        },
     }
 
 

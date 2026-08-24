@@ -1,11 +1,120 @@
 {% extends "base.html" %}{% block title %}Statistics · Decades Tracker{% endblock %}{% block body %}
-<header class="hero compact"><p class="eyebrow">LIVE SAVE ANALYTICS</p><h1>Statistics</h1><p>Every figure is calculated from the current chronicle; future Sims are kept separate.</p></header>
-<section class="metrics"><article><strong>{{statistics.population}}</strong><span>recorded Sims</span></article><article><strong>{{statistics.living}}</strong><span>living now</span></article><article><strong>{{statistics.deceased}}</strong><span>deceased</span></article><article><strong>{{statistics.future}}</strong><span>future-dated</span></article><article><strong>{{statistics.households}}</strong><span>households</span></article><article><strong>{{statistics.events}}</strong><span>historical events</span></article></section>
-<section class="grid"><article class="panel"><h2>Age & longevity</h2><p><strong>{{statistics.average_living_age if statistics.average_living_age is not none else '—'}}</strong> average living age in challenge days</p><p><strong>{{statistics.median_death_age if statistics.median_death_age is not none else '—'}}</strong> median age at death</p></article><article class="panel"><h2>Children surviving to adulthood</h2><p><strong>{{statistics.children.survived}}</strong> survived · <strong>{{statistics.children.died_young}}</strong> died young · <strong>{{statistics.children.pending}}</strong> not old enough yet</p><p>{{statistics.children.total}} children have usable birth data.</p></article><article class="panel"><h2>Roll record</h2><p>{{statistics.rolls.completed}} of {{statistics.rolls.total}} complete</p><p>{{statistics.rolls.passed}} passed · {{statistics.rolls.failed}} failed</p></article></section>
-<section class="stats-grid"><article class="panel"><h2>Life stages</h2>{% for label,value in statistics.stages %}<div class="bar-row"><span>{{label}}</span><div style="--value:{{value}}"></div><strong>{{value}}</strong></div>{% endfor %}</article><article class="panel"><h2>Generations</h2>{% for label,value in statistics.generations %}<div class="bar-row"><span>{{label}}</span><div style="--value:{{value}}"></div><strong>{{value}}</strong></div>{% endfor %}</article><article class="panel"><h2>Sex</h2>{% for label,value in statistics.sexes %}<div class="bar-row"><span>{{label}}</span><div style="--value:{{value}}"></div><strong>{{value}}</strong></div>{% endfor %}</article><article class="panel"><h2>Leading causes of death</h2>{% for label,value in statistics.causes[:10] %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No deaths recorded.</p>{% endfor %}</article></section>
-<section class="stats-grid"><article class="panel"><h2>Pregnancy outcomes</h2>{% for label,value in statistics.pregnancy_statuses %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No pregnancies recorded.</p>{% endfor %}</article><article class="panel"><h2>Relationship structure</h2>{% for label,value in statistics.relationship_types %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% endfor %}{% for label,value in statistics.relationship_statuses %}<div class="list-row"><small>{{label}}</small><strong>{{value}}</strong></div>{% else %}<p>No relationships recorded.</p>{% endfor %}</article><article class="panel"><h2>Historical events</h2>{% for label,value in statistics.event_states %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No events installed.</p>{% endfor %}</article><article class="panel"><h2>Record holders</h2>{% if statistics.record_holders.oldest_living %}<p><strong>{{statistics.record_holders.oldest_living[1]}}</strong><br><small>oldest living · {{statistics.record_holders.oldest_living[0]}} days</small></p>{% endif %}{% if statistics.record_holders.longest_lived %}<p><strong>{{statistics.record_holders.longest_lived[1]}}</strong><br><small>longest life · {{statistics.record_holders.longest_lived[0]}} days</small></p>{% endif %}{% if statistics.record_holders.most_children %}<p><strong>{{statistics.record_holders.most_children[1]}}</strong><br><small>most children · {{statistics.record_holders.most_children[0]}}</small></p>{% endif %}</article></section>
-<section class="panel"><h2>Household census leaders</h2>{% for name,living,total in statistics.household_sizes %}<div class="list-row"><span>{{name}}</span><strong>{{living}} living · {{total}} recorded</strong></div>{% else %}<p>No households recorded.</p>{% endfor %}</section>
-<section class="panel"><h2>Generation survival</h2>{% for generation,values in statistics.generation_survival %}<div class="list-row"><span>Generation {{generation}}</span><strong>{{values.living}} living · {{values.deceased}} deceased</strong></div>{% else %}<p>No generation data recorded.</p>{% endfor %}</section>
-<section class="panel"><h2>Population change by year</h2><div class="year-grid">{% for year,count in statistics.births %}<div><strong>{{year}}</strong><span>{{count}} birth{{'' if count==1 else 's'}}</span></div>{% endfor %}{% for year,count in statistics.deaths %}<div class="death"><strong>{{year}}</strong><span>{{count}} death{{'' if count==1 else 's'}}</span></div>{% endfor %}</div></section>
-<section class="panel"><h2>Largest recorded families</h2>{% for name,count in statistics.largest_families %}<div class="list-row"><a href="/p/sims">{{name}}</a><strong>{{count}} children</strong></div>{% else %}<p>No parent links recorded.</p>{% endfor %}</section>
+<header class="hero compact">
+  <p class="eyebrow">LIVE CHRONICLE ANALYTICS · YEAR {{statistics.current_year}} · GLOBAL DAY {{statistics.current_global_day}}</p>
+  <h1>Your challenge at a glance</h1>
+  <p>A complete census of the open save: people, families, health, rolls and historical change. Future-dated Sims are kept separate from the current population.</p>
+</header>
+
+<nav class="statistics-nav" aria-label="Statistics sections">
+  <a href="#overview">Overview</a><a href="#people">People</a><a href="#families">Families</a><a href="#health">Health</a><a href="#rolls">Rolls</a><a href="#history">History</a><a href="#quality">Data quality</a>
+</nav>
+
+<section id="overview" class="statistics-section">
+  <div class="section-heading"><div><p class="eyebrow">THE LEDGER TODAY</p><h2>Overview</h2></div><p>{{statistics.current_population}} Sims have entered the chronicle through the current date.</p></div>
+  <section class="metric-strip five">
+    <article><span>Living population</span><strong>{{statistics.living}}</strong><small>{{statistics.survival_rate}}% of current records</small></article>
+    <article><span>Challenge births</span><strong>{{statistics.challenge_births}}</strong><small>Since Global Day 1</small></article>
+    <article><span>Challenge deaths</span><strong>{{statistics.challenge_deaths}}</strong><small>Net {{'+' if statistics.challenge_net_growth > 0 else ''}}{{statistics.challenge_net_growth}}</small></article>
+    <article><span>Households</span><strong>{{statistics.households}}</strong><small>{{statistics.household.assigned_living}} living Sims assigned</small></article>
+    <article><span>Due rolls</span><strong>{{statistics.rolls.pending_due}}</strong><small>{{statistics.rolls.pending_future}} scheduled later</small></article>
+  </section>
+  <section class="stats-grid">
+    <article class="panel current-year-panel">
+      <p class="eyebrow">YEAR {{statistics.current_year}}</p><h2>This year's activity</h2>
+      <div class="mini-stat-grid">
+        <div><strong>{{statistics.current_year_activity.births}}</strong><span>births</span></div><div><strong>{{statistics.current_year_activity.deaths}}</strong><span>deaths</span></div><div><strong>{{statistics.current_year_activity.marriages}}</strong><span>marriages</span></div><div><strong>{{statistics.current_year_activity.pregnancies}}</strong><span>pregnancies</span></div><div><strong>{{statistics.current_year_activity.illnesses}}</strong><span>illnesses</span></div><div><strong>{{statistics.current_year_activity.rolls}}</strong><span>rolls made</span></div>
+      </div>
+    </article>
+    <article class="panel"><h2>Open work</h2><div class="list-row"><span>Active pregnancies<small>Awaiting an outcome</small></span><strong>{{statistics.pregnancy.active}}</strong></div><div class="list-row"><span>Active illnesses<small>Current health episodes</small></span><strong>{{statistics.illness.active}}</strong></div><div class="list-row"><span>Unassigned living Sims<small>No current household</small></span><strong>{{statistics.household.unassigned_living}}</strong></div><div class="list-row"><span>Future-dated Sims<small>Not counted as current population</small></span><strong>{{statistics.future}}</strong></div></article>
+  </section>
+</section>
+
+<section id="people" class="statistics-section">
+  <div class="section-heading"><div><p class="eyebrow">POPULATION & SURVIVAL</p><h2>People</h2></div><p>Who is living, how long they live, and how each generation is faring.</p></div>
+  <section class="grid summary-cards">
+    <article class="panel"><h3>Average living age</h3><strong class="large-number">{{statistics.average_living_age if statistics.average_living_age is not none else '—'}}</strong><p>challenge days</p></article>
+    <article class="panel"><h3>Average age at death</h3><strong class="large-number">{{statistics.average_death_age if statistics.average_death_age is not none else '—'}}</strong><p>challenge days</p></article>
+    <article class="panel"><h3>Median age at death</h3><strong class="large-number">{{statistics.median_death_age if statistics.median_death_age is not none else '—'}}</strong><p>challenge days</p></article>
+    <article class="panel"><h3>Recorded population</h3><strong class="large-number">{{statistics.population}}</strong><p>{{statistics.living}} living · {{statistics.deceased}} deceased · {{statistics.future}} future</p></article>
+  </section>
+  <section class="stats-grid">
+    <article class="panel"><h2>Life stages</h2>{% for label,value in statistics.stages %}<div class="bar-row"><span>{{label}}</span><div style="--value:{{value}}"></div><strong>{{value}}</strong></div>{% else %}<p>No Sims recorded.</p>{% endfor %}</article>
+    <article class="panel"><h2>Sex</h2>{% for label,value in statistics.sexes %}<div class="bar-row"><span>{{label}}</span><div style="--value:{{value}}"></div><strong>{{value}}</strong></div>{% else %}<p>No sex data recorded.</p>{% endfor %}</article>
+    <article class="panel"><h2>Species & occult population</h2>{% for label,value in statistics.species %}<div class="bar-row"><span>{{label}}</span><div style="--value:{{value}}"></div><strong>{{value}}</strong></div>{% else %}<p>No species data recorded.</p>{% endfor %}</article>
+    <article class="panel"><h2>Deaths by life stage</h2>{% for label,value in statistics.death_stages %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No deaths with usable ages.</p>{% endfor %}</article>
+  </section>
+  <article class="panel"><h2>Generation survival</h2><div class="generation-grid">{% for generation,values in statistics.generation_survival %}<div class="generation-stat"><span>Generation {{generation}}</span><strong>{{values.survival_rate}}%</strong><small>{{values.living}} living · {{values.deceased}} deceased · {{values.total}} total</small></div>{% else %}<p>No generation data recorded.</p>{% endfor %}</div></article>
+  <section class="stats-grid">
+    <article class="panel"><h2>Leading causes of death</h2>{% for label,value in statistics.causes[:12] %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No deaths recorded.</p>{% endfor %}</article>
+    <article class="panel"><h2>Record holders</h2>
+      {% if statistics.record_holders.oldest_living %}<div class="list-row"><a href="/sims/{{statistics.record_holders.oldest_living[2]}}">{{statistics.record_holders.oldest_living[1]}}<small>Oldest living Sim</small></a><strong>{{statistics.record_holders.oldest_living[0]}} days</strong></div>{% endif %}
+      {% if statistics.record_holders.longest_lived %}<div class="list-row"><a href="/sims/{{statistics.record_holders.longest_lived[2]}}">{{statistics.record_holders.longest_lived[1]}}<small>Longest completed life</small></a><strong>{{statistics.record_holders.longest_lived[0]}} days</strong></div>{% endif %}
+      {% if statistics.record_holders.youngest_death %}<div class="list-row"><a href="/sims/{{statistics.record_holders.youngest_death[2]}}">{{statistics.record_holders.youngest_death[1]}}<small>Youngest recorded death</small></a><strong>{{statistics.record_holders.youngest_death[0]}} days</strong></div>{% endif %}
+      {% if not statistics.record_holders.oldest_living and not statistics.record_holders.longest_lived %}<p>No age records are available yet.</p>{% endif %}
+    </article>
+  </section>
+</section>
+
+<section id="families" class="statistics-section">
+  <div class="section-heading"><div><p class="eyebrow">HOUSEHOLDS & DESCENDANTS</p><h2>Families</h2></div><p>Survival to adulthood, fertility, marriages and household structure.</p></div>
+  <section class="metric-strip five">
+    <article><span>Child survival</span><strong>{{statistics.children.survival_rate if statistics.children.survival_rate is not none else '—'}}{% if statistics.children.survival_rate is not none %}%{% endif %}</strong><small>{{statistics.children.survived}} reached adulthood</small></article>
+    <article><span>Pregnancies</span><strong>{{statistics.pregnancy.total}}</strong><small>{{statistics.pregnancy.active}} active</small></article>
+    <article><span>Babies delivered</span><strong>{{statistics.pregnancy.delivered_babies}}</strong><small>{{statistics.pregnancy.multiple_births}} multiple-birth pregnancies</small></article>
+    <article><span>Active marriages</span><strong>{{statistics.relationship.active_marriages}}</strong><small>{{statistics.relationship.ended_marriages}} ended</small></article>
+    <article><span>Average household</span><strong>{{statistics.household.average_size if statistics.household.average_size is not none else '—'}}</strong><small>living members</small></article>
+  </section>
+  <section class="stats-grid">
+    <article class="panel"><h2>Children surviving to adulthood</h2><div class="list-row"><span>Survived</span><strong>{{statistics.children.survived}}</strong></div><div class="list-row"><span>Died before adulthood</span><strong>{{statistics.children.died_young}}</strong></div><div class="list-row"><span>Not old enough yet</span><strong>{{statistics.children.pending}}</strong></div><p>{{statistics.children.total}} Sims have usable birth data for this measure.</p></article>
+    <article class="panel"><h2>Pregnancy outcomes</h2>{% for label,value in statistics.pregnancy_statuses %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No pregnancies recorded.</p>{% endfor %}<p>{{statistics.pregnancy.losses}} recorded loss{{'' if statistics.pregnancy.losses == 1 else 'es'}} · {{statistics.pregnancy.expected_babies}} expected babies · {{statistics.pregnancy.average_babies if statistics.pregnancy.average_babies is not none else '—'}} babies per completed pregnancy.</p></article>
+    <article class="panel"><h2>Relationship types</h2>{% for label,value in statistics.relationship_types %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No relationships recorded.</p>{% endfor %}</article>
+    <article class="panel"><h2>Relationship status</h2>{% for label,value in statistics.relationship_statuses %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No relationship statuses recorded.</p>{% endfor %}{% if statistics.relationship.average_marriage_duration is not none %}<p>Average recorded marriage: <strong>{{statistics.relationship.average_marriage_duration}}</strong> challenge days.</p>{% endif %}</article>
+  </section>
+  <section class="stats-grid">
+    <article class="panel"><h2>Largest recorded families</h2>{% for name,count,sim_id in statistics.largest_families %}<div class="list-row"><a href="/sims/{{sim_id}}">{{name}}</a><strong>{{count}} child{{'' if count==1 else 'ren'}}</strong></div>{% else %}<p>No parent links recorded.</p>{% endfor %}</article>
+    <article class="panel"><h2>Most recorded pregnancies</h2>{% for name,count,sim_id in statistics.pregnancy.leaders %}<div class="list-row"><a href="/sims/{{sim_id}}">{{name}}</a><strong>{{count}}</strong></div>{% else %}<p>No mothers are linked to pregnancy records.</p>{% endfor %}</article>
+  </section>
+  <article class="panel"><h2>Household census</h2><p>{{statistics.household.unassigned_living}} living Sim{{'' if statistics.household.unassigned_living == 1 else 's'}} currently unassigned.</p>{% for name,living,total,household_id in statistics.household_sizes %}<div class="list-row"><a href="/households/{{household_id}}">{{name}}</a><strong>{{living}} living · {{total}} recorded</strong></div>{% else %}<p>No households recorded.</p>{% endfor %}</article>
+</section>
+
+<section id="health" class="statistics-section">
+  <div class="section-heading"><div><p class="eyebrow">ILLNESS & RECOVERY</p><h2>Health</h2></div><p>Episode frequency, recovery, severity and repeated illness.</p></div>
+  <section class="metric-strip five">
+    <article><span>Illness episodes</span><strong>{{statistics.illness.total}}</strong><small>all recorded time</small></article><article><span>Active now</span><strong>{{statistics.illness.active}}</strong><small>{{statistics.illness.active_contagious}} contagious</small></article><article><span>Recovered</span><strong>{{statistics.illness.recovered}}</strong><small>closed as recovered</small></article><article><span>Fatal episodes</span><strong>{{statistics.illness.fatal}}</strong><small>recorded fatal outcome</small></article><article><span>Average duration</span><strong>{{statistics.illness.average_duration if statistics.illness.average_duration is not none else '—'}}</strong><small>challenge days</small></article>
+  </section>
+  <section class="stats-grid">
+    <article class="panel"><h2>Most frequent illnesses</h2>{% for label,value in statistics.illness.top_illnesses %}<div class="bar-row"><span>{{label}}</span><div style="--value:{{value}}"></div><strong>{{value}}</strong></div>{% else %}<p>No illnesses recorded.</p>{% endfor %}</article>
+    <article class="panel"><h2>Active severity</h2>{% for label,value in statistics.illness.severities %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No active severity data.</p>{% endfor %}</article>
+    <article class="panel"><h2>Repeat patients</h2>{% for label,value in statistics.illness.repeat_patients %}<div class="list-row"><span>{{label}}</span><strong>{{value}} episodes</strong></div>{% else %}<p>No Sim has multiple recorded episodes.</p>{% endfor %}</article>
+    <article class="panel"><h2>Detection sources</h2>{% for label,value in statistics.illness.sources %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No illness sources recorded.</p>{% endfor %}</article>
+  </section>
+</section>
+
+<section id="rolls" class="statistics-section">
+  <div class="section-heading"><div><p class="eyebrow">CHANCE & CONSEQUENCE</p><h2>Roll performance</h2></div><p>Completion, results, assigned dice and the rules producing obligations.</p></div>
+  <section class="metric-strip five"><article><span>All rolls</span><strong>{{statistics.rolls.total}}</strong><small>{{statistics.rolls.completion_rate}}% complete</small></article><article><span>Completed</span><strong>{{statistics.rolls.completed}}</strong><small>{{statistics.rolls.passed}} passed</small></article><article><span>Failed</span><strong>{{statistics.rolls.failed}}</strong><small>{{statistics.rolls.failure_rate}}% of completed</small></article><article><span>Due now</span><strong>{{statistics.rolls.pending_due}}</strong><small>{{statistics.rolls.pending_future}} future</small></article><article><span>Event rolls</span><strong>{{statistics.rolls.event_rolls}}</strong><small>historical-event obligations</small></article></section>
+  <section class="stats-grid">
+    <article class="panel roll-types"><h2>Most common roll types</h2>{% for label,values in statistics.rolls.types %}<div class="roll-stat"><span><strong>{{label}}</strong><small>{{values.completed}}/{{values.total}} complete · {{values.completion_rate}}%</small></span><span><b>{{values.failed}}</b> failed<small>{{values.failure_rate}}% failure rate</small></span></div>{% else %}<p>No rolls recorded.</p>{% endfor %}</article>
+    <div><article class="panel"><h2>Dice in use</h2>{% for label,value in statistics.rolls.dice %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No dice recorded.</p>{% endfor %}</article><article class="panel"><h2>Roll sources</h2>{% for label,value in statistics.rolls.sources %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No source data recorded.</p>{% endfor %}</article></div>
+  </section>
+</section>
+
+<section id="history" class="statistics-section">
+  <div class="section-heading"><div><p class="eyebrow">THE HISTORICAL RECORD</p><h2>Events & change over time</h2></div><p>Installed history and the years in which the household changed.</p></div>
+  <section class="stats-grid">
+    <article class="panel"><h2>Event schedule</h2>{% for label,value in statistics.event_states %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No events installed.</p>{% endfor %}<p><strong>{{statistics.event_roll_required}}</strong> events require rolls.</p></article>
+    <article class="panel"><h2>Event categories</h2>{% for label,value in statistics.event_categories %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No categories recorded.</p>{% endfor %}</article>
+    <article class="panel"><h2>Most-used locations</h2>{% for label,value in statistics.event_locations %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% else %}<p>No locations recorded.</p>{% endfor %}</article>
+  </section>
+  <article class="panel yearly-ledger"><h2>Year-by-year ledger</h2><p>Births and deaths show population movement; the remaining columns show recorded activity.</p>{% for row in statistics.yearly_activity|reverse %}<div class="year-ledger-row"><strong>{{row.year}}</strong><span class="positive">{{row.births}} births</span><span class="negative">{{row.deaths}} deaths</span><span>net {{'+' if row.net > 0 else ''}}{{row.net}}</span><span>{{row.marriages}} marriages</span><span>{{row.pregnancies}} pregnancies</span><span>{{row.illnesses}} illnesses</span><span>{{row.rolls}} rolls</span></div>{% else %}<p>No dated activity has been recorded.</p>{% endfor %}</article>
+</section>
+
+<section id="quality" class="statistics-section">
+  <div class="section-heading"><div><p class="eyebrow">RECORD KEEPING</p><h2>Data completeness</h2></div><p>Missing links do not stop the tracker, but filling them in makes every statistic more accurate.</p></div>
+  <article class="panel quality-panel {% if statistics.data_quality.issues %}has-issues{% endif %}">
+    <div class="quality-total"><strong>{{statistics.data_quality.issues}}</strong><span>items to review</span></div>
+    <div>{% for label,value in statistics.data_quality["items"] %}<div class="list-row"><span>{{label}}</span><strong>{{value}}</strong></div>{% endfor %}</div>
+    {% if not statistics.data_quality.issues %}<p class="notice">The core statistical fields are complete.</p>{% endif %}
+  </article>
+</section>
 {% endblock %}
