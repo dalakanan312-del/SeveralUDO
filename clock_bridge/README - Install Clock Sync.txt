@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.0.1
+SEVERALUDO CLOCK SYNC 2.0.2
 Complete Windows installation guide
 ===================================
 
@@ -11,6 +11,12 @@ THE FIVE FILES
 3. Start SeveralUDO Clock Relay.bat - starts the relay in the background.
 4. config.json - your private connection to one tracker save. A reusable kit contains config-template.json instead.
 5. This guide and TROUBLESHOOTING.txt.
+
+VERIFY THE DOWNLOAD BEFORE INSTALLING
+- Open the SeveralUDOClockSync folder inside the ZIP. The relay and starter are inside that folder, not beside it.
+- Confirm SeveralUDOClockRelay.ps1 and Start SeveralUDO Clock Relay.bat are present.
+- If Windows security hides either command file, use the matching .backup.txt recovery copy included in the same folder. Rename it by removing only .backup.txt, then confirm the restored name ends in .ps1 or .bat.
+- KIT CONTENTS - VERIFY.txt lists every expected file and its checksum.
 
 FIRST INSTALLATION - READY-TO-INSTALL PRIVATE KIT
 1. Close The Sims 4 before installing or replacing a .ts4script file.

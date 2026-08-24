@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.0.1 - TROUBLESHOOTING
+SEVERALUDO CLOCK SYNC 2.0.2 - TROUBLESHOOTING
 ================================================
 
 RECEIVER SAYS WAITING
@@ -9,6 +9,12 @@ RECEIVER SAYS WAITING
 
 THE BAT FILE FLASHES AND CLOSES
 This is normal. The starter launches the PowerShell relay in a hidden window. Starting it again is safe; a mutex prevents duplicate relays.
+
+THE POWERSHELL RELAY OR BAT FILE IS MISSING
+- Open the SeveralUDOClockSync folder inside the ZIP; do not look only at the ZIP's top level.
+- Extract the entire folder before checking it.
+- If Windows security filtered a command file, rename SeveralUDOClockRelay.ps1.backup.txt to SeveralUDOClockRelay.ps1 and Start SeveralUDO Clock Relay.bat.backup.txt to Start SeveralUDO Clock Relay.bat.
+- You can also download both files individually from the tracker Game Clock page.
 
 PENDING_REPORT.JSON DOES NOT DISAPPEAR
 The mod wrote a report but the relay could not deliver it. Open last_result.json in Notepad and read the error. Common causes are no internet, a stopped local tracker, an expired/replaced private token, or an incorrect receiver URL. Fix the cause and leave the relay running; it retries automatically.
@@ -23,7 +29,7 @@ THE MOD DOES NOT APPEAR AT GAME START
 - Delete localthumbcache.package after closing the game if The Sims 4 is still loading an old copy.
 
 MODGUARD OR SECURITY SOFTWARE SHOWS A WARNING
-Clock Sync 2.0.1 does not make the HTTPS request from inside The Sims 4. The Script Mod writes pending_report.json locally; SeveralUDOClockRelay.ps1 sends it. Only use files downloaded from your tracker. Do not approve a differently named executable or script.
+Clock Sync 2.0.2 does not make the HTTPS request from inside The Sims 4. The Script Mod writes pending_report.json locally; SeveralUDOClockRelay.ps1 sends it. Only use files downloaded from your tracker. Do not approve a differently named executable or script.
 
 REPORT SUCCEEDS BUT THE TRACKER STILL SAYS WAITING
 - Refresh the Game Clock page.

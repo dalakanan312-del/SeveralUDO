@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -8,7 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from .config import ROOT
 
 
-CLOCK_SYNC_VERSION = "2.0.1"
+CLOCK_SYNC_VERSION = "2.0.2"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
 
@@ -38,6 +39,39 @@ def build_bundle(endpoint: str = "", token: str = "") -> bytes:
     with ZipFile(output, "w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
         for name in required:
             archive.writestr(f"{CLOCK_SYNC_FOLDER}/{name}", (BRIDGE_ROOT / name).read_bytes())
+        # Some Windows security tools hide command files while extracting a ZIP.
+        # Plain-text recovery copies let the owner restore the exact files by
+        # removing only the final ".txt" extension.
+        for name in ("SeveralUDOClockRelay.ps1", "Start SeveralUDO Clock Relay.bat"):
+            archive.writestr(f"{CLOCK_SYNC_FOLDER}/{name}.backup.txt", (BRIDGE_ROOT / name).read_bytes())
+        checksums = [
+            f"{sha256((BRIDGE_ROOT / name).read_bytes()).hexdigest()}  {name}"
+            for name in required
+        ]
+        archive.writestr(
+            f"{CLOCK_SYNC_FOLDER}/KIT CONTENTS - VERIFY.txt",
+            (
+                "SeveralUDO Clock Sync 2.0.2 - expected contents\r\n"
+                "=================================================\r\n\r\n"
+                "The folder must contain the Script Mod, PowerShell relay and BAT starter.\r\n"
+                "If Windows hides either command file, rename its .backup.txt copy by removing .backup.txt.\r\n\r\n"
+                + "\r\n".join(f"- {name}" for name in required)
+                + "\r\n- SeveralUDOClockRelay.ps1.backup.txt\r\n"
+                "- Start SeveralUDO Clock Relay.bat.backup.txt\r\n\r\n"
+                "SHA-256 checksums for the five original files:\r\n"
+                + "\r\n".join(checksums)
+                + "\r\n"
+            ).encode("utf-8"),
+        )
+        archive.writestr(
+            "START HERE - SeveralUDO Clock Sync.txt",
+            (
+                "Open the SeveralUDOClockSync folder inside this ZIP.\r\n"
+                "Extract the entire folder before installing or starting anything.\r\n"
+                "It contains SeveralUDOClockRelay.ps1 and Start SeveralUDO Clock Relay.bat.\r\n"
+                "If those two files are hidden by Windows security, recovery copies are included as .backup.txt files.\r\n"
+            ).encode("utf-8"),
+        )
         if endpoint and token:
             archive.writestr(f"{CLOCK_SYNC_FOLDER}/config.json", config_document(endpoint, token))
             archive.writestr(

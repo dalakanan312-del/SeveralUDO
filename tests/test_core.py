@@ -619,10 +619,29 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertIn("SeveralUDOClockSync/SeveralUDOClockSync.ts4script", names)
                 self.assertIn("SeveralUDOClockSync/SeveralUDOClockRelay.ps1", names)
                 self.assertIn("SeveralUDOClockSync/Start SeveralUDO Clock Relay.bat", names)
+                self.assertIn("SeveralUDOClockSync/SeveralUDOClockRelay.ps1.backup.txt", names)
+                self.assertIn("SeveralUDOClockSync/Start SeveralUDO Clock Relay.bat.backup.txt", names)
+                self.assertIn("SeveralUDOClockSync/KIT CONTENTS - VERIFY.txt", names)
+                self.assertIn("START HERE - SeveralUDO Clock Sync.txt", names)
                 self.assertIn("SeveralUDOClockSync/config-template.json", names)
                 self.assertIn("SeveralUDOClockSync/README - Install Clock Sync.txt", names)
                 self.assertIn("SeveralUDOClockSync/TROUBLESHOOTING.txt", names)
                 self.assertNotIn("SeveralUDOClockSync/config.json", names)
+                self.assertEqual(
+                    package.read("SeveralUDOClockSync/SeveralUDOClockRelay.ps1"),
+                    package.read("SeveralUDOClockSync/SeveralUDOClockRelay.ps1.backup.txt"),
+                )
+                self.assertEqual(
+                    package.read("SeveralUDOClockSync/Start SeveralUDO Clock Relay.bat"),
+                    package.read("SeveralUDOClockSync/Start SeveralUDO Clock Relay.bat.backup.txt"),
+                )
+                self.assertIn(b"SeveralUDOClockRelay.ps1", package.read("SeveralUDOClockSync/KIT CONTENTS - VERIFY.txt"))
+            relay = client.get("/downloads/clock-sync/relay")
+            starter = client.get("/downloads/clock-sync/starter")
+            self.assertEqual(relay.status_code, 200)
+            self.assertEqual(starter.status_code, 200)
+            self.assertIn("SeveralUDOClockRelay.ps1", relay.headers["content-disposition"])
+            self.assertIn("Start SeveralUDO Clock Relay.bat", starter.headers["content-disposition"])
             configured = client.post("/downloads/clock-sync/configured")
             self.assertEqual(configured.status_code, 200)
             self.assertIn("Private.zip", configured.headers["content-disposition"])
