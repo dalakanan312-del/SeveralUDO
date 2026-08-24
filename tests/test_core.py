@@ -21,7 +21,7 @@ from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, receive as receive_clock
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, occult_identity, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard
 from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, sim_weekday
@@ -32,6 +32,38 @@ from app.save_scanner import _parse_save_slot, _parse_sim, protobuf_fields
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_duplicate_event_repair_repoints_links_and_archives_extra_event_rolls(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Duplicate events",global_day=20)
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label="Anne Test",data={})
+                session.add(sim);session.flush()
+                legacy=Record(save_id=save.id,kind="event",label="Harvest Failure",global_day=20,data={"event_id":"legacy-harvest","legacy_id":"legacy-harvest","legacy_table":"events","start_global_day":20,"end_global_day":22,"location":"England","roll_required":True,"notes":"A detailed imported note"})
+                catalog=Record(save_id=save.id,kind="event",label=" Harvest  Failure ",global_day=20,data={"catalog_id":"EVT-TEST","start_global_day":20,"end_global_day":22,"location":"England","roll_required":True,"notes":""})
+                session.add_all([legacy,catalog]);session.flush()
+                first_roll=Record(save_id=save.id,kind="roll",label="Harvest — Anne",global_day=20,data={"sim_id":sim.id,"roll_type":"Event — Harvest Failure","event_id":legacy.id,"source_id":legacy.id,"source":f"event:{legacy.id}:{sim.id}","die":"d20","completed":False})
+                second_roll=Record(save_id=save.id,kind="roll",label="Harvest — Anne",global_day=20,data={"sim_id":sim.id,"roll_type":"Event — Harvest Failure","event_id":catalog.id,"source_id":catalog.id,"source":f"event:{catalog.id}:{sim.id}","die":"d20","completed":False})
+                rule=Record(save_id=save.id,kind="event_rule",label="Harvest rule",data={"event_id":"EVT-TEST","die":"d20","bad_results":"1"})
+                session.add_all([first_roll,second_roll,rule]);session.flush()
+
+                summary=duplicate_event_summary([legacy,catalog,first_roll,second_roll,rule,sim])
+                self.assertEqual((summary["groups"],summary["repairable"]),(1,1))
+                result=repair_duplicate_events(session,save);session.flush()
+                self.assertEqual((result["archived"],result["repointed"],result["rolls_archived"]),(1,2,1))
+                active_events=[item for item in (legacy,catalog) if not item.deleted]
+                self.assertEqual(len(active_events),1)
+                keeper=active_events[0];removed=catalog if keeper is legacy else legacy
+                self.assertEqual(removed.data["duplicate_of"],keeper.id)
+                self.assertIn("EVT-TEST",keeper.data["duplicate_event_aliases"])
+                active_rolls=[item for item in (first_roll,second_roll) if not item.deleted]
+                self.assertEqual(len(active_rolls),1)
+                self.assertEqual(active_rolls[0].data["event_id"],keeper.id)
+                self.assertEqual(rule.data["event_id"],"legacy-harvest")
+                self.assertEqual(repair_duplicate_events(session,save)["archived"],0)
+                session.rollback()
+
     def test_duplicate_obligation_repair_archives_only_redundant_pending_rolls(self):
         with TestClient(app):
             with SessionLocal() as session:

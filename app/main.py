@@ -982,6 +982,7 @@ def feature_page(request: Request, page: str):
             ctx.update(
                 health_report=insights.health_report(view_records, save),
                 duplicate_obligations=domain.duplicate_obligation_summary(view_records),
+                duplicate_events=domain.duplicate_event_summary(view_records),
                 health_notice=request.session.pop("health_notice", None),
             ); records = []
         if page == "plants" and save:
@@ -2022,6 +2023,24 @@ def repair_duplicate_obligations(request: Request):
             )
         else:
             request.session["health_notice"]="No duplicate obligations need repair."
+    return RedirectResponse("/p/health",status_code=303)
+
+
+@app.post("/api/health/repair-duplicate-events")
+def repair_duplicate_events(request: Request):
+    with db() as session:
+        ctx=context(request,session);save=ctx["save"]
+        if not save: raise HTTPException(400)
+        result=domain.repair_duplicate_events(session,save)
+        if result["archived"]:
+            request.session["health_notice"]=(
+                f"Archived {result['archived']} duplicate event cop"
+                f"{'ies' if result['archived'] != 1 else 'y'}, repointed {result['repointed']} linked record"
+                f"{'s' if result['repointed'] != 1 else ''}, and archived {result['rolls_archived']} duplicate pending event roll"
+                f"{'s' if result['rolls_archived'] != 1 else ''}."
+            )
+        else:
+            request.session["health_notice"]="No duplicate events need repair."
     return RedirectResponse("/p/health",status_code=303)
 
 

@@ -900,6 +900,186 @@ def _event_occurrence_key(event: Record) -> tuple[str, int, int, str]:
     )
 
 
+def _event_external_ids(event: Record) -> set[str]:
+    data = event.data or {}
+    values = {
+        str(data.get(key) or "").strip()
+        for key in ("catalog_id", "event_id", "legacy_id")
+    }
+    values.update(str(value).strip() for value in (data.get("duplicate_event_aliases") or []))
+    return {value for value in values if value}
+
+
+def duplicate_event_groups(records: list[Record]) -> list[dict]:
+    """Find exact duplicate event occurrences and select the safest keeper."""
+    active = [item for item in records if not item.deleted]
+    references: dict[str, int] = defaultdict(int)
+    event_ids = {item.id for item in active if item.kind == "event"}
+    for item in active:
+        data = item.data or {}
+        for key in ("event_id", "source_id", "source_event_id"):
+            value = str(data.get(key) or "")
+            if value in event_ids:
+                references[value] += 1
+        source = str(data.get("source") or "")
+        if source.startswith("event:"):
+            source_id = source.split(":", 2)[1]
+            if source_id in event_ids:
+                references[source_id] += 1
+
+    occurrences: dict[tuple[str, int, int, str], list[Record]] = defaultdict(list)
+    for event in (item for item in active if item.kind == "event"):
+        occurrences[_event_occurrence_key(event)].append(event)
+
+    def keeper_score(event: Record) -> tuple[int, int, int, int, int, float, str]:
+        data = event.data or {}
+        protected = sum(bool(data.get(key)) for key in (
+            "ignored", "completed", "configured_die", "configured_bad_results", "result_rules",
+        ))
+        meaningful = sum(value not in (None, "", [], {}) for value in data.values())
+        legacy = int(bool(data.get("legacy_table") or data.get("legacy_id")))
+        created = event.created_at.timestamp() if event.created_at else 0.0
+        return references[event.id], protected, meaningful, legacy, int(event.version or 0), -created, event.id
+
+    groups = []
+    for identity, matches in occurrences.items():
+        if len(matches) < 2:
+            continue
+        keeper = max(matches, key=keeper_score)
+        groups.append({
+            "identity": identity,
+            "label": keeper.label,
+            "keeper": keeper,
+            "redundant": [item for item in matches if item is not keeper],
+            "matches": matches,
+            "references": sum(references[item.id] for item in matches),
+        })
+    return sorted(groups, key=lambda group: (group["identity"][1], group["label"].casefold()))
+
+
+def duplicate_event_summary(records: list[Record]) -> dict:
+    groups = duplicate_event_groups(records)
+    return {
+        "groups": len(groups),
+        "repairable": sum(len(group["redundant"]) for group in groups),
+        "preview": [{
+            "label": group["label"],
+            "global_day": group["identity"][1],
+            "copies": len(group["matches"]),
+            "references": group["references"],
+        } for group in groups[:12]],
+    }
+
+
+def repair_duplicate_events(session: Session, save: ChronicleSave) -> dict:
+    """Merge exact duplicate events, repoint dependents, and archive extra copies."""
+    records = list(session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.deleted.is_(False),
+    )))
+    groups = duplicate_event_groups(records)
+    if not groups:
+        return {"groups": 0, "archived": 0, "repointed": 0, "rolls_archived": 0}
+
+    record_id_map: dict[str, str] = {}
+    external_id_map: dict[str, str] = {}
+    keeper_aliases: dict[str, set[str]] = defaultdict(set)
+    for group in groups:
+        keeper = group["keeper"]
+        canonical_external = event_key(keeper)
+        for redundant in group["redundant"]:
+            record_id_map[redundant.id] = keeper.id
+            for alias in _event_external_ids(redundant):
+                if alias != canonical_external:
+                    external_id_map[alias] = canonical_external
+                    keeper_aliases[keeper.id].add(alias)
+
+    repointed = 0
+    grouped_event_ids = {item.id for group in groups for item in group["matches"]}
+    for item in records:
+        if item.id in grouped_event_ids:
+            continue
+        data = dict(item.data or {})
+        changed = False
+        for key in ("event_id", "source_id", "source_event_id"):
+            value = str(data.get(key) or "")
+            if value in record_id_map:
+                data[key] = record_id_map[value]
+                changed = True
+        if item.kind == "event_rule":
+            for key in ("event_id", "catalog_id", "legacy_id"):
+                value = str(data.get(key) or "")
+                if value in external_id_map:
+                    data[key] = external_id_map[value]
+                    changed = True
+        if isinstance(data.get("event_ids"), list):
+            mapped = [record_id_map.get(str(value), str(value)) for value in data["event_ids"]]
+            if mapped != data["event_ids"]:
+                data["event_ids"] = list(dict.fromkeys(mapped))
+                changed = True
+        source = str(data.get("source") or "")
+        if source.startswith("event:"):
+            parts = source.split(":", 2)
+            if len(parts) == 3 and parts[1] in record_id_map:
+                data["source"] = f"event:{record_id_map[parts[1]]}:{parts[2]}"
+                changed = True
+        if not changed:
+            continue
+        base = item.version
+        item.data = data
+        item.version += 1
+        journal(session, item, "upsert", base)
+        repointed += 1
+
+    archived = 0
+    keepers_updated = 0
+    for group in groups:
+        keeper = group["keeper"]
+        merged = dict(keeper.data or {})
+        aliases = set(merged.get("duplicate_event_aliases") or []) | keeper_aliases.get(keeper.id, set())
+        for redundant in group["redundant"]:
+            other = redundant.data or {}
+            for key, value in other.items():
+                if key in {"catalog_id", "event_id", "legacy_id", "duplicate_event_aliases"}:
+                    continue
+                if key in {"roll_required", "completed", "ignored"}:
+                    merged[key] = bool(merged.get(key)) or bool(value)
+                elif key == "notes" and len(str(value or "")) > len(str(merged.get(key) or "")):
+                    merged[key] = value
+                elif merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+                    merged[key] = value
+            base = redundant.version
+            redundant.deleted = True
+            redundant.data = {
+                **other,
+                "duplicate_event_repair": True,
+                "duplicate_of": keeper.id,
+                "retired_reason": "Duplicate event",
+                "retired_global_day": save.global_day,
+            }
+            redundant.version += 1
+            journal(session, redundant, "delete", base)
+            archived += 1
+        if aliases:
+            merged["duplicate_event_aliases"] = sorted(aliases)
+        if merged != (keeper.data or {}):
+            base = keeper.version
+            keeper.data = merged
+            keeper.version += 1
+            journal(session, keeper, "upsert", base)
+            keepers_updated += 1
+
+    save.revision += archived + repointed + keepers_updated
+    session.flush()
+    roll_result = repair_duplicate_obligations(session, save)
+    return {
+        "groups": len(groups),
+        "archived": archived,
+        "repointed": repointed,
+        "rolls_archived": roll_result["archived"],
+    }
+
+
 def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None = None,
                    household: Record | None = None, save: ChronicleSave | None = None,
                    fallback_location: str = "") -> bool:

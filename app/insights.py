@@ -529,6 +529,10 @@ def health_report(records: list[Record], save: ChronicleSave) -> dict:
         if required not in labels:
             issues.append({"level": "error", "area": "Rules", "message": f"Missing lifecycle rule: {required.title()}."})
     event_count = sum(item.kind == "event" for item in active)
+    duplicate_events = domain.duplicate_event_groups(active)
+    if duplicate_events:
+        redundant = sum(len(group["redundant"]) for group in duplicate_events)
+        issues.append({"level": "warning", "area": "Events", "message": f"{len(duplicate_events)} duplicate event groups contain {redundant} redundant copies."})
     if event_count < 600:
         issues.append({"level": "warning", "area": "Events", "message": f"Only {event_count} historical events are installed; the recovered catalog contains 655."})
     return {"issues": issues, "errors": sum(item["level"] == "error" for item in issues), "warnings": sum(item["level"] == "warning" for item in issues), "records": len(active), "events": event_count, "rules": len(rules)}
