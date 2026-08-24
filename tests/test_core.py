@@ -21,7 +21,7 @@ from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, receive as receive_clock
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, occult_identity, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard
 from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, sim_weekday
@@ -32,6 +32,39 @@ from app.save_scanner import _parse_save_slot, _parse_sim, protobuf_fields
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_duplicate_obligation_repair_archives_only_redundant_pending_rolls(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Duplicate repair",global_day=20)
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label="Anne Test",data={"sim_number":"SIM-1"})
+                session.add(sim);session.flush()
+                sparse=Record(save_id=save.id,kind="roll",label="Anne aging",global_day=20,data={"sim_id":sim.id,"roll_type":"Teen","completed":False})
+                rich=Record(save_id=save.id,kind="roll",label="Anne aging",global_day=20,data={"sim_id":sim.id,"roll_type":" Teen ","die":"d20","bad_results":"1","source":"aging","completed":False})
+                completed=Record(save_id=save.id,kind="roll",label="Anne event",global_day=21,data={"sim_id":sim.id,"roll_type":"Event — Plague","die":"d20","actual":8,"outcome":"Passed","completed":True})
+                pending_after_result=Record(save_id=save.id,kind="roll",label="Anne event",global_day=21,data={"sim_id":sim.id,"roll_type":"event — plague","die":"d20","completed":False})
+                completed_copy=Record(save_id=save.id,kind="roll",label="Anne marriage",global_day=22,data={"sim_id":sim.id,"roll_type":"Marriage","actual":1,"outcome":"Marries","completed":True})
+                completed_copy_2=Record(save_id=save.id,kind="roll",label="Anne marriage",global_day=22,data={"sim_id":sim.id,"roll_type":"Marriage","actual":2,"outcome":"Marries","completed":True})
+                distinct_day=Record(save_id=save.id,kind="roll",label="Anne aging later",global_day=23,data={"sim_id":sim.id,"roll_type":"Teen","completed":False})
+                session.add_all([sparse,rich,completed,pending_after_result,completed_copy,completed_copy_2,distinct_day]);session.flush()
+
+                summary=duplicate_obligation_summary([sparse,rich,completed,pending_after_result,completed_copy,completed_copy_2,distinct_day])
+                self.assertEqual((summary["groups"],summary["repairable"],summary["protected_completed"]),(3,2,1))
+                result=repair_duplicate_obligations(session,save);session.flush()
+                self.assertEqual((result["archived"],result["protected_completed"]),(2,1))
+                self.assertTrue(sparse.deleted)
+                self.assertFalse(rich.deleted)
+                self.assertTrue(pending_after_result.deleted)
+                self.assertFalse(completed.deleted)
+                self.assertFalse(completed_copy.deleted)
+                self.assertFalse(completed_copy_2.deleted)
+                self.assertFalse(distinct_day.deleted)
+                self.assertEqual(sparse.data["duplicate_of"],rich.id)
+                self.assertEqual(pending_after_result.data["duplicate_of"],completed.id)
+                self.assertEqual(repair_duplicate_obligations(session,save)["archived"],0)
+                session.rollback()
+
     def test_v4_uses_explicit_public_schema_only_for_postgres(self):
         self.assertEqual(application_schema("postgresql://example.invalid/decades"), "public")
         self.assertEqual(application_schema("postgres://example.invalid/decades"), "public")

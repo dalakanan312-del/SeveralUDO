@@ -6,6 +6,7 @@ from statistics import mean, median
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import domain
 from .models import ChronicleSave, Record
 from .plant_catalog import REGIONS, region_for, rows as catalog_plant_rows
 
@@ -511,15 +512,15 @@ def health_report(records: list[Record], save: ChronicleSave) -> dict:
     for number, matches in numbers.items():
         if len(matches) > 1:
             issues.append({"level": "error", "area": "Sims", "message": f"Duplicate Sim ID {number}: " + ", ".join(item.label for item in matches)})
-    identities = defaultdict(list)
     for roll in (item for item in active if item.kind == "roll"):
-        data = roll.data or {}; key = (str(data.get("sim_id") or ""), str(data.get("roll_type") or "").casefold(), integer(roll.global_day, 0))
-        identities[key].append(roll)
+        data = roll.data or {}
         if not data.get("roll_type") or not data.get("die"):
             issues.append({"level": "warning", "area": "Rolls", "message": f"{roll.label} is missing its roll type or die."})
-    for matches in identities.values():
-        if len(matches) > 1:
-            issues.append({"level": "warning", "area": "Rolls", "message": f"{len(matches)} duplicate obligations: {matches[0].label}."})
+    for group in domain.duplicate_obligation_groups(active):
+        if group["redundant"]:
+            issues.append({"level": "warning", "area": "Rolls", "message": f"{len(group['matches'])} duplicate obligations: {group['label']}."})
+        elif len(group["completed"]) > 1:
+            issues.append({"level": "warning", "area": "Rolls", "message": f"{len(group['completed'])} completed copies are preserved for audit: {group['label']}."})
     labels = Counter(item.label.casefold() for item in rules)
     for label, count in labels.items():
         if count > 1:

@@ -5,6 +5,7 @@ import re
 import base64
 import gzip
 import json
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -115,6 +116,117 @@ def journal(session: Session, record: Record, operation: str, base_version: int)
         kind=record.kind, operation=operation, base_version=base_version,
         new_version=record.version, payload=sync.serialize(record),
     ))
+
+
+def roll_obligation_identity(record: Record) -> tuple[str, str, int] | None:
+    """Return the conservative identity used to find duplicate roll obligations.
+
+    A repairable duplicate must point to the same Sim, have the same named roll
+    type, and be due on the same Global Day.  Incomplete legacy rows are left
+    alone because grouping them without those three facts could merge unrelated
+    obligations.
+    """
+    if record.kind != "roll" or record.deleted:
+        return None
+    data = record.data or {}
+    sim_id = str(data.get("sim_id") or "").strip()
+    roll_type = re.sub(r"\s+", " ", str(data.get("roll_type") or "").strip().casefold())
+    raw_day = record.global_day if record.global_day is not None else data.get("due_global_day")
+    try:
+        due_day = int(raw_day)
+    except (TypeError, ValueError):
+        return None
+    if not sim_id or not roll_type or due_day < 1:
+        return None
+    return sim_id, roll_type, due_day
+
+
+def _obligation_keeper(record: Record) -> tuple[int, int, str, str]:
+    """Prefer the richest and most recently maintained pending obligation."""
+    data = record.data or {}
+    useful = (
+        "die", "bad_results", "result_rules", "failure_outcome", "success_outcome",
+        "source", "source_id", "event_id", "event_rule_id", "pregnancy_id",
+    )
+    richness = sum(value not in (None, "", [], {}) for value in (data.get(key) for key in useful))
+    return richness, int(record.version or 0), str(record.updated_at or record.created_at or ""), record.id
+
+
+def duplicate_obligation_groups(records: list[Record]) -> list[dict]:
+    """Describe active duplicate obligations and which pending rows are repairable."""
+    identities: dict[tuple[str, str, int], list[Record]] = defaultdict(list)
+    for record in records:
+        identity = roll_obligation_identity(record)
+        if identity is not None:
+            identities[identity].append(record)
+
+    groups = []
+    for identity, matches in identities.items():
+        if len(matches) < 2:
+            continue
+        completed = [item for item in matches if bool((item.data or {}).get("completed"))]
+        pending = [item for item in matches if not bool((item.data or {}).get("completed"))]
+        keeper = max(pending, key=_obligation_keeper) if pending and not completed else None
+        redundant = list(pending) if completed else [item for item in pending if item is not keeper]
+        example = completed[0] if completed else keeper or matches[0]
+        groups.append({
+            "identity": identity,
+            "label": example.label,
+            "matches": matches,
+            "pending": pending,
+            "completed": completed,
+            "keeper": completed[0] if completed else keeper,
+            "redundant": redundant,
+        })
+    return sorted(groups, key=lambda group: (group["identity"][2], group["label"].casefold()))
+
+
+def duplicate_obligation_summary(records: list[Record]) -> dict:
+    groups = duplicate_obligation_groups(records)
+    return {
+        "groups": len(groups),
+        "repairable": sum(len(group["redundant"]) for group in groups),
+        "protected_completed": sum(max(0, len(group["completed"]) - 1) for group in groups),
+        "preview": [{
+            "label": group["label"],
+            "global_day": group["identity"][2],
+            "copies": len(group["matches"]),
+            "repairable": len(group["redundant"]),
+            "completed": len(group["completed"]),
+        } for group in groups[:12]],
+    }
+
+
+def repair_duplicate_obligations(session: Session, save: ChronicleSave) -> dict:
+    """Archive redundant pending obligations without touching completed results."""
+    rolls = list(session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "roll",
+        Record.deleted.is_(False),
+    )))
+    groups = duplicate_obligation_groups(rolls)
+    archived = 0
+    for group in groups:
+        keeper = group["keeper"]
+        for record in group["redundant"]:
+            base = record.version
+            record.deleted = True
+            record.data = {
+                **(record.data or {}),
+                "duplicate_repair": True,
+                "duplicate_of": keeper.id if keeper else "",
+                "retired_reason": "Duplicate obligation",
+                "retired_global_day": save.global_day,
+            }
+            record.version += 1
+            journal(session, record, "delete", base)
+            archived += 1
+    save.revision += archived
+    return {
+        "groups": len(groups),
+        "archived": archived,
+        "protected_completed": sum(max(0, len(group["completed"]) - 1) for group in groups),
+    }
 
 
 AUTOMATIC_GENERATION_SOURCES = {"parents", "spouse"}

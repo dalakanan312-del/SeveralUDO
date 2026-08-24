@@ -979,7 +979,11 @@ def feature_page(request: Request, page: str):
                        timeline_start=start_year, timeline_end=end_year, timeline_query=request.query_params.get("q", ""),timeline_overview=insights.timeline_overview(view_records,save))
             records = []
         if page == "health" and save:
-            ctx["health_report"] = insights.health_report(view_records, save); records = []
+            ctx.update(
+                health_report=insights.health_report(view_records, save),
+                duplicate_obligations=domain.duplicate_obligation_summary(view_records),
+                health_notice=request.session.pop("health_notice", None),
+            ); records = []
         if page == "plants" and save:
             ctx["planting"] = insights.planting(save, request.query_params.get("location", ""), request.query_params.get("region", "")); records = []
         if page == "events" and save:
@@ -1999,6 +2003,26 @@ def install_defaults(request: Request):
         if not save: raise HTTPException(400)
         domain.seed_defaults(session,save);domain.schedule_rolls(session,save)
     return RedirectResponse(request.headers.get("referer") or "/p/health",status_code=303)
+
+
+@app.post("/api/health/repair-duplicate-obligations")
+def repair_duplicate_obligations(request: Request):
+    with db() as session:
+        ctx=context(request,session);save=ctx["save"]
+        if not save: raise HTTPException(400)
+        result=domain.repair_duplicate_obligations(session,save)
+        if result["archived"]:
+            request.session["health_notice"]=(
+                f"Archived {result['archived']} redundant pending obligation"
+                f"{'s' if result['archived'] != 1 else ''}. Completed roll results were preserved."
+            )
+        elif result["protected_completed"]:
+            request.session["health_notice"]=(
+                "No pending duplicates needed repair. Duplicate completed results were left intact for audit history."
+            )
+        else:
+            request.session["health_notice"]="No duplicate obligations need repair."
+    return RedirectResponse("/p/health",status_code=303)
 
 
 @app.post("/api/occult-rolls/toggle")
