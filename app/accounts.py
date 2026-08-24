@@ -17,6 +17,16 @@ from .models import (
 from .security import hash_secret, token
 
 
+def legacy_database_error_message(exc: Exception) -> str:
+    detail = str(exc).casefold()
+    if any(marker in detail for marker in ("diskfull", "disk full", "project size limit", "could not extend file")):
+        return (
+            "The Neon database is full. The tracker can still read existing data, "
+            "but new imports and changes require storage to be freed or the Neon plan to be expanded."
+        )
+    return "The Neon database could not be reached. Check the connection string and try again."
+
+
 EDIT_ROLES = {"owner", "editor"}
 
 
@@ -159,6 +169,16 @@ def claim_legacy_code(session: Session, user: User, raw_code: str,
     digest = hash_secret(code)
     link = session.scalar(select(LegacyWorkspaceCode).where(LegacyWorkspaceCode.code_hash == digest))
     workspace = session.get(Workspace, link.workspace_id) if link else _infer_legacy_workspace(session, digest)
+    # A returning owner/editor has already completed the expensive migration.
+    # Login must be read-only in this case: re-reading every legacy table wastes
+    # memory and can rewrite a large imported save merely to open its workspace.
+    if workspace is not None:
+        existing_membership = session.scalar(select(Membership).where(
+            Membership.user_id == user.id,
+            Membership.workspace_id == workspace.id,
+        ))
+        if existing_membership is not None:
+            return workspace, []
     imported: list[dict] = []
     try:
         from . import legacy_neon
@@ -168,7 +188,7 @@ def claim_legacy_code(session: Session, user: User, raw_code: str,
     except (LookupError, ValueError) as exc:
         raise ValueError(str(exc)) from exc
     except SQLAlchemyError as exc:
-        raise ValueError("The Neon database could not be reached. Check the connection string and try again.") from exc
+        raise ValueError(legacy_database_error_message(exc)) from exc
     if link is None:
         link = LegacyWorkspaceCode(
             workspace_id=workspace.id,

@@ -15,12 +15,15 @@ function showTrackerAlert(event){
   if(window.Notification&&Notification.permission==='granted'){try{const notice=new Notification(event.title,{body:event.body||'Open Decades Tracker to review.'});notice.onclick=()=>{window.focus();location.href=event.url||'/p/automation';};}catch(_error){}}
 }
 
+let trackerAlertPollActive=false;
 async function pollTrackerAlerts(){
   const body=document.body;const feed=body.dataset.notificationFeed;const saveId=body.dataset.saveId;if(!feed||!saveId)return;
+  if(document.hidden||trackerAlertPollActive)return;trackerAlertPollActive=true;
   const key=`decades-notification-cursor:${saveId}`;let cursor=localStorage.getItem(key);
   if(!cursor){cursor=body.dataset.notificationCursor||new Date().toISOString();localStorage.setItem(key,cursor);}
-  try{const response=await fetch(`${feed}?after=${encodeURIComponent(cursor)}`,{headers:{Accept:'application/json'}});if(!response.ok)return;const data=await response.json();for(const item of data.events||[])showTrackerAlert(item);if(data.cursor)localStorage.setItem(key,data.cursor);}catch(_error){}
+  try{const response=await fetch(`${feed}?after=${encodeURIComponent(cursor)}`,{headers:{Accept:'application/json'}});if(!response.ok)return;const data=await response.json();for(const item of data.events||[])showTrackerAlert(item);if(data.cursor)localStorage.setItem(key,data.cursor);}catch(_error){}finally{trackerAlertPollActive=false;}
 }
 
 document.addEventListener('click',async(event)=>{if(!event.target.closest('#enable-browser-notifications'))return;if(!window.Notification){alert('This browser does not support desktop notifications. Live in-app alerts will still work.');return;}const result=await Notification.requestPermission();event.target.textContent=result==='granted'?'Desktop notifications allowed':'Desktop notifications blocked';});
-window.setInterval(pollTrackerAlerts,5000);window.setTimeout(pollTrackerAlerts,1800);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollTrackerAlerts();});
+window.setInterval(pollTrackerAlerts,30000);window.setTimeout(pollTrackerAlerts,1800);

@@ -31,11 +31,16 @@ if settings.database_url.startswith("sqlite"):
     if not Path(relative).is_absolute():
         (ROOT / relative).parent.mkdir(parents=True, exist_ok=True)
 
-engine = create_engine(
-    settings.sqlalchemy_database_url,
-    pool_pre_ping=True,
-    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
-)
+engine_options = {"pool_pre_ping": True}
+if settings.database_url.startswith("sqlite"):
+    engine_options["connect_args"] = {"check_same_thread": False}
+else:
+    # One web worker does not benefit from SQLAlchemy's default allowance of
+    # fifteen simultaneous connections.  A small bounded pool is friendlier to
+    # both Railway's memory limit and Neon's transaction pooler.
+    engine_options.update(pool_size=3, max_overflow=2, pool_timeout=10, pool_recycle=300)
+
+engine = create_engine(settings.sqlalchemy_database_url, **engine_options)
 
 
 if settings.database_url.startswith("sqlite"):

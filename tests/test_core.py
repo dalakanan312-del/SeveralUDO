@@ -25,7 +25,7 @@ from app.domain import apply_married_surnames, backfill_married_surnames, backfi
 from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, occult_identity, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard
 from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, sim_weekday
-from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, Membership, Record, User
+from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
 from app.save_scanner import _parse_save_slot, _parse_sim, protobuf_fields
@@ -526,6 +526,35 @@ class CoreSmokeTests(unittest.TestCase):
         converted, mime = normalize_image(source.getvalue())
         self.assertEqual(mime, "image/webp")
         self.assertLess(len(converted), len(source.getvalue()))
+
+    def test_returning_legacy_login_does_not_rerun_import_or_write(self):
+        raw_code = f"legacy-{uuid.uuid4().hex}"
+        email = f"returning-{uuid.uuid4().hex}@example.test"
+        with SessionLocal() as session:
+            template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+            workspace = session.get(Workspace, template.workspace_id)
+            user = User(email=email, display_name="Returning player")
+            session.add(user); session.flush()
+            session.add(Membership(user_id=user.id, workspace_id=workspace.id, role="owner"))
+            session.add(LegacyWorkspaceCode(
+                workspace_id=workspace.id,
+                code_hash=accounts.hash_secret(raw_code),
+                label="Already migrated",
+                created_by_user_id=user.id,
+            ))
+            session.commit(); user_id, workspace_id = user.id, workspace.id
+        with SessionLocal() as session, mock.patch.object(
+            legacy_neon, "import_owner_workspace", side_effect=AssertionError("legacy import must not run")
+        ):
+            user = session.get(User, user_id)
+            workspace, imported = accounts.claim_legacy_code(session, user, raw_code)
+            self.assertEqual(workspace.id, workspace_id)
+            self.assertEqual(imported, [])
+            self.assertFalse(session.new)
+            self.assertFalse(session.dirty)
+        self.assertIn("database is full", accounts.legacy_database_error_message(
+            RuntimeError("could not extend file because project size limit has been exceeded")
+        ).casefold())
 
     def test_today_excludes_past_and_completed_items(self):
         self.assertFalse(due_on_today(Record(kind="event", global_day=10, data={"active": 1, "end_global_day": 20}), 70))

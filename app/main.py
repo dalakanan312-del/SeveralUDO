@@ -69,6 +69,7 @@ app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_ag
 app.mount("/static", StaticFiles(directory=ROOT / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=ROOT / "app" / "templates")
 _SAVE_SCAN_CACHE: dict[str, dict] = {}
+_TODAY_SCHEDULE_CHECKED: dict[str, tuple[int, int]] = {}
 
 
 def historical_year(save: ChronicleSave, global_day: int | None) -> str:
@@ -556,6 +557,14 @@ def legacy_workspace_login(request: Request, email: str = Form(...), workspace_c
     except ValueError as exc:
         with db() as session:
             return templates.TemplateResponse(request, "login.html", context(request, session, error=str(exc)), status_code=400)
+    except SQLAlchemyError as exc:
+        with db() as session:
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                context(request, session, error=accounts.legacy_database_error_message(exc)),
+                status_code=503,
+            )
     return RedirectResponse("/", status_code=303)
 
 
@@ -1069,9 +1078,13 @@ def feature_page(request: Request, page: str):
             sims=[item for item in view_records if item.kind=="sim"];succession=sorted((item for item in sims if int_or_none((item.data or {}).get("death_global_day")) is None or int((item.data or {}).get("death_global_day"))>save.global_day),key=lambda item:(0 if "heir" in str((item.data or {}).get("succession_override") or "").casefold() else 1,int_or_none((item.data or {}).get("birth_global_day")) or 10**9))
             ctx.update(challenge_year=year,era_guidance=guidance,succession=succession,campaigns=[item for item in view_records if item.kind=="campaign"],services=[item for item in view_records if item.kind=="service"],all_sims=sorted(sims,key=lambda item:item.label.casefold()));records=[]
         if page == "today" and save:
-            settings_data=dict(save.settings or {})
-            if int_or_none(settings_data.get("marriage_rolls_checked_global_day")) != save.global_day or int_or_none(settings_data.get("marriage_roll_scheduler_version")) != 2:
-                domain.schedule_marriage_rolls(session,save);settings_data.update({"marriage_rolls_checked_global_day":save.global_day,"marriage_roll_scheduler_version":2});save.settings=settings_data
+            # Scheduling is idempotent. Remember the check in process instead
+            # of rewriting the save's large settings JSON on every new day.
+            # This keeps an ordinary GET read-only when there are no new rolls.
+            schedule_marker=(save.global_day,2)
+            if _TODAY_SCHEDULE_CHECKED.get(save.id) != schedule_marker:
+                domain.schedule_marriage_rolls(session,save)
+                _TODAY_SCHEDULE_CHECKED[save.id]=schedule_marker
             g = save.global_day
             params = request.query_params
             due_scope = params.get("due") or request.session.get("today_due", "due")
