@@ -1865,6 +1865,38 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertIsNotNone(wolf.data.get("death_global_day"))
                 session.rollback()
 
+    def test_completed_werewolf_discovery_backfills_without_duplicate_followups(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Werewolf follow-up backfill",global_day=70,start_year=1500,days_per_year=4,settings={"automatic_occult_rolls":True,"occult_rolls_enabled_from_global_day":70})
+                session.add(save);session.flush()
+                wolf=Record(save_id=save.id,kind="sim",label="Historic Wolf",global_day=1,data={"species_occult":"Werewolf","game_occult_types":["Werewolf"],"werewolf_confined":False,"birth_global_day":1})
+                session.add(wolf);session.flush();seed_occult_rules(session,save)
+                discovery=Record(save_id=save.id,kind="roll",label="Historic Wolf — Werewolf discovery",global_day=60,data={
+                    "sim_id":wolf.id,"occult_roll":True,"occult_rule_key":"werewolf_discovery",
+                    "source_rule_key":"werewolf_discovery","completed":True,"triggered":True,
+                    "actual":1,"outcome":"Discovered",
+                })
+                session.add(discovery);session.flush()
+
+                self.assertGreaterEqual(schedule_occult_rolls(session,save,[wolf]),1)
+                followups=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="roll",
+                    Record.data["origin_roll_id"].as_string()==discovery.id,
+                    Record.data["occult_rule_key"].as_string()=="werewolf_hunt_response",
+                )))
+                self.assertEqual(len(followups),1)
+                self.assertTrue(discovery.data["rule_followup_reviewed"])
+                schedule_occult_rolls(session,save,[wolf])
+                followups=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="roll",
+                    Record.data["origin_roll_id"].as_string()==discovery.id,
+                    Record.data["occult_rule_key"].as_string()=="werewolf_hunt_response",
+                )))
+                self.assertEqual(len(followups),1)
+                session.rollback()
+
     def test_occult_inheritance_effect_and_every_completed_outcome_enter_storyline(self):
         with TestClient(app):
             with SessionLocal() as session:

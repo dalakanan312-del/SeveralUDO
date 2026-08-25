@@ -1662,6 +1662,33 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
                 source = f"occult:{rule.id}:{sim.id}:moon:{moon_day}"
                 created += int(_add_occult_roll(session, save, rule, sim, moon_day, source))
         moon_day += interval
+
+    # Reconcile triggered rolls completed before automatic follow-ups existed.
+    # The helper recognizes an already-created manual follow-up, so enabling the
+    # automation on an established save cannot duplicate the player's work.
+    completed_triggers = list(session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "roll",
+        Record.deleted.is_(False),
+        Record.data["completed"].as_boolean().is_(True),
+        Record.data["triggered"].as_boolean().is_(True),
+    )))
+    for origin in completed_triggers:
+        origin_data = origin.data or {}
+        parent_key = str(origin_data.get("source_rule_key") or origin_data.get("occult_rule_key") or "")
+        if parent_key not in occult_rules.AUTOMATIC_OCCULT_FOLLOW_UPS:
+            continue
+        if origin_data.get("rule_followup_automatic") and origin_data.get("rule_followup_ids"):
+            continue
+        before = dict(origin_data)
+        base = origin.version
+        followups_created = _schedule_automatic_occult_followup(session, save, origin)
+        created += followups_created
+        if origin.data != before:
+            origin.version += 1
+            journal(session, origin, "upsert", base)
+            if not followups_created:
+                created += 1
     return created
 
 
@@ -1724,24 +1751,37 @@ def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, r
     rule = min(candidates, key=lambda item: int((item.data or {}).get("end_year", 9999)) - int((item.data or {}).get("start_year", -9999)))
     lethal = occult_rules.lethal_results(child_key)
     source = f"occult:auto-followup:{roll.id}:{rule.id}:{sim.id}"
-    created = _add_occult_roll(
-        session, save, rule, sim, save.global_day, source,
-        overrides={
-            "origin_roll_id": roll.id,
-            "source_rule_id": rule.id,
-            "source_rule_key": child_key,
-            "rule_generated": True,
-            "automatic_followup": True,
-            "rule_context": f"Automatically scheduled after {roll.label}: {data.get('outcome') or 'triggered'}",
-            "bad_results": lethal,
-            "nonlethal": not bool(lethal),
-            "failure_is_lethal": bool(lethal),
-        },
-    )
-    followup = session.scalar(select(Record).where(
+    # A player may already have added this follow-up from the rule workbench.
+    # Match its stable origin/rule/Sim identity before considering the automatic
+    # source token, otherwise the backfill would create a duplicate.
+    origin_followups = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
-        Record.data["source"].as_string() == source,
-    ).limit(1))
+        Record.data["origin_roll_id"].as_string() == roll.id,
+        Record.data["sim_id"].as_string() == sim.id,
+    )))
+    followup = next((item for item in origin_followups if str(
+        (item.data or {}).get("source_rule_key") or (item.data or {}).get("occult_rule_key") or ""
+    ) == child_key), None)
+    created = False
+    if not followup:
+        created = _add_occult_roll(
+            session, save, rule, sim, save.global_day, source,
+            overrides={
+                "origin_roll_id": roll.id,
+                "source_rule_id": rule.id,
+                "source_rule_key": child_key,
+                "rule_generated": True,
+                "automatic_followup": True,
+                "rule_context": f"Automatically scheduled after {roll.label}: {data.get('outcome') or 'triggered'}",
+                "bad_results": lethal,
+                "nonlethal": not bool(lethal),
+                "failure_is_lethal": bool(lethal),
+            },
+        )
+        followup = session.scalar(select(Record).where(
+            Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+            Record.data["source"].as_string() == source,
+        ).limit(1))
     if followup:
         followup_ids = list(data.get("rule_followup_ids") or [])
         if followup.id not in followup_ids:
