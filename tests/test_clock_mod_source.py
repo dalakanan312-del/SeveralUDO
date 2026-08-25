@@ -2,10 +2,13 @@ import importlib.util
 import sys
 import types
 import unittest
+from zipfile import ZipFile
 from pathlib import Path
 
 
 SOURCE = Path(__file__).parents[1] / "clock_bridge" / "mod_source" / "severaludo_clock_sync" / "__init__.py"
+ARCHIVE = Path(__file__).parents[1] / "clock_bridge" / "SeveralUDOClockSync.ts4script"
+BUILD_SCRIPT = Path(__file__).parents[1] / "clock_bridge" / "build_clock_sync.ps1"
 
 
 class ClockModSourceTests(unittest.TestCase):
@@ -68,6 +71,25 @@ class ClockModSourceTests(unittest.TestCase):
         self.assertTrue(result["skills_scan_supported"])
         self.assertTrue(result["milestone_scan_supported"])
         self.assertEqual(result["telemetry_version"], 3)
+
+    def test_published_archive_keeps_real_compatibility_module(self):
+        with ZipFile(ARCHIVE) as archive:
+            names = {name.replace("\\", "/") for name in archive.namelist()}
+            self.assertIn("severaludo_clock_sync/__init__.pyc", names)
+            self.assertIn("severaludo_clock_sync/compat_201.pyc", names)
+            self.assertIn("severaludo_clock_sync/core.pyc", names)
+            wrapper = archive.read("severaludo_clock_sync/__init__.pyc")
+            compatibility = archive.read("severaludo_clock_sync/compat_201.pyc")
+        self.assertIn(b"compat_201", wrapper)
+        self.assertNotIn(b"compat_201", compatibility)
+        self.assertIn(b"core", compatibility)
+        self.assertNotEqual(wrapper, compatibility)
+
+    def test_packager_preserves_compatibility_entry_on_rebuild(self):
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('"severaludo_clock_sync/compat_201.pyc"', script)
+        self.assertIn("compatibility module is a recursive wrapper", script)
+        self.assertNotIn('EndsWith("/__init__.pyc")', script)
 
 
 if __name__ == "__main__":

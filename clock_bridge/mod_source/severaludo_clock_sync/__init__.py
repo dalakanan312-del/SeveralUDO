@@ -1,11 +1,11 @@
-"""Clock Sync 2.0.3 compatibility patch for current Sims 4 telemetry."""
+"""Clock Sync 2.0.4 compatibility patch for current Sims 4 telemetry."""
 
 import re
 
 from . import compat_201 as _compat
 
 
-VERSION = "2.0.3"
+VERSION = "2.0.4"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION

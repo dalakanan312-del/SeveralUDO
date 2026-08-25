@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.0.3
+SEVERALUDO CLOCK SYNC 2.0.4
 Complete Windows installation guide
 ===================================
 

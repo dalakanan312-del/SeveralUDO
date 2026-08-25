@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.0.3 - TROUBLESHOOTING
+SEVERALUDO CLOCK SYNC 2.0.4 - TROUBLESHOOTING
 ================================================
 
 RECEIVER SAYS WAITING
@@ -29,14 +29,14 @@ THE MOD DOES NOT APPEAR AT GAME START
 - Delete localthumbcache.package after closing the game if The Sims 4 is still loading an old copy.
 
 SKILLS OR MILESTONES ARE MISSING
-- Confirm the Game Clock page offers Clock Sync 2.0.3 or newer.
+- Confirm the Game Clock page offers Clock Sync 2.0.4 or newer.
 - Close The Sims 4, replace SeveralUDOClockSync.ts4script, then restart the game.
 - Enter Live Mode with the affected played household and let one Sim minute pass.
 - Skills are included after level 1. Completed milestones require Growing Together; a missing pack is handled safely.
 - Open the Sim's profile to see the synchronized Skills and Milestones sections.
 
 MODGUARD OR SECURITY SOFTWARE SHOWS A WARNING
-Clock Sync 2.0.3 does not make the HTTPS request from inside The Sims 4. The Script Mod writes pending_report.json locally; SeveralUDOClockRelay.ps1 sends it. Only use files downloaded from your tracker. Do not approve a differently named executable or script.
+Clock Sync 2.0.4 does not make the HTTPS request from inside The Sims 4. The Script Mod writes pending_report.json locally; SeveralUDOClockRelay.ps1 sends it. Only use files downloaded from your tracker. Do not approve a differently named executable or script.
 
 REPORT SUCCEEDS BUT THE TRACKER STILL SAYS WAITING
 - Refresh the Game Clock page.
