@@ -2,8 +2,12 @@ async function rollDie(notation,saveId){const target=document.getElementById('di
 
 document.addEventListener('input',(event)=>{if(!event.target.matches('.automation-age-days'))return;const form=event.target.closest('.automation-review-form');const birth=form?.querySelector('.automation-birth-day');const detected=Number(form?.dataset.detectedGlobalDay);const age=Number(event.target.value);if(birth&&Number.isFinite(detected)&&Number.isFinite(age)&&event.target.value!=='')birth.value=String(Math.trunc(detected-age));});
 
-function refreshActiveNavigation(){const current=location.pathname;document.querySelectorAll('aside nav a').forEach((link)=>link.classList.toggle('active',new URL(link.href,location.href).pathname===current));}
-document.addEventListener('htmx:afterSwap',refreshActiveNavigation);
+function setMobileMenu(open){const sidebar=document.querySelector('.app-sidebar'),toggle=document.querySelector('.mobile-menu-toggle');if(!sidebar||!toggle)return;sidebar.classList.toggle('mobile-menu-open',open);toggle.setAttribute('aria-expanded',String(open));const icon=toggle.querySelector('.mobile-menu-icon');if(icon)icon.textContent=open?'×':'☰';}
+function refreshActiveNavigation(){const current=location.pathname;let activeLabel='Tracker';document.querySelectorAll('aside nav a').forEach((link)=>{const active=new URL(link.href,location.href).pathname===current;link.classList.toggle('active',active);if(active)activeLabel=(link.querySelector('span')?.textContent||link.textContent).trim();});const label=document.querySelector('.mobile-menu-copy strong');if(label)label.textContent=activeLabel;}
+document.addEventListener('click',(event)=>{if(event.target.closest('.mobile-menu-toggle')){const sidebar=document.querySelector('.app-sidebar');setMobileMenu(!sidebar?.classList.contains('mobile-menu-open'));return;}if(event.target.closest('.app-nav a'))setMobileMenu(false);});
+document.addEventListener('keydown',(event)=>{if(event.key==='Escape')setMobileMenu(false);});
+window.addEventListener('resize',()=>{if(innerWidth>800)setMobileMenu(false);});
+document.addEventListener('htmx:afterSwap',()=>{refreshActiveNavigation();setMobileMenu(false);});
 window.addEventListener('popstate',refreshActiveNavigation);
 
 function showTrackerAlert(event){
