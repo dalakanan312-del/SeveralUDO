@@ -1537,7 +1537,7 @@ def sim_profile(request: Request, sim_id: str):
         sim_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==sim.id).order_by(Portrait.created_at)))
         delete_impact=domain.sim_delete_impact(session,sim) if request.query_params.get("delete")=="1" else None
         name_history={"surname_at_birth":domain.surname_at_birth(sim),"married_surname":domain.married_surname(sim)}
-        ctx = context(request, session, sim=sim, name_history=name_history, all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
+        ctx = context(request, session, sim=sim, name_history=name_history, all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
         return templates.TemplateResponse(request, "sim_profile.html", ctx)
 
 
@@ -1604,6 +1604,143 @@ async def edit_sim(request: Request, sim_id: str):
             save.revision += domain.end_illnesses_for_death(session, save, record, data["death_global_day"])
         domain.schedule_rolls(session, save)
     return RedirectResponse(f"/sims/{sim_id}", status_code=303)
+
+
+@app.post("/sims/{sim_id}/spouse")
+def add_sim_spouse(
+    request: Request,
+    sim_id: str,
+    spouse_id: str = Form(...),
+    marriage_global_day: str = Form(""),
+    marriage_game_hour: str = Form(""),
+    marriage_game_minute: str = Form(""),
+    location: str = Form(""),
+    surname_rule: str = Form("automatic"),
+    notes: str = Form(""),
+):
+    """Connect a spouse from a Sim profile without creating duplicate marriages."""
+    if sim_id == spouse_id:
+        raise HTTPException(400, "A Sim cannot be their own spouse.")
+    with db() as session:
+        first = session.get(Record, sim_id)
+        if not first or first.kind != "sim" or first.deleted:
+            raise HTTPException(404)
+        save = owned_save(request, session, first.save_id)
+        second = session.get(Record, spouse_id)
+        if not second or second.kind != "sim" or second.deleted or second.save_id != save.id:
+            raise HTTPException(400, "Choose a valid spouse from this save.")
+
+        pair = {first.id, second.id}
+        relationship_records = list(session.scalars(select(Record).where(
+            Record.save_id == save.id,
+            Record.kind == "relationship",
+            Record.deleted.is_(False),
+        ).order_by(Record.created_at.desc())))
+        pair_records = [
+            item for item in relationship_records
+            if {
+                str((item.data or {}).get("partner1_id") or ""),
+                str((item.data or {}).get("partner2_id") or ""),
+            } == pair
+        ]
+
+        closed_statuses = {"ended", "divorced", "annulled", "widowed", "former", "inactive"}
+
+        def is_active(item: Record) -> bool:
+            data = item.data or {}
+            return (
+                str(data.get("status") or "Active").strip().casefold() not in closed_statuses
+                and not str(data.get("type") or "").strip().casefold().startswith("former")
+            )
+
+        def is_marriage(item: Record) -> bool:
+            data = item.data or {}
+            return bool(data.get("legally_married")) or "marriage" in str(data.get("type") or "").casefold()
+
+        active_marriage = next((item for item in pair_records if is_active(item) and is_marriage(item)), None)
+        if active_marriage:
+            request.session["sim_notice"] = f"{second.label} is already connected as a spouse. The existing marriage was kept."
+            return RedirectResponse(f"/sims/{first.id}#family", status_code=303)
+
+        relationship = next((item for item in pair_records if is_active(item)), None)
+        start = int_or_none(marriage_global_day)
+        if start is None:
+            start = save.global_day
+        entered_location = str(location or "").strip()
+        entered_notes = str(notes or "").strip()
+        if relationship:
+            base = relationship.version
+            data = dict(relationship.data or {})
+            data.update({
+                "partner1_id": first.id,
+                "partner2_id": second.id,
+                "partner1_name": first.label,
+                "partner2_name": second.label,
+                "type": "Marriage",
+                "status": "Active",
+                "start_global_day": start,
+                "marriage_global_day": start,
+                "end_global_day": None,
+                "location": entered_location or str(data.get("location") or ""),
+                "legally_married": True,
+                "surname_rule": surname_rule,
+                "children_count": int_or_none(data.get("children_count")) or 0,
+                "notes": entered_notes or str(data.get("notes") or ""),
+            })
+            for key in ("marriage_game_hour", "marriage_game_minute", "marriage_time", "historical_marriage_date", "historical_marriage_date_range", "marriage_date_precision"):
+                data.pop(key, None)
+            data.update(marriage_calendar_fields(save, start, marriage_game_hour, marriage_game_minute))
+            relationship.global_day = start
+            relationship.data = data
+            relationship.version += 1
+            action = "converted the existing relationship into a marriage"
+        else:
+            base = 0
+            data = {
+                "partner1_id": first.id,
+                "partner2_id": second.id,
+                "partner1_name": first.label,
+                "partner2_name": second.label,
+                "type": "Marriage",
+                "status": "Active",
+                "start_global_day": start,
+                "marriage_global_day": start,
+                "end_global_day": None,
+                "location": entered_location,
+                "legally_married": True,
+                "surname_rule": surname_rule,
+                "children_count": 0,
+                "notes": entered_notes,
+            }
+            data.update(marriage_calendar_fields(save, start, marriage_game_hour, marriage_game_minute))
+            relationship = Record(
+                save_id=save.id,
+                kind="relationship",
+                label=f"{first.label} & {second.label}",
+                global_day=start,
+                data=data,
+            )
+            session.add(relationship)
+            session.flush()
+            action = "created a marriage"
+
+        name_changes = domain.apply_married_surnames(session, relationship, first, second, surname_rule)
+        relationship.label = f"{first.label} & {second.label}"
+        relationship.data = {**relationship.data, "partner1_name": first.label, "partner2_name": second.label}
+        session.add(Change(
+            save_id=save.id,
+            device_id="local" if settings.local_mode else "web",
+            record_id=relationship.id,
+            kind=relationship.kind,
+            operation="upsert",
+            base_version=base,
+            new_version=relationship.version,
+            payload=sync.serialize(relationship),
+        ))
+        save.revision += 1 + name_changes + domain.sync_generations(session, save)
+        domain.schedule_marriage_rolls(session, save)
+        request.session["sim_notice"] = f"Added {second.label} as spouse and {action}. Both Sim profiles now share this marriage."
+    return RedirectResponse(f"/sims/{sim_id}#family", status_code=303)
 
 
 @app.post("/sims/{sim_id}/purge")

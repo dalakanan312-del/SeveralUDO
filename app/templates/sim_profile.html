@@ -66,6 +66,7 @@
 
     <section class="profile-section" id="family">
       <div class="section-heading"><div><p class="eyebrow">HOUSEHOLD & KIN</p><h2>Family connections</h2></div><a href="/p/family-tree?focus={{sim.id}}">Open centered tree →</a></div>
+      {% if sim_notice %}<div class="notice">{{sim_notice}}</div>{% endif %}
       {% if current_household %}<a class="household-banner" href="/households/{{current_household.id}}"><span>⌂</span><div><small>Current household</small><strong>{{current_household.label}}</strong><em>{{current_household.data.get('location') or 'Location not recorded'}}</em></div><b>View household →</b></a>{% endif %}
       <div class="family-groups">
         <div><h3>Parents</h3><div class="kin-grid">{% for person in parents %}{{person_tile(person,'Parent')}}{% else %}<p class="muted">No parents linked.</p>{% endfor %}</div></div>
@@ -74,6 +75,20 @@
         {% if siblings %}<div class="wide"><details><summary>Siblings ({{siblings|length}})</summary><div class="kin-grid">{% for person in siblings %}{{person_tile(person,'Sibling')}}{% endfor %}</div></details></div>{% endif %}
       </div>
       {% if relationships %}<div class="connected-list"><h3>Relationship records</h3>{% for row in relationship_rows %}<a href="/relationships/{{row.record.id}}"><span><strong>{{row.record.data.get('type','Relationship')}}</strong><small>{{row.partner.label if row.partner else row.record.label}}</small></span><em>{{row.record.data.get('status') or 'Status not recorded'}} →</em></a>{% endfor %}</div>{% endif %}
+      <details class="panel spouse-editor" {% if not relationship_rows %}open{% endif %}>
+        <summary>Add spouse and marriage</summary>
+        <p>Select a Sim and the tracker will connect both profiles. If this pair already has an active marriage, that record is kept; an active betrothal or partnership is upgraded instead of duplicated.</p>
+        <form action="/sims/{{sim.id}}/spouse" method="post" class="form-grid">
+          <label class="wide">Spouse<select name="spouse_id" required><option value="">Choose a Sim</option>{% for person in all_sims if person.id != sim.id %}<option value="{{person.id}}">{{person.label}} · {{person.data.get('sim_number') or 'No ID'}} · {{sim_status(person,save)}}</option>{% endfor %}</select></label>
+          <label>Marriage Global Day<input name="marriage_global_day" type="number" value="{{save.global_day}}" required><small>Defaults to the tracker’s current day.</small></label>
+          <label>Location<input name="location" placeholder="Church, estate, village…"></label>
+          <label>Marriage hour<input name="marriage_game_hour" type="number" min="0" max="23" placeholder="0–23"></label>
+          <label>Marriage minute<input name="marriage_game_minute" type="number" min="0" max="59" placeholder="0–59"></label>
+          <label class="wide">Married surname convention<select name="surname_rule"><option value="automatic">Automatic historical convention</option><option value="partner1_takes_partner2">This Sim takes spouse’s surname</option><option value="partner2_takes_partner1">Spouse takes this Sim’s surname</option><option value="keep">Keep both birth surnames</option><option value="hyphenate">Both use a hyphenated surname</option></select></label>
+          <label class="wide">Marriage notes<textarea name="notes" placeholder="Ceremony, witnesses, household arrangements…"></textarea></label>
+          <button class="primary wide">Add spouse and create marriage</button>
+        </form>
+      </details>
     </section>
 
     <section class="profile-section" id="health">

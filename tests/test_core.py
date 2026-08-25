@@ -276,6 +276,40 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual((first.data["last_name"],second.data["last_name"]),("North-West","North-West"))
                 session.rollback()
 
+    def test_sim_profile_can_add_spouse_without_duplicate_marriages(self):
+        marker = uuid.uuid4().hex[:8]
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name=f"Profile spouse {marker}",global_day=14,start_year=1550,days_per_year=4)
+                session.add(save);session.flush()
+                first=Record(save_id=save.id,kind="sim",label=f"Anne Tudor {marker}",data={"first_name":"Anne","last_name":"Tudor","sex":"Female","birth_global_day":1})
+                second=Record(save_id=save.id,kind="sim",label=f"Henry Stuart {marker}",data={"first_name":"Henry","last_name":"Stuart","sex":"Male","birth_global_day":1})
+                session.add_all([first,second]);session.commit();save_id,first_id,second_id=save.id,first.id,second.id
+            client.post("/saves/select",data={"save_id":save_id},follow_redirects=False)
+
+            profile=client.get(f"/sims/{first_id}")
+            self.assertEqual(profile.status_code,200)
+            self.assertIn(f'action="/sims/{first_id}/spouse"',profile.text)
+            self.assertIn(f'value="{second_id}"',profile.text)
+
+            form={"spouse_id":second_id,"marriage_global_day":"14","marriage_game_hour":"9","marriage_game_minute":"30","location":"Parish church","surname_rule":"automatic","notes":"Recorded from the Sim profile"}
+            created=client.post(f"/sims/{first_id}/spouse",data=form,follow_redirects=False)
+            duplicate=client.post(f"/sims/{first_id}/spouse",data=form,follow_redirects=False)
+            self.assertEqual((created.status_code,duplicate.status_code),(303,303))
+
+            with SessionLocal() as session:
+                marriages=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="relationship",Record.deleted.is_(False))))
+                self.assertEqual(len(marriages),1)
+                marriage=marriages[0]
+                self.assertEqual({marriage.data["partner1_id"],marriage.data["partner2_id"]},{first_id,second_id})
+                self.assertEqual((marriage.data["type"],marriage.data["status"],marriage.data["legally_married"]),("Marriage","Active",True))
+                self.assertEqual((marriage.data["marriage_global_day"],marriage.data["marriage_time"]),(14,"09:30"))
+                self.assertEqual(marriage.data["location"],"Parish church")
+                self.assertEqual(session.get(Record,first_id).data["last_name"],"Stuart")
+
+            self.assertEqual(client.post(f"/sims/{first_id}/spouse",data={"spouse_id":first_id},follow_redirects=False).status_code,400)
+
     def test_editable_multiple_birth_limits_are_enforced_by_historical_year(self):
         with TestClient(app):
             with SessionLocal() as session:
