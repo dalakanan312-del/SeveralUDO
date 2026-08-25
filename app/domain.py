@@ -1694,6 +1694,69 @@ def apply_occult_roll_result(session: Session, roll: Record, actual: int) -> int
     return 1
 
 
+def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, roll: Record) -> int:
+    """Schedule deterministic werewolf follow-ups immediately after a trigger."""
+    data = roll.data or {}
+    if not bool(data.get("occult_roll")) or not bool(data.get("completed")) or not bool(data.get("triggered")):
+        return 0
+    parent_key = str(data.get("source_rule_key") or data.get("occult_rule_key") or "")
+    child_key = occult_rules.AUTOMATIC_OCCULT_FOLLOW_UPS.get(parent_key)
+    if not child_key:
+        return 0
+    sim = session.get(Record, data.get("sim_id")) if data.get("sim_id") else None
+    if not sim or sim.kind != "sim" or sim.deleted or sim.save_id != save.id:
+        return 0
+
+    year = _occult_year(save, save.global_day)
+    candidates = []
+    for rule in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "occult_rule", Record.deleted.is_(False)
+    )):
+        rule_data = rule.data or {}
+        if (
+            str(rule_data.get("rule_key") or "") == child_key
+            and bool(rule_data.get("active", True))
+            and int(rule_data.get("start_year", -9999)) <= year <= int(rule_data.get("end_year", 9999))
+        ):
+            candidates.append(rule)
+    if not candidates:
+        return 0
+    rule = min(candidates, key=lambda item: int((item.data or {}).get("end_year", 9999)) - int((item.data or {}).get("start_year", -9999)))
+    lethal = occult_rules.lethal_results(child_key)
+    source = f"occult:auto-followup:{roll.id}:{rule.id}:{sim.id}"
+    created = _add_occult_roll(
+        session, save, rule, sim, save.global_day, source,
+        overrides={
+            "origin_roll_id": roll.id,
+            "source_rule_id": rule.id,
+            "source_rule_key": child_key,
+            "rule_generated": True,
+            "automatic_followup": True,
+            "rule_context": f"Automatically scheduled after {roll.label}: {data.get('outcome') or 'triggered'}",
+            "bad_results": lethal,
+            "nonlethal": not bool(lethal),
+            "failure_is_lethal": bool(lethal),
+        },
+    )
+    followup = session.scalar(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["source"].as_string() == source,
+    ).limit(1))
+    if followup:
+        followup_ids = list(data.get("rule_followup_ids") or [])
+        if followup.id not in followup_ids:
+            followup_ids.append(followup.id)
+        roll.data = {
+            **data,
+            "rule_followup_ids": followup_ids,
+            "rule_followup_last_created_global_day": save.global_day,
+            "rule_followup_reviewed": True,
+            "rule_followup_reviewed_global_day": save.global_day,
+            "rule_followup_automatic": True,
+        }
+    return int(created)
+
+
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     rules = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False))))
     sims = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False))))
@@ -1970,6 +2033,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     if _marriage_roll(roll):
         roll.data = {**roll.data, "nonlethal":True}
     occult_changed = apply_occult_roll_result(session, roll, actual)
+    automatic_followups = _schedule_automatic_occult_followup(session, save, roll)
     roll.version += 1; journal(session, roll, "upsert", base)
     death = None
     death_created = False
@@ -2041,8 +2105,9 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 save.revision += end_illnesses_for_death(session, save, sim, death_day)
                 death_changed = True
             save.revision += _retire_rolls_after_death(session, save, sim.id, death_day, roll.id)
-    save.revision += 1 + int(death_changed) + int(allowance_changed) + occult_changed
+    save.revision += 1 + int(death_changed) + int(allowance_changed) + occult_changed + automatic_followups
     return {
         "outcome": roll.data["outcome"], "death": sync.serialize(death) if death else None,
         "death_created": death_created, "death_changed": death_changed, "pregnancy_count":pregnancy_count,
+        "automatic_followups": automatic_followups,
     }

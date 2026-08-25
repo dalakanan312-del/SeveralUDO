@@ -36,6 +36,13 @@ OCCULT_FOLLOW_UPS = {
     "servo_breakdown": ("servo_catastrophic_repair",),
 }
 
+# These chains are completely determined by the triggering result and retain
+# the same target Sim, so the tracker can schedule them without player input.
+AUTOMATIC_OCCULT_FOLLOW_UPS = {
+    "werewolf_discovery": "werewolf_hunt_response",
+    "werewolf_hunt_response": "werewolf_hunt_death",
+}
+
 
 OCCULT_LETHAL_RESULTS = {
     "vampire_accused_death": "3",

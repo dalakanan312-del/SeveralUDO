@@ -1835,6 +1835,36 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(schedule_occult_rolls(session,save,sims),0)
                 session.rollback()
 
+    def test_werewolf_discovery_and_hunt_followups_schedule_automatically(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Automatic werewolf chain",global_day=65,start_year=1500,days_per_year=4,settings={"automatic_occult_rolls":True,"occult_rolls_enabled_from_global_day":65,"full_moon_anchor_global_day":65,"full_moon_interval_days":8})
+                session.add(save);session.flush()
+                wolf=Record(save_id=save.id,kind="sim",label="Discovered Wolf",global_day=1,data={"species_occult":"Werewolf","game_occult_types":["Werewolf"],"werewolf_confined":False,"birth_global_day":1})
+                session.add(wolf);session.flush();seed_occult_rules(session,save);schedule_occult_rolls(session,save,[wolf])
+                discovery=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["occult_rule_key"].as_string()=="werewolf_discovery"))
+                self.assertIsNotNone(discovery)
+
+                discovery_result=complete_roll(session,save,discovery,1)
+                response=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["occult_rule_key"].as_string()=="werewolf_hunt_response"))
+                self.assertEqual(discovery_result["automatic_followups"],1)
+                self.assertIsNotNone(response)
+                self.assertEqual((response.global_day,response.data["origin_roll_id"],response.data["automatic_followup"]),(65,discovery.id,True))
+                self.assertTrue(discovery.data["rule_followup_reviewed"])
+
+                response_result=complete_roll(session,save,response,5)
+                hunt=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["occult_rule_key"].as_string()=="werewolf_hunt_death"))
+                self.assertEqual(response_result["automatic_followups"],1)
+                self.assertIsNotNone(hunt)
+                self.assertEqual((hunt.data["die"],hunt.data["bad_results"],hunt.data["nonlethal"]),("d6","1-3",False))
+                self.assertEqual(hunt.data["origin_roll_id"],response.id)
+
+                death_result=complete_roll(session,save,hunt,1)
+                self.assertTrue(death_result["death_changed"])
+                self.assertIsNotNone(wolf.data.get("death_global_day"))
+                session.rollback()
+
     def test_occult_inheritance_effect_and_every_completed_outcome_enter_storyline(self):
         with TestClient(app):
             with SessionLocal() as session:
