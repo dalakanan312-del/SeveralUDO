@@ -75,6 +75,8 @@ def candidate_event(session: Session, save: ChronicleSave, candidate) -> Notific
         "sim_death": ("death", "Death detected", candidate.label),
         "relationship_change": ("marriage", "Relationship change detected", candidate.label),
         "relationship_end": ("marriage", "Relationship ending detected", candidate.label),
+        "illness_detected": ("illness", "Illness detected", candidate.label),
+        "illness_recovered": ("illness", "Recovery detected", candidate.label),
         "unknown_illness": ("illness", "Unrecognized health condition", candidate.label),
     }
     category, title, body = labels.get(action, ("sim", "Game change detected", candidate.label))

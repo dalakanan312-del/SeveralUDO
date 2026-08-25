@@ -1584,7 +1584,7 @@ class CoreSmokeTests(unittest.TestCase):
                 illness=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="illness",Record.data["sim_id"].as_string()==sim.id))
                 actions={item.data["action"] for item in session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="game_candidate",Record.data["status"].as_string()=="pending"))}
                 self.assertEqual(illness.data["illness_name"],"Malaria")
-                self.assertTrue({"sim_death","pregnancy_discovered","relationship_change"}.issubset(actions))
+                self.assertTrue({"sim_death","pregnancy_discovered","relationship_change","illness_detected"}.issubset(actions))
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
     def test_optional_game_illness_detection_is_safe_and_reconciles(self):
@@ -1599,6 +1599,47 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(_game_illnesses(session, save, sim, detected), (0, 0))
                 self.assertEqual(_game_illnesses(session, save, sim, {"illness_scan_supported": True, "illnesses": []}), (0, 1))
                 session.rollback()
+
+    def test_detected_illness_and_recovery_appear_once_in_automation_inbox(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                original=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=original.workspace_id,name=f"Illness inbox {marker}",global_day=31)
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label=f"Inbox Patient {marker}",data={"game_sim_id":f"illness-inbox-{marker}"})
+                session.add(sim);session.flush()
+                snapshot={"illness_scan_supported":True,"detected_game_hour":14,"detected_game_minute":25,
+                          "illnesses":[{"source_key":f"base:clock-flu-{marker}","name":f"Clock Flu {marker}","provider":"base game","severity":"Mild"}]}
+                self.assertEqual(_game_illnesses(session,save,sim,snapshot),(1,0))
+                self.assertEqual(_game_illnesses(session,save,sim,snapshot),(0,0))
+                illness=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="illness"))
+                detected=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.data["action"].as_string()=="illness_detected")))
+                self.assertEqual(len(detected),1)
+                session.commit();save_id,sim_id,illness_id,candidate_id,original_id=save.id,sim.id,illness.id,detected[0].id,original.id
+            client.post("/saves/select",data={"save_id":save_id},follow_redirects=False)
+            inbox=client.get("/p/automation")
+            self.assertEqual(inbox.status_code,200);self.assertIn(f"Clock Flu {marker}",inbox.text)
+            self.assertIn("A new illness episode was recorded automatically",inbox.text)
+            accepted=client.post(f"/automation/{candidate_id}/accept",data={"illness_name":f"Reviewed Flu {marker}","onset_global_day":"30","severity":"Moderate","status":"Active","contagious":"on"},follow_redirects=False)
+            self.assertEqual(accepted.status_code,303)
+            with SessionLocal() as session:
+                illness=session.get(Record,illness_id)
+                self.assertEqual(illness.data["illness_name"],f"Reviewed Flu {marker}");self.assertEqual(illness.data["onset_global_day"],30)
+                self.assertEqual(illness.data["severity"],"Moderate");self.assertTrue(illness.data["contagious"])
+                save=session.get(ChronicleSave,save_id);sim=session.get(Record,sim_id)
+                self.assertEqual(_game_illnesses(session,save,sim,{"illness_scan_supported":True,"illnesses":[]}),(0,1))
+                recovery=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="game_candidate",Record.data["action"].as_string()=="illness_recovered"))
+                session.commit();recovery_id=recovery.id
+            inbox=client.get("/p/automation")
+            self.assertIn("This illness is no longer detected in the game",inbox.text)
+            accepted=client.post(f"/automation/{recovery_id}/accept",data={"illness_name":f"Reviewed Flu {marker}","recovery_global_day":"31","status":"Active","outcome":"Still symptomatic"},follow_redirects=False)
+            self.assertEqual(accepted.status_code,303)
+            with SessionLocal() as session:
+                illness=session.get(Record,illness_id);self.assertEqual(illness.data["status"],"Active");self.assertIsNone(illness.data["end_global_day"])
+            client.post("/saves/select",data={"save_id":original_id},follow_redirects=False)
+            with SessionLocal() as session:
+                session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
     def test_healthcare_trait_hashes_detect_disease_but_not_immunization(self):
         localizations = {1:"Pneumonia",2:"Meningitis Immunization",3:"Has Current Illness",4:"Malaria"}

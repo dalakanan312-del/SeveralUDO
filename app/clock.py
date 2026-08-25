@@ -156,7 +156,21 @@ def attach_game_identity(session: Session, save: ChronicleSave, sim: Record, sna
     return linked
 
 
-def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot: dict) -> tuple[int, int]:
+def _illness_review_candidate(session: Session, save: ChronicleSave, sim: Record, illness: Record,
+                              action: str, payload: dict, candidate_sink: list[Record] | None = None) -> Record | None:
+    label = (f"Illness detected: {sim.label} — {payload.get('illness_name') or illness.label}"
+             if action == "illness_detected" else
+             f"Recovery detected: {sim.label} — {payload.get('illness_name') or illness.label}")
+    item = automation.candidate(session, save, action, sim, label, payload, illness.id)
+    if item:
+        if candidate_sink is not None:
+            candidate_sink.append(item)
+        notifications.candidate_event(session, save, item)
+    return item
+
+
+def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot: dict,
+                    candidate_sink: list[Record] | None = None) -> tuple[int, int]:
     """Reconcile guarded game detections without trusting optional-mod availability."""
     if not snapshot.get("illness_scan_supported", False):
         return 0, 0
@@ -206,16 +220,24 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
         }
         record = Record(save_id=save.id, kind="illness", label=f"{sim.label} — {item['name']}", global_day=save.global_day, data=data)
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
-        notifications.record(session,save,"illness",f"Illness detected: {item['name']}",
-                             f"{sim.label} is now recorded with {item['name']}.","/p/illnesses",f"illness:{record.id}:start")
+        _illness_review_candidate(session, save, sim, record, "illness_detected", {
+            **data, "illness_record_id": record.id,
+            "detected_tracker_global_day": save.global_day,
+            "detected_game_hour": snapshot.get("detected_game_hour"),
+            "detected_game_minute": snapshot.get("detected_game_minute"),
+        }, candidate_sink)
     for key, record in active_by_key.items():
         if key in incoming:
             continue
         base = record.version; data = dict(record.data or {})
         data.update({"status": "Recovered", "end_global_day": save.global_day, "outcome": "No longer detected in game"})
         record.data = data; record.version += 1; journal(session, record, "upsert", base); ended += 1
-        notifications.record(session,save,"illness",f"Recovery detected: {sim.label}",
-                             f"{record.data.get('illness_name') or record.label} is no longer detected.","/p/illnesses",f"illness:{record.id}:end:{save.global_day}")
+        _illness_review_candidate(session, save, sim, record, "illness_recovered", {
+            **data, "illness_record_id": record.id, "recovery_global_day": save.global_day,
+            "detected_tracker_global_day": save.global_day,
+            "detected_game_hour": snapshot.get("detected_game_hour"),
+            "detected_game_minute": snapshot.get("detected_game_minute"),
+        }, candidate_sink)
     return created, ended
 
 
@@ -546,7 +568,9 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             household_members_linked += connect_sim_to_game_household(
                 session, save, existing, sim, household_matches,
             )
-            created, ended = _game_illnesses(session, save, existing, sim)
+            created, ended = _game_illnesses(session, save, existing, {
+                **sim, "detected_game_hour": hour, "detected_game_minute": minute,
+            }, candidates)
             illnesses_created += created; illnesses_ended += ended
             enriched = {**sim, "household_name": sim.get("household_name") or report.get("household_name", ""),
                         "detected_game_day": game_day, "detected_game_hour": hour,

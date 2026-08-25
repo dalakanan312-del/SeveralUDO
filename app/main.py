@@ -1874,6 +1874,27 @@ async def accept_automation(request: Request, candidate_id: str):
                 if raw:
                     signature=Record(save_id=save.id,kind="illness_signature",label=illness_name,data={"illness_name":illness_name,"pattern":raw,"match_type":"hash" if raw.casefold().startswith("hash:") else "exact","active":True,"learned_from_candidate_id":item.id})
                     session.add(signature);session.flush();domain.journal(session,signature,"upsert",0);save.revision+=1
+        elif action in {"illness_detected","illness_recovered"} and sim:
+            illness=session.get(Record,str(payload.get("illness_record_id") or "")) if payload.get("illness_record_id") else None
+            if illness and illness.kind=="illness" and illness.save_id==save.id and not illness.deleted:
+                illness_name=str(value("illness_name",illness.data.get("illness_name") or illness.label) or illness.label).strip()
+                base=illness.version;illness_data=dict(illness.data or {})
+                if action=="illness_detected":
+                    onset=int_or_none(value("onset_global_day",illness_data.get("onset_global_day"))) or save.global_day
+                    status=str(value("status",illness_data.get("status") or "Active") or "Active")
+                    illness.global_day=onset
+                    illness_data.update({"illness_name":illness_name,"onset_global_day":onset,"status":status,
+                                         "severity":str(value("severity",illness_data.get("severity") or "Unrated") or "Unrated"),
+                                         "contagious":checked("contagious",bool(illness_data.get("contagious"))),
+                                         "end_global_day":None if status.casefold() not in domain.CLOSED_ILLNESSES else illness_data.get("end_global_day")})
+                else:
+                    status=str(value("status","Recovered") or "Recovered")
+                    recovery=int_or_none(value("recovery_global_day",illness_data.get("end_global_day"))) or save.global_day
+                    illness_data.update({"illness_name":illness_name,"status":status,
+                                         "end_global_day":recovery if status.casefold() in domain.CLOSED_ILLNESSES else None,
+                                         "outcome":str(value("outcome",illness_data.get("outcome") or "No longer detected in game") or "")})
+                illness.label=f"{sim.label} — {illness_name}";illness.data=illness_data;illness.version+=1
+                domain.journal(session,illness,"upsert",base);resolved_record=illness;save.revision+=1
         elif action in {"new_sim","new_baby"}:
             first=str(value("first_name") or "").strip();last=str(value("last_name") or "").strip();name=" ".join(x for x in (first,last) if x) or item.label
             birth_estimate=clock.estimate_new_sim_birth(session,save,payload,item.global_day) if action=="new_sim" else {}

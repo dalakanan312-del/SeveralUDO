@@ -5,9 +5,20 @@
 {% for item in records %}{% set p=item.data.get('payload',item.data) %}{% set action=item.data.get('action','game_change') %}{% set age_est=birth_estimates.get(item.id,{}) if action=='new_sim' else {} %}{% set detected_hour=p.get('detected_game_hour',item.data.get('hour','')) %}{% set detected_minute=p.get('detected_game_minute',item.data.get('minute','')) %}
 <article class="panel automation-review">
   <p class="eyebrow">{{action.replace('_',' ')}} · detected GD {{item.global_day}}</p><h3>{{item.label}}</h3>
-  <p>{% if p.get('household_name') %}{{p.get('household_name')}} · {% endif %}{% if p.get('career') %}{{p.get('career')}} · {% endif %}Detected by Clock Sync. Nothing below is saved until you accept it.</p>
+  <p>{% if p.get('household_name') %}{{p.get('household_name')}} · {% endif %}{% if p.get('career') %}{{p.get('career')}} · {% endif %}Detected by Clock Sync. {% if action in ['illness_detected','illness_recovered'] %}The health ledger was updated immediately; review these details or dismiss this notice.{% else %}Nothing below is saved until you accept it.{% endif %}</p>
   <form action="/automation/{{item.id}}/accept" method="post" class="form-grid automation-review-form" data-detected-global-day="{{p.get('detected_tracker_global_day',item.global_day)}}">
-  {% if action == 'unknown_illness' %}
+  {% if action == 'illness_detected' %}
+    <div class="wide notice"><strong>A new illness episode was recorded automatically.</strong><br><span>Verify the name, onset day and severity. Accepting updates the linked illness instead of creating another one.</span></div>
+    <label>Sim<input value="{{p.get('sim_name',item.label)}}" disabled></label><label>Provider<input value="{{p.get('provider','game')|title}}" disabled></label>
+    <label>Illness name<input name="illness_name" value="{{p.get('illness_name','')}}" required></label><label>Onset Global Day<input name="onset_global_day" type="number" value="{{p.get('onset_global_day',item.global_day)}}" required></label>
+    <label>Severity<select name="severity">{% for value in ['Unrated','Mild','Moderate','Severe','Critical'] %}<option {% if value==p.get('severity','Unrated') %}selected{% endif %}>{{value}}</option>{% endfor %}</select></label><label>Status<select name="status"><option {% if p.get('status','Active')=='Active' %}selected{% endif %}>Active</option><option {% if p.get('status')=='Chronic' %}selected{% endif %}>Chronic</option></select></label>
+    <label class="check wide"><input name="contagious" type="checkbox" {% if p.get('contagious') %}checked{% endif %}> Contagious</label>
+  {% elif action == 'illness_recovered' %}
+    <div class="wide notice"><strong>This illness is no longer detected in the game.</strong><br><span>Confirm the recovery date, or change the status back to Active or Chronic if the illness is still present.</span></div>
+    <label>Sim<input value="{{p.get('sim_name',item.label)}}" disabled></label><label>Illness name<input name="illness_name" value="{{p.get('illness_name','')}}" required></label>
+    <label>Recovery Global Day<input name="recovery_global_day" type="number" value="{{p.get('recovery_global_day',item.global_day)}}" required></label><label>Status<select name="status"><option selected>Recovered</option><option>Active</option><option>Chronic</option></select></label>
+    <label class="wide">Outcome<input name="outcome" value="{{p.get('outcome','No longer detected in game')}}"></label>
+  {% elif action == 'unknown_illness' %}
     <div class="wide notice"><strong>A health-related trait was detected, but its illness name is not yet in this save’s dictionary.</strong><br><span>Verify it once; future reports with the same trait will be recorded automatically.</span></div>
     <label>Sim<input value="{{p.get('sim_name',item.label)}}" disabled></label><label>Detected trait<input value="{{p.get('raw_trait','')}}" disabled></label>
     <label>Illness name<input name="illness_name" value="{{p.get('suggested_name','')}}" required></label><label>Onset Global Day<input name="onset_global_day" type="number" value="{{item.global_day}}" required></label><label>Severity<select name="severity"><option>Mild</option><option selected>Moderate</option><option>Severe</option><option>Critical</option></select></label><label class="check"><input name="remember_signature" type="checkbox" checked> Remember this detection for everyone in this save</label>
