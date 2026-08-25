@@ -930,6 +930,14 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("workload-card", response.text)
                 self.assertIn("Skip 7 days", response.text)
+            simplified = client.get("/p/today?task=rolls")
+            self.assertIn("Today’s work", simplified.text)
+            self.assertIn("More from today", simplified.text)
+            self.assertIn("tool-drawer", simplified.text)
+            self.assertIn("Pregnancy-count roll", simplified.text)
+            self.assertIn("Today settings", simplified.text)
+            self.assertIn("/api/occult-rolls/toggle", simplified.text)
+            self.assertIn("/today-focus", simplified.text)
             with SessionLocal() as session:
                 save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
                 save_id, original = save.id, save.global_day
