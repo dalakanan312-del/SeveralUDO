@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Tutorial · Decades Tracker{% endblock %}
+{% block body %}
+<header class="hero compact tutorial-hero">
+  <p class="eyebrow">START HERE</p>
+  <h1>How to use the tracker</h1>
+  <p>Set up a chronicle, play one day, and let the tracker handle the dates, dice, historical rules and family recordkeeping.</p>
+  <div class="tutorial-hero-actions">
+    <a class="button primary" href="#quick-start">Begin the quick start</a>
+    <a class="button" href="#daily-routine">See the daily routine</a>
+  </div>
+</header>
+
+<nav class="tutorial-toc" aria-label="Tutorial chapters">
+  <a href="#quick-start"><span>01</span>Quick start</a>
+  <a href="#daily-routine"><span>02</span>Daily play</a>
+  <a href="#family"><span>03</span>Family records</a>
+  <a href="#rules"><span>04</span>Rolls & rules</a>
+  <a href="#clock-sync"><span>05</span>Clock Sync</a>
+  <a href="#story"><span>06</span>Chronicle</a>
+  <a href="#backups"><span>07</span>Backups</a>
+  <a href="#troubleshooting"><span>08</span>Help</a>
+</nav>
+
+<section class="tutorial-paths" aria-label="Choose a tutorial path">
+  <article>
+    <p class="eyebrow">NEW CHALLENGE</p>
+    <h2>Starting from scratch</h2>
+    <p>Create the save, set its calendar, then add the founding household and Sims.</p>
+    <a href="#quick-start">Follow setup steps →</a>
+  </article>
+  <article>
+    <p class="eyebrow">EXISTING CHALLENGE</p>
+    <h2>Moving from a spreadsheet</h2>
+    <p>Enter known historical years when exact Global Days are unavailable, then add relationships and current households.</p>
+    <a href="#existing-save">See migration guidance →</a>
+  </article>
+  <article>
+    <p class="eyebrow">AUTOMATIC TRACKING</p>
+    <h2>Connecting The Sims 4</h2>
+    <p>Install the private Clock Sync kit and review detected changes before they enter the chronicle.</p>
+    <a href="#clock-sync">Install Clock Sync →</a>
+  </article>
+</section>
+
+<section class="tutorial-section" id="quick-start">
+  <div class="tutorial-section-heading"><span>01</span><div><p class="eyebrow">TEN-MINUTE SETUP</p><h2>Create your chronicle</h2></div></div>
+  <div class="tutorial-steps">
+    <article class="tutorial-step"><span>1</span><div><h3>Create or select a save</h3><p>Open <a href="/p/saves">Saves & Backups</a>. Create a save for one challenge, or choose an existing save from the sidebar. Give it a name based on the founding household, such as <em>Cooley Decades</em>.</p></div></article>
+    <article class="tutorial-step"><span>2</span><div><h3>Set the historical calendar</h3><p>Enter the challenge’s starting year, current Global Day and days per historical year. These values convert every birth, marriage, death and event into a historical date. Set the challenge location so event and planting rules can choose the correct region.</p></div></article>
+    <article class="tutorial-step"><span>3</span><div><h3>Add the founding household</h3><p>Open <a href="/p/households">Households</a>, add the home, and record its name, location, class and notes. Households make event eligibility, rotation planning and family summaries more accurate.</p></div></article>
+    <article class="tutorial-step"><span>4</span><div><h3>Add the first Sims</h3><p>Open <a href="/p/sims">Sims</a> and add each founder. Record sex, birth day or approximate birth year, occult type, generation, parents and household. You can add a portrait now or give every life stage its own portrait later.</p></div></article>
+    <article class="tutorial-step"><span>5</span><div><h3>Check your defaults</h3><p>Open <a href="/p/rules">Rules & Data</a>. Era rules, roll tables, death causes and historical events are already supplied. Edit only the parts your version of the challenge changes. Use <a href="/p/health">Rules Health</a> to identify missing dice, duplicate obligations or incomplete coverage.</p></div></article>
+    <article class="tutorial-step"><span>6</span><div><h3>Open Today</h3><p><a href="/p/today">Today</a> is the play screen. It gathers everything due now—rolls, deaths, pregnancies, illnesses and active historical events—without requiring you to visit every ledger.</p></div></article>
+  </div>
+  <aside class="tutorial-tip"><strong>Good to know</strong><p>Automatic rolls never need to be created before the challenge’s configured start date. Changing the calendar later recalculates future obligations, so make a backup first if the save is already underway.</p></aside>
+</section>
+
+<section class="tutorial-section" id="existing-save">
+  <div class="tutorial-section-heading"><span>↳</span><div><p class="eyebrow">MOVING EXISTING RECORDS</p><h2>Coming from a spreadsheet</h2></div></div>
+  <div class="tutorial-columns">
+    <article class="panel"><h3>When you know exact days</h3><p>Use Global Day for births, marriages, pregnancies and deaths. Exact Global Days produce the most accurate due dates and automated rolls.</p></article>
+    <article class="panel"><h3>When you only know a year</h3><p>Use the historical birth-year field on the Sim form. The tracker stores it as an approximate date instead of making you calculate a Global Day.</p></article>
+    <article class="panel"><h3>Recommended order</h3><ol><li>Households</li><li>Parents and founders</li><li>Children</li><li>Marriages and other relationships</li><li>Pregnancies, illnesses and notes</li></ol></article>
+  </div>
+</section>
+
+<section class="tutorial-section" id="daily-routine">
+  <div class="tutorial-section-heading"><span>02</span><div><p class="eyebrow">WHILE YOU PLAY</p><h2>Your daily routine</h2></div></div>
+  <ol class="tutorial-routine">
+    <li><strong>Open Today.</strong><span>Confirm the displayed Global Day, historical year and Sims weekday. Use the task filters when you only want rolls, events, illnesses, pregnancies or deaths.</span></li>
+    <li><strong>Review what is due.</strong><span>Active events provide context; scheduled deaths tell you who must die in game; pregnancy and illness panels show anything that needs attention.</span></li>
+    <li><strong>Complete each roll.</strong><span>Use the illustrated native die or type the result from a physical die. The tracker selects the correct die, determines the outcome and saves it immediately.</span></li>
+    <li><strong>Resolve detected changes.</strong><span>Open <a href="/p/automation">Automation Inbox</a>. Verify names, parents, dates, times, partners, babies, illnesses and deaths before accepting them.</span></li>
+    <li><strong>Advance the day.</strong><span>Move forward one day or skip seven days from Today. If Clock Sync is connected, in-game calendar changes advance the tracker without rewinding it when an older game save is loaded.</span></li>
+    <li><strong>Add story details.</strong><span>Write anything the game cannot detect in <a href="/p/notes">Notes</a> or add a narrated entry on <a href="/p/storyline">Storyline</a>.</span></li>
+  </ol>
+  <aside class="tutorial-warning"><strong>Before confirming a death</strong><p>If an exact date or in-game time has already been recorded, confirmation preserves it. A failed lethal roll can move an unconfirmed scheduled death earlier, but never later.</p></aside>
+</section>
+
+<section class="tutorial-section" id="family">
+  <div class="tutorial-section-heading"><span>03</span><div><p class="eyebrow">PEOPLE & HOUSEHOLDS</p><h2>Build the family record</h2></div></div>
+  <div class="tutorial-feature-grid">
+    <article><h3>Sims</h3><p>Add, edit and open complete profiles. Profiles show living status, birth and married names, life-stage portraits, family, household, traits, skills, milestones, illnesses and personal history.</p><a href="/p/sims">Open Sims</a></article>
+    <article><h3>Relationships</h3><p>Add spouses from either Sim’s profile. The tracker creates or updates one shared marriage, fills both profiles and applies the configured married-name rule.</p><a href="/p/relationships">Open Relationships</a></article>
+    <article><h3>Pregnancies</h3><p>Record the parents, conception, due date, duration and outcome. Maternal rolls are scheduled automatically; miscarriages do not receive maternal rolls.</p><a href="/p/pregnancies">Open Pregnancies</a></article>
+    <article><h3>Households</h3><p>Track membership, location, finances, class and rotation. Clock Sync can create reported households and connect known members automatically.</p><a href="/p/households">Open Households</a></article>
+    <article><h3>Family Tree</h3><p>Follow parents, children, spouses, ancestors and descendants. Change the focus, depth, connection mode, dates and portraits to simplify a large dynasty.</p><a href="/p/family-tree">Open Family Tree</a></article>
+    <article><h3>Archive and delete</h3><p>Archive hides a record without erasing its history and can be reversed. Permanent Sim deletion is for accidental entries and shows the affected records before removal.</p></article>
+  </div>
+</section>
+
+<section class="tutorial-section" id="rules">
+  <div class="tutorial-section-heading"><span>04</span><div><p class="eyebrow">DICE & CONSEQUENCES</p><h2>Understand automatic rolls</h2></div></div>
+  <div class="tutorial-columns">
+    <article class="panel"><h3>Lifecycle rolls</h3><p>Birth, aging, maternal, marriage and pregnancy-count obligations are generated from the active era tables. New babies receive their own future schedule after they are added.</p></article>
+    <article class="panel"><h3>Historical-event rolls</h3><p>Event rolls are generated only for living Sims who match the event’s date, scope and location. Global events apply to every eligible living Sim. Hidden events stop appearing and stop generating obligations.</p></article>
+    <article class="panel"><h3>Occult rolls</h3><p>Use the sidebar switch to enable automatic occult rules. Detected occult types receive their applicable checks. Triggered werewolf discovery and hunt consequences schedule their own follow-ups.</p></article>
+  </div>
+  <details class="panel"><summary>What happens after I enter a result?</summary><div><p>The tracker records the actual number and calculates the matching rule outcome. Nonlethal results remain part of the roll history. A failed lethal Sim roll schedules a fitting death date and cause; event deaths use a cause connected to that event. You can reopen a mistaken roll while its automatic death remains unconfirmed.</p><p>Every completed result appears in Today’s result summary and remains available in <a href="/p/rolls">Rolls</a>. The <a href="/p/dice-audit">Dice Audit</a> records native-die results so their distribution can be reviewed.</p></div></details>
+  <details class="panel"><summary>Where do I edit dice, bad results and rules?</summary><div><p>Use <a href="/p/rules">Rules & Data</a>. Defaults are seeded automatically but remain editable per save. Keep a source or explanation in the notes field when you change a historical table.</p></div></details>
+</section>
+
+<section class="tutorial-section" id="clock-sync">
+  <div class="tutorial-section-heading"><span>05</span><div><p class="eyebrow">OPTIONAL AUTOMATION</p><h2>Connect The Sims 4 with Clock Sync</h2></div></div>
+  <div class="tutorial-clock-layout">
+    <ol class="tutorial-install-list">
+      <li><span>1</span><div><strong>Open <a href="/p/clock">Game Clock</a>.</strong><p>Select the correct tracker save before creating the link.</p></div></li>
+      <li><span>2</span><div><strong>Download the private configured kit.</strong><p>This creates a new private token. Replacing it disables that save’s older Clock Sync configuration.</p></div></li>
+      <li><span>3</span><div><strong>Extract the ZIP.</strong><p>Place the complete <em>SeveralUDOClockSync</em> folder in <em>Documents\Electronic Arts\The Sims 4\Mods</em>. Keep the Script Mod, relay, BAT starter and private <em>config.json</em> together.</p></div></li>
+      <li><span>4</span><div><strong>Enable Script Mods in The Sims 4.</strong><p>Restart the game after installing or replacing the <code>.ts4script</code> file.</p></div></li>
+      <li><span>5</span><div><strong>Start the relay.</strong><p>Double-click <em>Start SeveralUDO Clock Relay.bat</em> before playing. A window may flash and disappear because it runs in the background; starting it twice is safe.</p></div></li>
+      <li><span>6</span><div><strong>Load a household in Live Mode.</strong><p>Let game time move or change lots. Refresh Game Clock until the last game day and time appear.</p></div></li>
+      <li><span>7</span><div><strong>Review the Automation Inbox.</strong><p>Clock Sync detects changes, but family-changing details stay reviewable so you can correct them before acceptance.</p></div></li>
+    </ol>
+    <aside class="tutorial-private"><strong>Keep the private kit private</strong><p>Never share <em>config.json</em>, its sync token, a configured ZIP or <em>pending_report.json</em>. Share the unconfigured complete kit instead.</p><a class="button" href="/p/clock">Open Game Clock</a></aside>
+  </div>
+  <details class="panel"><summary>What Clock Sync can detect</summary><div><p>Supported reports can include the game day and exact time, household membership and funds, new Sims, age stage, pregnancies and birth counts, parents, relationships, deaths, illnesses, occult state, traits, skills and milestones. Optional-mod data is guarded: a missing mod does not cause an error.</p></div></details>
+  <details class="panel"><summary>What Clock Sync never does</summary><div><p>It does not edit the Sims 4 save, control your Sims, install packs or approve uncertain family changes without review. The tracker also never automatically rewinds when you load an older game save.</p></div></details>
+</section>
+
+<section class="tutorial-section" id="story">
+  <div class="tutorial-section-heading"><span>06</span><div><p class="eyebrow">TURN DATA INTO HISTORY</p><h2>Use the chronicle and references</h2></div></div>
+  <div class="tutorial-feature-grid compact">
+    <article><h3>Storyline</h3><p>Builds a detailed paragraph for every year through the current year, using recorded people, births, marriages, deaths, events, illnesses and occult outcomes.</p><a href="/p/storyline">Write the story</a></article>
+    <article><h3>Chronicle</h3><p>Filters the dated record ledger by year, record type and search text. Use it to audit exactly what happened and when.</p><a href="/p/timeline">Browse the chronicle</a></article>
+    <article><h3>Play Planner</h3><p>Suggests household rotations and keeps family plans, goals and upcoming obligations together.</p><a href="/p/planner">Plan the next session</a></article>
+    <article><h3>Statistics</h3><p>Summarizes population, generations, survival, fertility, illnesses, households, finances, event outcomes and challenge progress.</p><a href="/p/statistics">View statistics</a></article>
+    <article><h3>Historical references</h3><p>Use Events, Planting Reference, Name Generator and Challenge Guides without leaving the save’s working context.</p><a href="/p/guides">Open references</a></article>
+    <article><h3>Notes</h3><p>Keep private research, plans, citations and plot ideas. Categories, search and pinning keep a long notebook manageable.</p><a href="/p/notes">Open notes</a></article>
+  </div>
+</section>
+
+<section class="tutorial-section" id="backups">
+  <div class="tutorial-section-heading"><span>07</span><div><p class="eyebrow">PROTECT THE CHRONICLE</p><h2>Backups, sharing and editions</h2></div></div>
+  <div class="tutorial-columns">
+    <article class="panel"><h3>Before large changes</h3><p>Open <a href="/p/saves">Saves & Backups</a> before imports, calendar changes or bulk edits. Create a snapshot or download an export that can be kept away from the tracker.</p></article>
+    <article class="panel"><h3>Hosted workspaces</h3><p>Each signed-in workspace is private. Use <a href="/p/account">Account & Sharing</a> to invite someone intentionally. A workspace code should be treated like a password.</p></article>
+    <article class="panel"><h3>Desktop and hosted editions</h3><p>The desktop edition keeps a local database. The hosted edition uses the online workspace. They do not continuously mirror each other; use <a href="/p/sync">Sync</a> when you intentionally transfer changes.</p></article>
+  </div>
+</section>
+
+<section class="tutorial-section" id="troubleshooting">
+  <div class="tutorial-section-heading"><span>08</span><div><p class="eyebrow">WHEN SOMETHING LOOKS WRONG</p><h2>Quick troubleshooting</h2></div></div>
+  <div class="tutorial-faq">
+    <details class="panel" open><summary>A roll is missing</summary><div><p>Confirm the Sim is alive, has a usable birth date, and the due date is not before the challenge start. Check that the relevant automatic-roll setting and era rule are active. Event rolls also require matching location and scope. Then open <a href="/p/health">Rules Health</a>.</p></div></details>
+    <details class="panel"><summary>A completed item is still on Today</summary><div><p>Refresh Today and confirm the result was saved. Use Rules Health to repair duplicate obligations. Archived or hidden historical events should no longer produce visible rolls.</p></div></details>
+    <details class="panel"><summary>Clock Sync says Waiting</summary><div><p>Confirm the private <em>config.json</em> is beside the other Clock Sync files, start the BAT relay, enter Live Mode and let time advance. If <em>pending_report.json</em> remains, open <em>last_result.json</em> for the latest delivery error. A replaced private kit requires its new configuration.</p></div></details>
+    <details class="panel"><summary>A detected change is wrong</summary><div><p>Do not accept it yet. Automation Inbox lets you verify or correct the Sim, parents, partner, dates, exact time, illness, death cause and number of babies. Dismissing a detection remembers that decision so it does not return every day.</p></div></details>
+    <details class="panel"><summary>The tracker feels slow or has duplicates</summary><div><p>Use filters instead of loading an entire ledger, archive unused records and run the duplicate repairs in Rules Health. If the hosted tracker reports a database or deployment error, wait for the service to recover before repeatedly submitting the same form.</p></div></details>
+    <details class="panel"><summary>AI marriage portraits do not generate</summary><div><p>Manual marriage-photo upload always works. AI generation additionally requires the app owner to configure an OpenAI API key with available API credits.</p></div></details>
+  </div>
+</section>
+
+<section class="tutorial-finish panel">
+  <p class="eyebrow">READY TO PLAY</p>
+  <h2>Your next stop</h2>
+  <p>{% if save %}<strong>{{save.name}}</strong> is currently on Global Day {{save.global_day}}. Open Today to review what the chronicle needs next.{% else %}Create or open a save, then use Today as your main play screen.{% endif %}</p>
+  <div><a class="button primary" href="/p/today">Open Today</a><a class="button" href="/p/saves">Manage saves</a><a class="button" href="/p/support">About & Support</a></div>
+</section>
+{% endblock %}

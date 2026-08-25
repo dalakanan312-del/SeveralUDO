@@ -43,6 +43,7 @@ FEATURES = {
     "planner": ("Play Planner", "Household rotations, family plans and forecasts"),
     "challenge": ("Challenge Management", "Succession, matchmaking and campaigns"),
     "statistics": ("Statistics", "Population, survival, fertility and records"),
+    "tutorial": ("Tutorial", "A step-by-step guide to setup, daily play and automation"),
     "notes": ("Notes", "A private notebook for this save"),
     "plants": ("Planting Reference", "Historical crops by year, season and location"),
     "names": ("Name Generator", "Offline names from your own sourced historical libraries"),
@@ -1412,7 +1413,7 @@ def feature_page(request: Request, page: str):
             "pregnancies":"pregnancies.html", "illnesses":"illnesses.html", "automation":"automation.html", "storyline":"storyline.html",
             "family-tree":"family_tree.html", "timeline":"timeline.html", "statistics":"statistics.html", "health":"health.html",
             "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "planner":"planner.html",
-            "challenge":"challenge.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
+            "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
             "clock":"clock.html", "sync":"sync.html", "account":"account.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html",
         }
         return templates.TemplateResponse(request, dedicated.get(page, "feature.html"), ctx)

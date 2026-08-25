@@ -749,6 +749,18 @@ class CoreSmokeTests(unittest.TestCase):
                     response=client.get(f"/p/{page}")
                     self.assertEqual(response.status_code,200,response.text[:500])
 
+    def test_tutorial_covers_setup_daily_play_clock_sync_and_backups(self):
+        with TestClient(app) as client:
+            page=client.get("/p/tutorial")
+            self.assertEqual(page.status_code,200)
+            self.assertIn("How to use the tracker",page.text)
+            self.assertIn('id="quick-start"',page.text)
+            self.assertIn('id="daily-routine"',page.text)
+            self.assertIn('id="clock-sync"',page.text)
+            self.assertIn('id="backups"',page.text)
+            self.assertIn("Start SeveralUDO Clock Relay.bat",page.text)
+            self.assertIn('href="/p/tutorial"',page.text)
+
     def test_events_catalog_filters_year_scope_location_and_roll_behavior(self):
         marker=uuid.uuid4().hex[:10]
         with TestClient(app) as client:

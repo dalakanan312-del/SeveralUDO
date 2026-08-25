@@ -10,6 +10,7 @@ class MobileLayoutTests(unittest.TestCase):
         template = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
         self.assertIn('name="viewport"', template)
         self.assertIn('/static/mobile.css', template)
+        self.assertIn('/static/tutorial.css', template)
         self.assertIn('class="mobile-menu-toggle"', template)
         self.assertIn('aria-controls="mobile-navigation"', template)
         self.assertIn('id="mobile-navigation"', template)
@@ -21,6 +22,14 @@ class MobileLayoutTests(unittest.TestCase):
         self.assertIn("min-height:44px", css)
         self.assertIn("overflow-x:auto", css)
         self.assertIn("safe-area-inset", css)
+
+    def test_tutorial_has_responsive_navigation_and_steps(self):
+        template = (ROOT / "app" / "templates" / "tutorial.html").read_text(encoding="utf-8")
+        css = (ROOT / "app" / "static" / "tutorial.css").read_text(encoding="utf-8")
+        self.assertIn('class="tutorial-toc"', template)
+        self.assertIn('id="daily-routine"', template)
+        self.assertIn("@media(max-width:520px)", css)
+        self.assertIn("overflow-x:auto", css)
 
     def test_mobile_menu_is_keyboard_and_resize_aware(self):
         script = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")

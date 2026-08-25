@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="/static/storyline.css">
 <link rel="stylesheet" href="/static/ui-refresh.css">
 <link rel="stylesheet" href="/static/auth.css">
+<link rel="stylesheet" href="/static/tutorial.css">
 <link rel="stylesheet" href="/static/mobile.css">
   <script src="/static/htmx.min.js" defer></script>
 </head>
@@ -30,7 +31,7 @@
     <h3>Play</h3>{% for key in ['today','automation','storyline','clock','planner','rolls'] %}<a class="{% if page==key %}active{% endif %}" {% if page==key %}aria-current="page"{% endif %} href="/p/{{key}}"><span>{{features[key][0]}}</span>{% if key=='automation' and automation_pending %}<b>{{automation_pending}}</b>{% endif %}</a>{% endfor %}
     <h3>Family</h3>{% for key in ['sims','family-tree','timeline','pregnancies','relationships','households'] %}<a class="{% if page==key %}active{% endif %}" {% if page==key %}aria-current="page"{% endif %} href="/p/{{key}}"><span>{{features[key][0]}}</span></a>{% endfor %}
     <h3>World</h3>{% for key in ['events','illnesses','challenge'] %}<a class="{% if page==key %}active{% endif %}" {% if page==key %}aria-current="page"{% endif %} href="/p/{{key}}"><span>{{features[key][0]}}</span></a>{% endfor %}
-    <h3>Reference</h3>{% for key in ['statistics','notes','plants','names','guides'] %}<a class="{% if page==key %}active{% endif %}" {% if page==key %}aria-current="page"{% endif %} href="/p/{{key}}"><span>{{features[key][0]}}</span></a>{% endfor %}
+    <h3>Reference</h3>{% for key in ['tutorial','statistics','notes','plants','names','guides'] %}<a class="{% if page==key %}active{% endif %}" {% if page==key %}aria-current="page"{% endif %} href="/p/{{key}}"><span>{{features[key][0]}}</span></a>{% endfor %}
     <h3>Manage</h3>{% for key in ['rules','health','saves','account','sync','dice-audit','support'] %}<a class="{% if page==key %}active{% endif %}" {% if page==key %}aria-current="page"{% endif %} href="/p/{{key}}"><span>{{features[key][0]}}</span></a>{% endfor %}
   </nav>
   <footer class="sidebar-footer"><span>{{user.display_name}}</span>{% if save %}<small>{{save.name}} · GD {{save.global_day}}</small>{% endif %}<small>Tracker {{app_version}}</small>{% if not local_mode %}<form action="/auth/logout" method="post"><button>Sign out</button></form>{% endif %}</footer>
