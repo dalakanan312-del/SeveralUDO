@@ -7,6 +7,7 @@ import json
 import uuid
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest import mock
 
 os.environ["DATABASE_URL"] = "sqlite:///./data/automated-tests.db"
@@ -731,6 +732,12 @@ class CoreSmokeTests(unittest.TestCase):
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
     def test_clock_receiver_and_sync_protocol(self):
+        docker_ignores = {
+            line.strip() for line in Path(".dockerignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertNotIn("clock_bridge/SeveralUDOClockRelay.ps1", docker_ignores)
+        self.assertNotIn("clock_bridge/Start SeveralUDO Clock Relay.bat", docker_ignores)
         with TestClient(app) as client:
             with SessionLocal() as session:
                 save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))

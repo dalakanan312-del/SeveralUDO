@@ -16,8 +16,6 @@ tools
 clock_bridge/config.json
 clock_bridge/mod_source
 clock_bridge/build_clock_sync.ps1
-clock_bridge/SeveralUDOClockRelay.ps1
-clock_bridge/Start SeveralUDO Clock Relay.bat
 tests
 __pycache__
 *.pyc
