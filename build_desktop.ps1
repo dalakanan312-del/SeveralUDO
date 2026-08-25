@@ -6,6 +6,7 @@ Set-Location -LiteralPath $Root
   --icon "assets\decades-app-icon.ico" `
   --add-data "app\templates;app\templates" `
   --add-data "app\static;app\static" `
+  --add-data "app\medieval_names.json;app" `
   --add-data "assets\decades-app-icon.png;assets" `
   --add-data "assets\loading.html;assets" `
   --add-data "clock_bridge\SeveralUDOClockSync.ts4script;clock_bridge" `

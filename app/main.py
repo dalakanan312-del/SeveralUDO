@@ -1128,7 +1128,7 @@ def feature_page(request: Request, page: str):
         if page == "names" and save:
             name_pool=names.libraries(session,save.id);cultures=sorted(name_pool);culture=request.query_params.get("culture") or (cultures[0] if cultures else "")
             sex=request.query_params.get("sex") or "Female";surname_culture=request.query_params.get("surname_culture") or culture;count=max(1,min(20,int_or_none(request.query_params.get("count")) or 5));no_surname=request.query_params.get("no_surname") in {"1","true","on","yes"}
-            ctx.update(name_coverage=names.coverage(name_pool),name_cultures=cultures,name_culture=culture,name_sex=sex,name_surname_culture=surname_culture,name_count=count,name_no_surname=no_surname,name_suggestions=names.generate(name_pool,culture,sex,count,surname_culture=surname_culture,no_surname=no_surname) if request.query_params.get("generate") else [])
+            ctx.update(name_coverage=names.coverage(name_pool),name_cultures=cultures,name_culture=culture,name_sex=sex,name_surname_culture=surname_culture,name_count=count,name_no_surname=no_surname,name_suggestions=names.generate(name_pool,culture,sex,count,surname_culture=surname_culture,no_surname=no_surname) if request.query_params.get("generate") else [],name_medieval=names.medieval_summary())
             records=[]
         if page == "rules" and save:
             occult_rule_records=sorted((item for item in view_records if item.kind=="occult_rule"),key=lambda item:(str((item.data or {}).get("occult") or ""),str((item.data or {}).get("rule_key") or ""),int_or_none((item.data or {}).get("start_year")) or -9999))

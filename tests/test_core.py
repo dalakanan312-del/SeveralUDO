@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import delete, func, select
 
-from app import accounts, auth, automation, backup_service, exports, insights, legacy_neon, notifications, sync, telemetry
+from app import accounts, auth, automation, backup_service, exports, insights, legacy_neon, names, notifications, sync, telemetry
 from app.automation import candidate as automation_candidate, reconcile_sim
 from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, receive as receive_clock
@@ -38,6 +38,33 @@ from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_bundled_medieval_name_library_is_complete_and_source_grounded(self):
+        summary = names.medieval_summary()
+        pool = names.medieval_libraries()
+        self.assertEqual(summary["cultures"], 13)
+        self.assertEqual(summary["total_names"], 49009)
+        self.assertIn("1Cr-MFsjQycEF17XsVXZrjScwF8z39wmHJCLXlpBOWPU", summary["source_url"])
+        english = pool["Medieval — English"]
+        self.assertEqual(len(english["Male"]["first"]), 1282)
+        self.assertEqual(len(english["Female"]["first"]), 2341)
+        self.assertEqual(len(english["Any"]["surname"]), 13360)
+
+    def test_medieval_randomizer_uses_selected_given_and_surname_regions(self):
+        pool = names.medieval_libraries()
+        suggestions = names.generate(
+            pool,
+            "Medieval — Irish",
+            "Female",
+            10,
+            surname_culture="Medieval — Welsh",
+        )
+        self.assertEqual(len(suggestions), 10)
+        self.assertTrue(all(item["first_name"] in pool["Medieval — Irish"]["Female"]["first"] for item in suggestions))
+        self.assertTrue(all(item["last_name"] in pool["Medieval — Welsh"]["Any"]["surname"] for item in suggestions))
+        any_gender = names.generate(pool, "Medieval — Turkish", "Any", 10, no_surname=True)
+        allowed = set(pool["Medieval — Turkish"]["Male"]["first"]) | set(pool["Medieval — Turkish"]["Female"]["first"])
+        self.assertTrue(all(item["first_name"] in allowed and not item["last_name"] for item in any_gender))
+
     def test_automatic_snapshots_default_to_local_and_can_be_overridden(self):
         with mock.patch.dict(os.environ, {"DECADES_AUTOMATIC_SNAPSHOTS": ""}):
             self.assertTrue(_automatic_snapshots("sqlite:///./data/test.db"))
