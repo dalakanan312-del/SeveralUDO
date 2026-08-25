@@ -9,7 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from .config import ROOT
 
 
-CLOCK_SYNC_VERSION = "2.0.2"
+CLOCK_SYNC_VERSION = "2.0.3"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
 CLOCK_SYNC_REQUIRED_FILES = (
@@ -57,7 +57,7 @@ def build_bundle(endpoint: str = "", token: str = "") -> bytes:
         archive.writestr(
             f"{CLOCK_SYNC_FOLDER}/KIT CONTENTS - VERIFY.txt",
             (
-                "SeveralUDO Clock Sync 2.0.2 - expected contents\r\n"
+                "SeveralUDO Clock Sync 2.0.3 - expected contents\r\n"
                 "=================================================\r\n\r\n"
                 "The folder must contain the Script Mod, PowerShell relay and BAT starter.\r\n"
                 "If Windows hides either command file, rename its .backup.txt copy by removing .backup.txt.\r\n\r\n"

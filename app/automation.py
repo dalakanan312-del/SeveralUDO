@@ -214,7 +214,15 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             "species_occult": occult["display"], "game_occult_types": occult["types"],
             "game_occult_source": occult["source"], "game_occult_scan_supported": occult["authoritative"],
         })
-    clearable = {"game_traits", "game_skills", "game_milestones", "game_career", "game_education"} if int(snapshot.get("telemetry_version") or 0) >= 2 else set()
+    telemetry_version = int(snapshot.get("telemetry_version") or 0)
+    clearable = {"game_traits", "game_career", "game_education"} if telemetry_version >= 2 else set()
+    # Clock Sync 2.0.3 reports whether the game actually exposed each optional
+    # tracker.  An empty supported scan is authoritative; an unavailable scan
+    # must not erase skill or milestone data captured by an earlier report.
+    if telemetry_version == 2 or snapshot.get("skills_scan_supported") is True:
+        clearable.add("game_skills")
+    if telemetry_version == 2 or snapshot.get("milestone_scan_supported") is True:
+        clearable.add("game_milestones")
     if occult["authoritative"]:
         clearable.add("game_occult_types")
     updates = {key: value for key, value in telemetry_values.items() if value not in (None, "", []) or key in clearable}

@@ -1791,6 +1791,32 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(sim.data["game_skills"],[])
                 session.rollback()
 
+    def test_clock_telemetry_does_not_erase_optional_data_when_scan_is_unavailable(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                sim=Record(save_id=save.id,kind="sim",label="Guarded Telemetry",data={
+                    "game_sim_id":"guarded-telemetry",
+                    "game_skills":["Painting (level 7)"],
+                    "game_milestones":["First Steps"],
+                })
+                session.add(sim);session.flush()
+                reconcile_sim(session,save,sim,{
+                    "telemetry_version":3,
+                    "skills":[],"skills_scan_supported":False,
+                    "milestones":[],"milestone_scan_supported":False,
+                })
+                self.assertEqual(sim.data["game_skills"],["Painting (level 7)"])
+                self.assertEqual(sim.data["game_milestones"],["First Steps"])
+                reconcile_sim(session,save,sim,{
+                    "telemetry_version":3,
+                    "skills":[],"skills_scan_supported":True,
+                    "milestones":[],"milestone_scan_supported":True,
+                })
+                self.assertEqual(sim.data["game_skills"],[])
+                self.assertEqual(sim.data["game_milestones"],[])
+                session.rollback()
+
     def test_occult_detection_handles_explicit_hybrids_humans_and_trait_fallback(self):
         hybrid=occult_identity({"occult_types":["OccultType.VAMPIRE","WITCH"],"occult_scan_supported":True})
         self.assertEqual(hybrid["display"],"Hybrid (Vampire / Spellcaster)")
