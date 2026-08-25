@@ -339,6 +339,86 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(candidate.data["payload"]["detected_game_minute"], 37)
                 session.rollback()
 
+    def test_clock_automatically_creates_household_and_connects_known_members_once(self):
+        marker = uuid.uuid4().hex
+        game_household_id = "game-house-" + marker
+        game_sim_id = "known-sim-" + marker
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Automatic household test", global_day=25)
+                session.add(save); session.flush()
+                sim = Record(save_id=save.id, kind="sim", label="Known Member", data={"game_sim_id":game_sim_id})
+                link = ClockLink(save_id=save.id, token_hash=uuid.uuid4().hex, game_anchor_day=700, tracker_anchor_day=25)
+                session.add_all([sim, link]); session.flush()
+                report = {
+                    "game_day":700, "hour":11, "minute":15,
+                    "household_members":[{
+                        "game_sim_id":game_sim_id, "first_name":"Known", "last_name":"Member",
+                        "household_id":game_household_id, "household_name":"Willow House",
+                        "world_name":"Windenburg", "lot_name":"Olde Mill Hill", "household_funds":2400,
+                        "is_household_head":True,
+                    }],
+                }
+                first = receive_clock(session, link, report)
+                home = session.scalar(select(Record).where(
+                    Record.save_id==save.id, Record.kind=="household",
+                    Record.data["game_household_id"].as_string()==game_household_id,
+                ))
+                self.assertIsNotNone(home)
+                self.assertEqual(first["households_created"], 1)
+                self.assertEqual(first["household_members_linked"], 1)
+                self.assertEqual(home.label, "Willow House")
+                self.assertEqual(home.data["head_sim_id"], sim.id)
+                self.assertEqual(home.data["last_game_world"], "Windenburg")
+                self.assertEqual(sim.data["current_household_id"], home.id)
+                second = receive_clock(session, link, report)
+                duplicate_count = session.scalar(select(func.count()).select_from(Record).where(
+                    Record.save_id==save.id, Record.kind=="household", Record.deleted.is_(False),
+                    Record.data["game_household_id"].as_string()==game_household_id,
+                ))
+                self.assertEqual(second["households_created"], 0)
+                self.assertEqual(second["household_members_linked"], 0)
+                self.assertEqual(duplicate_count, 1)
+                session.rollback()
+
+    def test_clock_reuses_manual_household_and_new_sim_candidate_inherits_it(self):
+        marker = uuid.uuid4().hex
+        game_household_id = "manual-game-house-" + marker
+        known_game_id = "manual-known-" + marker
+        new_game_id = "manual-new-" + marker
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Manual household reuse", global_day=40)
+                session.add(save); session.flush()
+                home = Record(save_id=save.id, kind="household", label="Cedar Family", data={"active":True})
+                session.add(home); session.flush()
+                known = Record(save_id=save.id, kind="sim", label="Known Cedar", data={
+                    "game_sim_id":known_game_id, "current_household_id":home.id,
+                })
+                link = ClockLink(save_id=save.id, token_hash=uuid.uuid4().hex, game_anchor_day=800, tracker_anchor_day=40)
+                session.add_all([known, link]); session.flush()
+                result = receive_clock(session, link, {
+                    "game_day":800, "hour":7, "minute":30,
+                    "household_members":[
+                        {"game_sim_id":known_game_id,"first_name":"Known","last_name":"Cedar","household_id":game_household_id,"household_name":"Cedar Family"},
+                        {"game_sim_id":new_game_id,"first_name":"New","last_name":"Cedar","household_id":game_household_id,"household_name":"Cedar Family","age_stage":"Age.CHILD"},
+                    ],
+                })
+                candidate = session.scalar(select(Record).where(
+                    Record.save_id==save.id, Record.kind=="game_candidate",
+                    Record.data["source_key"].as_string()==f"new_sim:{new_game_id}",
+                ))
+                households = list(session.scalars(select(Record).where(
+                    Record.save_id==save.id, Record.kind=="household", Record.deleted.is_(False),
+                )))
+                self.assertEqual(result["households_created"], 0)
+                self.assertEqual(len(households), 1)
+                self.assertEqual(home.data["game_household_id"], game_household_id)
+                self.assertEqual(candidate.data["payload"]["inferred_household_id"], home.id)
+                session.rollback()
+
     def test_non_newborn_clock_candidate_estimates_birth_from_game_age(self):
         marker = "older-sim-" + uuid.uuid4().hex
         with TestClient(app) as client:

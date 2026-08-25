@@ -280,16 +280,165 @@ def _newborn_parent_contexts(session: Session, save: ChronicleSave, members: lis
     return contexts, newborns_by_mother
 
 
-def _household_matches(members: list[dict], tracked_by_game_id: dict[str, Record]) -> dict[str, str]:
-    """Map game households to a tracker household when current members agree."""
-    choices: dict[str, set[str]] = {}
+def _reported_household_name(members: list[dict], default_name: str = "") -> str:
+    names = [str(item.get("household_name") or "").strip() for item in members]
+    names = [name for name in names if name]
+    if names:
+        return max(set(names), key=lambda value: (names.count(value), len(value), value))
+    if default_name:
+        return str(default_name).strip()
+    surnames = {str(item.get("last_name") or "").strip() for item in members if item.get("last_name")}
+    if len(surnames) == 1:
+        return f"{next(iter(surnames))} Household"
+    game_id = str((members[0] if members else {}).get("household_id") or "").strip()
+    return f"Game Household {game_id[-8:]}" if game_id else "Detected Household"
+
+
+def connect_sim_to_game_household(
+    session: Session, save: ChronicleSave, sim: Record, snapshot: dict,
+    household_matches: dict[str, str],
+) -> int:
+    """Apply an unambiguous game household link without creating a review item."""
+    game_household_id = str(snapshot.get("household_id") or "").strip()
+    tracker_household_id = household_matches.get(game_household_id)
+    if not game_household_id or not tracker_household_id:
+        return 0
+    household = session.get(Record, tracker_household_id)
+    if not household or household.save_id != save.id or household.kind != "household" or household.deleted:
+        return 0
+    household_name = str(snapshot.get("household_name") or household.label).strip()
+    updates = {
+        "current_household_id": household.id,
+        "game_household_id": game_household_id,
+        "game_household_name": household_name,
+        "game_household_link_source": "automatic game detection",
+    }
+    data = dict(sim.data or {})
+    if all(data.get(key) == value for key, value in updates.items()):
+        return 0
+    base = sim.version
+    sim.data = {**data, **updates}
+    sim.version += 1
+    journal(session, sim, "upsert", base)
+    save.revision += 1
+    return 1
+
+
+def sync_game_households(
+    session: Session, save: ChronicleSave, members: list[dict],
+    tracked_by_game_id: dict[str, Record], *, default_name: str = "",
+    source: str = "Clock Sync",
+) -> tuple[dict[str, str], int, int, int]:
+    """Find or create reported households and connect every already-known member.
+
+    The Sims household ID is the durable identity. Existing manual households are
+    reused when their members or unique name establish a safe match. Reports are
+    intentionally additive: a partial report never removes an absent member.
+    """
+    grouped: dict[str, list[dict]] = {}
     for member in members:
-        game_household_id = str(member.get("household_id") or "").strip()
-        tracked = tracked_by_game_id.get(str(member.get("game_sim_id") or "").strip())
-        tracker_household_id = str((tracked.data or {}).get("current_household_id") or "") if tracked else ""
-        if game_household_id and tracker_household_id:
-            choices.setdefault(game_household_id, set()).add(tracker_household_id)
-    return {game_id: next(iter(ids)) for game_id, ids in choices.items() if len(ids) == 1}
+        game_id = str(member.get("household_id") or "").strip()
+        if game_id:
+            grouped.setdefault(game_id, []).append(member)
+    if not grouped:
+        return {}, 0, 0, 0
+
+    households = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
+    )))
+    by_id = {item.id: item for item in households}
+    by_game_id = {
+        str((item.data or {}).get("game_household_id") or "").strip(): item
+        for item in households if str((item.data or {}).get("game_household_id") or "").strip()
+    }
+    matches: dict[str, str] = {}
+    created = updated = linked = 0
+    only_name = default_name if len(grouped) == 1 else ""
+
+    for game_household_id, reported_members in grouped.items():
+        name = _reported_household_name(reported_members, only_name)
+        household = by_game_id.get(game_household_id)
+        was_created = False
+        if not household:
+            member_choices: dict[str, int] = {}
+            for member in reported_members:
+                tracked = tracked_by_game_id.get(str(member.get("game_sim_id") or "").strip())
+                current_id = str((tracked.data or {}).get("current_household_id") or "") if tracked else ""
+                current = by_id.get(current_id)
+                current_game_id = str((current.data or {}).get("game_household_id") or "").strip() if current else ""
+                if current and current_game_id in {"", game_household_id}:
+                    member_choices[current.id] = member_choices.get(current.id, 0) + 1
+            if member_choices:
+                household = sorted(
+                    (by_id[item_id] for item_id in member_choices),
+                    key=lambda item: (-member_choices[item.id], _identity_text(item.label), item.id),
+                )[0]
+            else:
+                name_matches = [item for item in households
+                                if _identity_text(item.label) == _identity_text(name)
+                                and str((item.data or {}).get("game_household_id") or "").strip() in {"", game_household_id}]
+                if len(name_matches) == 1:
+                    household = name_matches[0]
+        if not household:
+            household = Record(
+                save_id=save.id, kind="household", label=name, global_day=save.global_day,
+                data={
+                    "household_name": name, "branch_type": "Main", "active": True,
+                    "start_global_day": None, "automatically_created": True,
+                    "automation_source": source, "first_detected_global_day": save.global_day,
+                    "notes": f"Created automatically from {source}.",
+                },
+            )
+            session.add(household)
+            session.flush()
+            households.append(household)
+            by_id[household.id] = household
+            created += 1
+            was_created = True
+
+        head_game_id = next((str(item.get("game_sim_id") or "").strip() for item in reported_members
+                             if item.get("is_household_head")), "")
+        head = tracked_by_game_id.get(head_game_id) if head_game_id else None
+        world = next((str(item.get("world_name") or "").strip() for item in reported_members if item.get("world_name")), "")
+        lot = next((str(item.get("lot_name") or "").strip() for item in reported_members if item.get("lot_name")), "")
+        funds = next((item.get("household_funds") for item in reported_members if item.get("household_funds") is not None), None)
+        game_member_ids = sorted({str(item.get("game_sim_id") or "").strip() for item in reported_members
+                                  if item.get("game_sim_id")})
+        data = dict(household.data or {})
+        metadata = {
+            "game_household_id": game_household_id,
+            "game_household_name": name,
+            "last_game_world": world or data.get("last_game_world"),
+            "last_game_lot": lot or data.get("last_game_lot"),
+            "last_game_funds": funds if funds is not None else data.get("last_game_funds"),
+            "last_reported_game_member_ids": game_member_ids,
+            "last_detected_global_day": save.global_day,
+            "active": True,
+        }
+        if head:
+            metadata["head_sim_id"] = head.id
+        new_data = {**data, **metadata}
+        new_label = name if data.get("automatically_created") and name else household.label
+        if was_created:
+            household.data = new_data
+            household.label = new_label
+            journal(session, household, "upsert", 0)
+        elif household.data != new_data or household.label != new_label:
+            base = household.version
+            household.data = new_data
+            household.label = new_label
+            household.version += 1
+            journal(session, household, "upsert", base)
+            updated += 1
+        matches[game_household_id] = household.id
+        by_game_id[game_household_id] = household
+
+    save.revision += created + updated
+    for member in members:
+        sim = tracked_by_game_id.get(str(member.get("game_sim_id") or "").strip())
+        if sim:
+            linked += connect_sim_to_game_household(session, save, sim, member, matches)
+    return matches, created, updated, linked
 
 
 def receive(session: Session, link: ClockLink, report: dict) -> dict:
@@ -321,6 +470,10 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         Record.save_id == save.id, Record.kind == "illness_signature", Record.deleted.is_(False),
     ))]
     known_ids = incoming_ids.intersection(tracked_by_game_id)
+    household_matches, households_created, households_updated, household_members_linked = sync_game_households(
+        session, save, members, tracked_by_game_id,
+        default_name=str(report.get("household_name") or ""),
+    )
     journal_entries.extend(telemetry.capture_household_finances(
         session, save, members, tracked_by_game_id,
         {"detected_game_day": game_day, "detected_game_hour": hour, "detected_game_minute": minute},
@@ -329,7 +482,6 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     newborn_contexts, newborns_by_mother = _newborn_parent_contexts(
         session, save, members, tracked_by_game_id,
     ) if detected_newborns else ({}, {})
-    household_matches = _household_matches(members, tracked_by_game_id)
     for sim in members:
         game_id = str(sim.get("game_sim_id") or "")
         if not game_id:
@@ -341,19 +493,34 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             if existing:
                 attach_game_identity(session, save, existing, {**sim, "household_name": sim.get("household_name") or report.get("household_name", "")})
                 tracked_by_game_id[game_id] = existing
+                household_members_linked += connect_sim_to_game_household(
+                    session, save, existing, sim, household_matches,
+                )
         if not existing:
-            pending = session.scalar(select(Record.id).where(
+            pending = session.scalar(select(Record).where(
                 Record.save_id == save.id, Record.kind == "game_candidate",
                 Record.deleted.is_(False),
                 Record.data["source_key"].as_string() == f"new_sim:{game_id}",
             ).limit(1))
             if pending:
+                household_match = household_matches.get(str(sim.get("household_id") or ""))
+                payload = dict((pending.data or {}).get("payload") or {})
+                refreshed_payload = {
+                    **payload, **sim,
+                    "detected_game_day": game_day, "detected_game_hour": hour,
+                    "detected_game_minute": minute, "detected_tracker_global_day": save.global_day,
+                }
+                if household_match:
+                    refreshed_payload["inferred_household_id"] = household_match
+                if refreshed_payload != payload:
+                    base = pending.version
+                    pending.data = {**(pending.data or {}), "payload": refreshed_payload}
+                    pending.version += 1
+                    journal(session, pending, "upsert", base)
+                    save.revision += 1
                 continue
             detected_payload = {**sim, "detected_game_day": game_day, "detected_game_hour": hour,
                                 "detected_game_minute": minute, "detected_tracker_global_day": save.global_day}
-            household_match = household_matches.get(str(sim.get("household_id") or ""))
-            if household_match:
-                detected_payload["inferred_household_id"] = household_match
             parent_hints = automation.parent_suggestions(session, save, sim)
             if parent_hints.get("parent_ids"):
                 detected_payload.update(parent_hints)
@@ -361,6 +528,9 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
                 detected_payload.update(estimate_new_sim_birth(session, save, detected_payload, save.global_day))
             if sim.get("is_baby") and newborn_contexts.get(game_id):
                 detected_payload.update(newborn_contexts[game_id])
+            household_match = household_matches.get(str(sim.get("household_id") or ""))
+            if household_match:
+                detected_payload["inferred_household_id"] = household_match
             candidate = Record(
                 save_id=save.id, kind="game_candidate",
                 label=(str(sim.get("first_name", "")) + " " + str(sim.get("last_name", ""))).strip(),
@@ -373,6 +543,9 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             notifications.candidate_event(session, save, candidate)
             journal_entries.append(f"A new {'baby' if sim.get('is_baby') else 'Sim'} was detected: {candidate.label}.")
         else:
+            household_members_linked += connect_sim_to_game_household(
+                session, save, existing, sim, household_matches,
+            )
             created, ended = _game_illnesses(session, save, existing, sim)
             illnesses_created += created; illnesses_ended += ended
             enriched = {**sim, "household_name": sim.get("household_name") or report.get("household_name", ""),
@@ -409,6 +582,12 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             if created: journal_entries.append(f"{existing.label} became ill.")
             if ended: journal_entries.append(f"{existing.label} recovered from an illness.")
             journal_entries.extend(item.label + "." for item in changes)
+    if households_created:
+        verb = "were" if households_created != 1 else "was"
+        journal_entries.append(f"{households_created} household{'s' if households_created != 1 else ''} {verb} created automatically from the game.")
+    if household_members_linked:
+        verb = "were" if household_members_linked != 1 else "was"
+        journal_entries.append(f"{household_members_linked} Sim household assignment{'s' if household_members_linked != 1 else ''} {verb} synchronized.")
     parent_link_updates = automation.resolve_parent_links(session, save)
     generation_updates = sync_generations(session, save)
     # Event and lifecycle obligations are true roll records. Reconcile once when
@@ -438,6 +617,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         "new_candidates": len(candidates),
         "illnesses_created": illnesses_created, "illnesses_ended": illnesses_ended,
         "event_results_created": event_results, "rolls_created": rolls_created,
+        "households_created": households_created, "households_updated": households_updated,
+        "household_members_linked": household_members_linked,
         "parent_links_updated": parent_link_updates, "generations_updated": generation_updates,
         "journal_updated": bool(journal_record),
     }

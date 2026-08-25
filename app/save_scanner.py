@@ -315,6 +315,7 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
     by_game_id = {str(item.data.get("game_sim_id") or ""): item for item in tracked if item.data.get("game_sim_id")}
     candidates = linked = updated = 0
     journal_entries: list[str] = []
+    selected_snapshots: list[tuple[dict, dict]] = []
     for item in sims:
         game_id = str(item.get("game_sim_id") or "")
         if not game_id or game_id not in selected_game_ids:
@@ -332,21 +333,45 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
             "telemetry_version": 0,
             "source": "read-only Sims 4 save scan",
         }
+        selected_snapshots.append((item, snapshot))
+    household_matches, households_created, households_updated, household_members_linked = clock.sync_game_households(
+        session, save, [snapshot for _, snapshot in selected_snapshots], by_game_id,
+        source="the read-only Sims 4 save scan",
+    )
+    for item, snapshot in selected_snapshots:
+        game_id = str(item.get("game_sim_id") or "")
         existing = by_game_id.get(game_id)
         if not existing:
             existing = clock.imported_sim_match(session, save, snapshot)
             if existing:
                 clock.attach_game_identity(session, save, existing, snapshot)
                 by_game_id[game_id] = existing
+                household_members_linked += clock.connect_sim_to_game_household(
+                    session, save, existing, snapshot, household_matches,
+                )
                 linked += 1
         if not existing:
-            pending = session.scalar(select(Record.id).where(
+            pending = session.scalar(select(Record).where(
                 Record.save_id == save.id, Record.kind == "game_candidate", Record.deleted.is_(False),
                 Record.data["source_key"].as_string() == f"new_sim:{game_id}",
             ).limit(1))
             if pending:
+                tracker_household_id = household_matches.get(str(snapshot.get("household_id") or ""))
+                payload = dict((pending.data or {}).get("payload") or {})
+                refreshed_payload = {**payload, **snapshot}
+                if tracker_household_id:
+                    refreshed_payload["inferred_household_id"] = tracker_household_id
+                if refreshed_payload != payload:
+                    base = pending.version
+                    pending.data = {**(pending.data or {}), "payload": refreshed_payload}
+                    pending.version += 1
+                    domain.journal(session, pending, "upsert", base)
+                    save.revision += 1
                 continue
             payload = {**snapshot, **clock.estimate_new_sim_birth(session, save, snapshot, save.global_day)}
+            tracker_household_id = household_matches.get(str(snapshot.get("household_id") or ""))
+            if tracker_household_id:
+                payload["inferred_household_id"] = tracker_household_id
             candidate = Record(
                 save_id=save.id, kind="game_candidate", label=item.get("name") or f"Game Sim {game_id}",
                 global_day=save.global_day,
@@ -356,6 +381,9 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
             session.add(candidate); session.flush(); domain.journal(session, candidate, "upsert", 0)
             candidates += 1
             continue
+        household_members_linked += clock.connect_sim_to_game_household(
+            session, save, existing, snapshot, household_matches,
+        )
         changes = automation.reconcile_sim(session, save, existing, snapshot)
         candidates += len(changes)
         updated += 1
@@ -365,9 +393,15 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
         journal_entries.append(f"The save-file clock advanced the tracker by {advanced} day(s); {made} obligation(s) were scheduled.")
     if linked:
         journal_entries.append(f"{linked} imported Sim(s) were matched to their game identities.")
+    if households_created:
+        journal_entries.append(f"{households_created} household(s) were created automatically from the game save.")
+    if household_members_linked:
+        journal_entries.append(f"{household_members_linked} Sim household assignment(s) were synchronized.")
     if candidates:
         journal_entries.append(f"{candidates} change(s) are ready for review in Automation Inbox.")
     automation.session_journal(session, save, journal_entries, int(game_day or 0), hour, minute)
     save.revision += linked + candidates + updated + bool(advanced)
     return {"advanced":advanced, "linked":linked, "updated":updated, "candidates":candidates,
+            "households_created":households_created, "households_updated":households_updated,
+            "household_members_linked":household_members_linked,
             "selected":len(selected_game_ids), "global_day":save.global_day}
