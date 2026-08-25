@@ -17,15 +17,19 @@ OCCULT_TYPES = (
 OCCULT_FOLLOW_UPS = {
     "vampire_hunt": ("vampire_accused", "vampire_false_accusation"),
     "vampire_accused": ("vampire_accused_death",),
+    "vampire_false_accusation": ("vampire_accused_death",),
     "vampire_feeding_suspicion": ("vampire_accused",),
     "alien_discovery": ("alien_discovery_type", "alien_discovery_death"),
     "spellcaster_witch_trial": ("spellcaster_accused", "spellcaster_false_accusation"),
     "spellcaster_accused": ("spellcaster_verdict",),
     "spellcaster_false_accusation": ("spellcaster_verdict",),
+    "spellcaster_verdict": ("spellcaster_innocent_drowning",),
     "mermaid_discovery": ("mermaid_discovery_death",),
     "mermaid_sailor": ("mermaid_murder_suspicion",),
     "mermaid_murder_suspicion": ("mermaid_discovery",),
-    "werewolf_attack": ("werewolf_close_relation", "werewolf_attack_death", "werewolf_turn_adult", "werewolf_turn_child"),
+    "werewolf_attack": ("werewolf_close_relation", "werewolf_attack_death"),
+    "werewolf_close_relation": ("werewolf_attack_death",),
+    "werewolf_attack_death": ("werewolf_turn_adult", "werewolf_turn_child"),
     "werewolf_discovery": ("werewolf_hunt_response",),
     "werewolf_hunt_response": ("werewolf_hunt_death",),
     "fairy_mischief": ("fairy_mischief_result",),
@@ -36,11 +40,70 @@ OCCULT_FOLLOW_UPS = {
     "servo_breakdown": ("servo_catastrophic_repair",),
 }
 
-# These chains are completely determined by the triggering result and retain
-# the same target Sim, so the tracker can schedule them without player input.
+# Compatibility alias retained for older imports. New code uses the complete,
+# conditional specification below rather than assuming that every follow-up
+# retains the same target Sim.
 AUTOMATIC_OCCULT_FOLLOW_UPS = {
     "werewolf_discovery": "werewolf_hunt_response",
     "werewolf_hunt_response": "werewolf_hunt_death",
+}
+
+
+# Every required follow-up in the supplied occult rules is described here.
+# `when` is evaluated against the completed parent roll. Target strategies let
+# a hunt/trial/attack choose the right Sim without asking the player to create
+# the obligation by hand. Optional player actions (resurrections, exorcisms and
+# bindings) are deliberately not automatic because the player must first choose
+# to attempt them and, in some cases, select a qualified caster.
+AUTOMATIC_OCCULT_FOLLOW_UP_SPECS = {
+    "vampire_hunt": (
+        {"rule_key":"vampire_accused", "target":"origin"},
+        {"rule_key":"vampire_false_accusation", "target":"living_human_other"},
+    ),
+    "vampire_accused": ({"rule_key":"vampire_accused_death", "target":"origin"},),
+    "vampire_false_accusation": ({"rule_key":"vampire_accused_death", "target":"origin"},),
+    "vampire_feeding_suspicion": ({"rule_key":"vampire_accused", "target":"origin"},),
+    "alien_discovery": (
+        {"rule_key":"alien_discovery_type", "target":"origin", "minimum_year":1946},
+        {"rule_key":"alien_discovery_death", "target":"origin"},
+    ),
+    "spellcaster_witch_trial": (
+        {"rule_key":"spellcaster_accused", "target":"origin"},
+        {"rule_key":"spellcaster_false_accusation", "target":"living_non_spellcaster"},
+    ),
+    "spellcaster_accused": ({"rule_key":"spellcaster_verdict", "target":"origin"},),
+    "spellcaster_false_accusation": ({"rule_key":"spellcaster_verdict", "target":"origin"},),
+    "spellcaster_verdict": ({"rule_key":"spellcaster_innocent_drowning", "target":"origin", "when":"not_triggered"},),
+    "mermaid_discovery": ({"rule_key":"mermaid_discovery_death", "target":"origin"},),
+    "mermaid_sailor": ({"rule_key":"mermaid_murder_suspicion", "target":"origin", "actor_alignment":"bad"},),
+    "mermaid_murder_suspicion": ({"rule_key":"mermaid_discovery", "target":"origin"},),
+    # The first target is random. A close relation gets the protective D4 first;
+    # with no close relation the victim proceeds directly to the death roll.
+    "werewolf_attack": ({
+        "rule_key":"werewolf_close_relation", "target":"werewolf_close_relation",
+        "fallback_rule_key":"werewolf_attack_death", "fallback_target":"living_victim",
+    },),
+    "werewolf_close_relation": (
+        {"rule_key":"werewolf_attack_death", "target":"origin", "when":"triggered"},
+        {"rule_key":"werewolf_attack_death", "target":"unrelated_victim", "when":"not_triggered"},
+    ),
+    "werewolf_attack_death": (
+        {"rule_key":"werewolf_turn_child", "target":"origin", "when":"not_triggered", "age_group":"child"},
+        {"rule_key":"werewolf_turn_adult", "target":"origin", "when":"not_triggered", "age_group":"teen_plus"},
+    ),
+    "werewolf_discovery": ({"rule_key":"werewolf_hunt_response", "target":"origin"},),
+    "werewolf_hunt_response": ({"rule_key":"werewolf_hunt_death", "target":"origin"},),
+    "fairy_mischief": ({"rule_key":"fairy_mischief_result", "target":"origin"},),
+    "fairy_changeling": ({"rule_key":"fairy_changeling_truth", "target":"origin", "due":"child_stage"},),
+    # Persistent ghosts receive both required annual checks. Exorcism and
+    # binding remain optional actions in the rule workbench.
+    "ghost_persistence": (
+        {"rule_key":"ghost_haunting", "target":"origin"},
+        {"rule_key":"ghost_move_on", "target":"origin"},
+    ),
+    "ghost_haunting": ({"rule_key":"ghost_haunting_death", "target":"living_victim"},),
+    "servo_malfunction": ({"rule_key":"servo_breakdown", "target":"origin"},),
+    "servo_breakdown": ({"rule_key":"servo_catastrophic_repair", "target":"origin"},),
 }
 
 
@@ -59,6 +122,10 @@ OCCULT_LETHAL_RESULTS = {
 
 def follow_up_keys(rule_key: str | None) -> tuple[str, ...]:
     return OCCULT_FOLLOW_UPS.get(str(rule_key or ""), ())
+
+
+def automatic_follow_up_specs(rule_key: str | None) -> tuple[dict, ...]:
+    return AUTOMATIC_OCCULT_FOLLOW_UP_SPECS.get(str(rule_key or ""), ())
 
 
 def lethal_results(rule_key: str | None) -> str:
@@ -159,7 +226,9 @@ def sim_occult_types(data: dict | None) -> list[str]:
     values = data.get("game_occult_types") or []
     if isinstance(values, str):
         values = re.split(r"[,/;|]+", values)
-    text = " ".join(str(value) for value in values) + " " + str(data.get("species_occult") or "")
+    text = " ".join(str(value) for value in values) + " " + " ".join(str(data.get(key) or "") for key in (
+        "species_occult", "challenge_manifested_occult", "challenge_inherited_occult",
+    ))
     compact = text.casefold()
     found = [name for name in OCCULT_TYPES if name.casefold() in compact]
     return found

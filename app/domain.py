@@ -1486,6 +1486,7 @@ def _add_occult_roll(session: Session, save: ChronicleSave, rule: Record, sim: R
         "occult_rule_key":data.get("rule_key"), "occult_type":data.get("occult"),
         "source":source, "due_global_day":int(due), "completed":False,
         "notes":data.get("notes") or "",
+        "allow_after_death":str(data.get("occult") or "") == "Ghost" and str(data.get("rule_key") or "") != "ghost_haunting_death",
     }
     payload.update(overrides or {})
     roll = Record(save_id=save.id, kind="roll", label=label or f"{sim.label} — {rule.label}",
@@ -1618,10 +1619,20 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
 
     def eligible(rule: Record) -> list[Record]:
         occult = str((rule.data or {}).get("occult") or "")
-        return [sim for sim in living_sims if occult in occult_rules.sim_occult_types(sim.data) and condition_ok(rule, sim)]
+        pool = sims if occult == "Ghost" else living_sims
+        return [sim for sim in pool if occult in occult_rules.sim_occult_types(sim.data) and condition_ok(rule, sim)]
 
     # One current-year obligation is created per eligible Sim or household. This
     # avoids flooding a newly enabled save with rolls from already-played years.
+    existing_occult_rolls = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["occult_roll"].as_boolean().is_(True),
+    )))
+    annual_identities = {
+        (str((item.data or {}).get("occult_rule_key") or ""), str((item.data or {}).get("sim_id") or ""),
+         _occult_year(save, int(item.global_day or save.global_day)))
+        for item in existing_occult_rolls
+    }
     annual_rules = [rule for rule in rules if (rule.data or {}).get("cadence") == "annual"
                     and _occult_rule_matches(rule, current_year)]
     for rule in annual_rules:
@@ -1642,8 +1653,14 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
                 ))
         else:
             for sim in targets:
+                identity = (str((rule.data or {}).get("rule_key") or ""), sim.id, current_year)
+                if identity in annual_identities:
+                    continue
                 source = f"occult:{rule.id}:{sim.id}:{current_year}"
-                created += int(_add_occult_roll(session, save, rule, sim, due, source))
+                added = _add_occult_roll(session, save, rule, sim, due, source)
+                created += int(added)
+                if added:
+                    annual_identities.add(identity)
 
     # Full-moon obligations use an editable anchor and interval. Every moon crossed
     # since enabling is retained, even when the player skips several days at once.
@@ -1663,22 +1680,30 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
                 created += int(_add_occult_roll(session, save, rule, sim, moon_day, source))
         moon_day += interval
 
-    # Reconcile triggered rolls completed before automatic follow-ups existed.
-    # The helper recognizes an already-created manual follow-up, so enabling the
-    # automation on an established save cannot duplicate the player's work.
+    # Reconcile completed rule outcomes from before the shared follow-up engine
+    # existed. Non-triggered outcomes are included because branches such as an
+    # innocent witch-trial verdict or a surviving werewolf victim also create a
+    # required next roll. Each origin is upgraded once, keeping later page loads
+    # cheap even in a long-running save.
+    automatic_parent_keys = set(occult_rules.AUTOMATIC_OCCULT_FOLLOW_UP_SPECS)
+    for definition in list(rules) + list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "future_rule", Record.deleted.is_(False),
+    ))):
+        automatic_parent_keys.update(_declared_followup_parents((definition.data or {}).get("triggered_by")))
     completed_triggers = list(session.scalars(select(Record).where(
         Record.save_id == save.id,
         Record.kind == "roll",
         Record.deleted.is_(False),
         Record.data["completed"].as_boolean().is_(True),
-        Record.data["triggered"].as_boolean().is_(True),
     )))
     for origin in completed_triggers:
         origin_data = origin.data or {}
         parent_key = str(origin_data.get("source_rule_key") or origin_data.get("occult_rule_key") or "")
-        if parent_key not in occult_rules.AUTOMATIC_OCCULT_FOLLOW_UPS:
+        if not parent_key or int(origin_data.get("rule_followup_automation_version") or 0) >= 2:
             continue
-        if origin_data.get("rule_followup_automatic") and origin_data.get("rule_followup_ids"):
+        if parent_key not in automatic_parent_keys:
+            continue
+        if not (origin_data.get("occult_roll") or origin_data.get("rule_generated")):
             continue
         before = dict(origin_data)
         base = origin.version
@@ -1687,8 +1712,7 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
         if origin.data != before:
             origin.version += 1
             journal(session, origin, "upsert", base)
-            if not followups_created:
-                created += 1
+            if not followups_created: created += 1
     return created
 
 
@@ -1715,86 +1739,240 @@ def apply_occult_roll_result(session: Session, roll: Record, actual: int) -> int
         sim_data["challenge_inherited_occult"] = candidates[index]
     elif effect == "persistent_ghost":
         sim_data["persistent_ghost_roll"] = "Spirit remains"
+        sim_data["challenge_manifested_occult"] = "Ghost"
     else:
         return 0
     base = sim.version; sim.data = sim_data; sim.version += 1; journal(session, sim, "upsert", base)
     return 1
 
 
-def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, roll: Record) -> int:
-    """Schedule deterministic werewolf follow-ups immediately after a trigger."""
-    data = roll.data or {}
-    if not bool(data.get("occult_roll")) or not bool(data.get("completed")) or not bool(data.get("triggered")):
-        return 0
-    parent_key = str(data.get("source_rule_key") or data.get("occult_rule_key") or "")
-    child_key = occult_rules.AUTOMATIC_OCCULT_FOLLOW_UPS.get(parent_key)
-    if not child_key:
-        return 0
-    sim = session.get(Record, data.get("sim_id")) if data.get("sim_id") else None
-    if not sim or sim.kind != "sim" or sim.deleted or sim.save_id != save.id:
-        return 0
+def _declared_followup_parents(value) -> set[str]:
+    if isinstance(value, str):
+        value = re.split(r"[,;|]+", value)
+    return {str(item).strip() for item in (value or []) if str(item).strip()}
 
-    year = _occult_year(save, save.global_day)
+
+def _close_relation_ids(session: Session, save: ChronicleSave, actor: Record, sims: list[Record]) -> set[str]:
+    """Return family, spouse and explicitly close-friend targets for an actor."""
+    by_id = {sim.id:sim for sim in sims}
+    data = actor.data or {}
+    close = {str(data.get(key) or "") for key in ("mother_id", "father_id")}
+    close.update(sim.id for sim in sims if actor.id in {
+        str((sim.data or {}).get("mother_id") or ""), str((sim.data or {}).get("father_id") or "")
+    })
+    actor_parents = {str(data.get("mother_id") or ""), str(data.get("father_id") or "")} - {""}
+    if actor_parents:
+        close.update(sim.id for sim in sims if sim.id != actor.id and actor_parents.intersection({
+            str((sim.data or {}).get("mother_id") or ""), str((sim.data or {}).get("father_id") or "")
+        }))
+    for relationship in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "relationship", Record.deleted.is_(False),
+    )):
+        rel = relationship.data or {}
+        first, second = str(rel.get("partner1_id") or ""), str(rel.get("partner2_id") or "")
+        if actor.id not in {first, second}:
+            continue
+        status = str(rel.get("status") or "Active").casefold()
+        relation_type = str(rel.get("type") or "").casefold()
+        is_close = (
+            status not in {"ended", "divorced", "annulled", "separated", "inactive"}
+            and (bool(rel.get("legally_married")) or "marriage" in relation_type or "spouse" in relation_type)
+        ) or "close friend" in relation_type or "best friend" in relation_type
+        if is_close:
+            close.add(second if first == actor.id else first)
+    return {sim_id for sim_id in close if sim_id in by_id and sim_id != actor.id}
+
+
+def _followup_target(session: Session, save: ChronicleSave, origin: Record, strategy: str,
+                     sims: list[Record]) -> Record | None:
+    data = origin.data or {}
+    origin_sim = session.get(Record, data.get("sim_id")) if data.get("sim_id") else None
+    actor_id = str(data.get("rule_actor_sim_id") or (origin_sim.id if origin_sim else ""))
+    actor = session.get(Record, actor_id) if actor_id else origin_sim
+    if strategy == "origin":
+        return origin_sim if origin_sim and not origin_sim.deleted and origin_sim.save_id == save.id else None
+
+    living = [sim for sim in sims if sim.id != actor_id and occult_rules.living(sim.data, save.global_day)]
+    if not living:
+        return None
+    actor_household = str(((actor.data or {}) if actor else {}).get("current_household_id") or "")
+
+    def preferred(pool: list[Record]) -> list[Record]:
+        same_home = [sim for sim in pool if actor_household and str((sim.data or {}).get("current_household_id") or "") == actor_household]
+        return same_home or pool
+
+    if strategy == "living_human_other":
+        living = [sim for sim in living if not occult_rules.sim_occult_types(sim.data)]
+    elif strategy == "living_non_spellcaster":
+        living = [sim for sim in living if "Spellcaster" not in occult_rules.sim_occult_types(sim.data)]
+    elif strategy in {"werewolf_close_relation", "unrelated_victim"} and actor:
+        close = _close_relation_ids(session, save, actor, sims)
+        living = [sim for sim in living if (sim.id in close) == (strategy == "werewolf_close_relation")]
+    if not living:
+        return None
+    return random.SystemRandom().choice(preferred(living))
+
+
+def _followup_rule(session: Session, save: ChronicleSave, key: str, year: int,
+                   explicit_id: str = "") -> Record | None:
     candidates = []
     for rule in session.scalars(select(Record).where(
-        Record.save_id == save.id, Record.kind == "occult_rule", Record.deleted.is_(False)
+        Record.save_id == save.id,
+        Record.kind.in_(("occult_rule", "future_rule")),
+        Record.deleted.is_(False),
     )):
         rule_data = rule.data or {}
-        if (
-            str(rule_data.get("rule_key") or "") == child_key
-            and bool(rule_data.get("active", True))
-            and int(rule_data.get("start_year", -9999)) <= year <= int(rule_data.get("end_year", 9999))
-        ):
+        if explicit_id and rule.id != explicit_id:
+            continue
+        if not explicit_id and str(rule_data.get("rule_key") or rule_data.get("key") or rule.id) != key:
+            continue
+        if not bool(rule_data.get("active", True)) or rule_data.get("auto_followup_enabled") is False:
+            continue
+        if int(rule_data.get("start_year", -9999)) <= year <= int(rule_data.get("end_year", 9999)):
             candidates.append(rule)
     if not candidates:
-        return 0
-    rule = min(candidates, key=lambda item: int((item.data or {}).get("end_year", 9999)) - int((item.data or {}).get("start_year", -9999)))
-    lethal = occult_rules.lethal_results(child_key)
-    source = f"occult:auto-followup:{roll.id}:{rule.id}:{sim.id}"
-    # A player may already have added this follow-up from the rule workbench.
-    # Match its stable origin/rule/Sim identity before considering the automatic
-    # source token, otherwise the backfill would create a duplicate.
-    origin_followups = list(session.scalars(select(Record).where(
+        return None
+    return min(candidates, key=lambda item: int((item.data or {}).get("end_year", 9999)) - int((item.data or {}).get("start_year", -9999)))
+
+
+def _create_automatic_followup(session: Session, save: ChronicleSave, origin: Record,
+                               rule: Record, sim: Record, due: int, actor_id: str) -> tuple[Record | None, bool]:
+    origin_data = origin.data or {}; rule_data = rule.data or {}
+    child_key = str(rule_data.get("rule_key") or rule_data.get("key") or rule.id)
+    existing = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
-        Record.data["origin_roll_id"].as_string() == roll.id,
-        Record.data["sim_id"].as_string() == sim.id,
+        Record.data["origin_roll_id"].as_string() == origin.id,
     )))
-    followup = next((item for item in origin_followups if str(
+    followup = next((item for item in existing if str(
         (item.data or {}).get("source_rule_key") or (item.data or {}).get("occult_rule_key") or ""
     ) == child_key), None)
-    created = False
-    if not followup:
-        created = _add_occult_roll(
-            session, save, rule, sim, save.global_day, source,
-            overrides={
-                "origin_roll_id": roll.id,
-                "source_rule_id": rule.id,
-                "source_rule_key": child_key,
-                "rule_generated": True,
-                "automatic_followup": True,
-                "rule_context": f"Automatically scheduled after {roll.label}: {data.get('outcome') or 'triggered'}",
-                "bad_results": lethal,
-                "nonlethal": not bool(lethal),
-                "failure_is_lethal": bool(lethal),
-            },
-        )
-        followup = session.scalar(select(Record).where(
-            Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
-            Record.data["source"].as_string() == source,
-        ).limit(1))
     if followup:
-        followup_ids = list(data.get("rule_followup_ids") or [])
-        if followup.id not in followup_ids:
-            followup_ids.append(followup.id)
-        roll.data = {
-            **data,
-            "rule_followup_ids": followup_ids,
-            "rule_followup_last_created_global_day": save.global_day,
-            "rule_followup_reviewed": True,
-            "rule_followup_reviewed_global_day": save.global_day,
-            "rule_followup_automatic": True,
+        return followup, False
+
+    lethal = str(rule_data.get("lethal_results") or (occult_rules.lethal_results(child_key) if rule.kind == "occult_rule" else "")).strip()
+    source = f"rule:auto-followup:{origin.id}:{rule.id}:{sim.id}"
+    context = f"Automatically scheduled after {origin.label}: {origin_data.get('outcome') or 'triggered'}"
+    common = {
+        "origin_roll_id":origin.id, "source_rule_id":rule.id, "source_rule_kind":rule.kind,
+        "source_rule_key":child_key, "rule_generated":True, "automatic_followup":True,
+        "rule_actor_sim_id":actor_id, "rule_context":context,
+        "bad_results":lethal, "nonlethal":not bool(lethal), "failure_is_lethal":bool(lethal),
+        "allow_after_death":bool(rule_data.get("allow_after_death")) or (rule.kind == "occult_rule" and str(rule_data.get("occult") or "") == "Ghost" and child_key != "ghost_haunting_death"),
+    }
+    if rule.kind == "occult_rule":
+        created = _add_occult_roll(session, save, rule, sim, due, source, overrides=common)
+    else:
+        payload = {
+            "sim_id":sim.id, "sim_name":sim.label, "source_id":rule.id,
+            "roll_type":rule.label, "die":rule_data.get("die") or "d20",
+            "trigger_results":str(rule_data.get("trigger_results") or ""),
+            "result_rules":str(rule_data.get("result_rules") or rule_data.get("rules") or ""),
+            "source":source, "due_global_day":int(due), "completed":False,
+            "notes":str(rule_data.get("notes") or ""), **common,
         }
-    return int(created)
+        followup = Record(save_id=save.id, kind="roll", label=f"{sim.label} — {rule.label}", global_day=int(due), data=payload)
+        session.add(followup); session.flush(); journal(session, followup, "upsert", 0)
+        return followup, True
+    followup = session.scalar(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["source"].as_string() == source,
+    ).limit(1))
+    return followup, bool(created)
+
+
+def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, roll: Record) -> int:
+    """Create every required built-in or declared follow-up without duplicates."""
+    data = roll.data or {}
+    if not bool(data.get("completed")):
+        return 0
+    parent_key = str(data.get("source_rule_key") or data.get("occult_rule_key") or "")
+    if not parent_key:
+        return 0
+
+    specs = [dict(spec) for spec in occult_rules.automatic_follow_up_specs(parent_key)]
+    built_in_keys = {str(spec.get("rule_key") or "") for spec in specs}
+    for rule in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind.in_(("occult_rule", "future_rule")), Record.deleted.is_(False),
+    )):
+        rule_data = rule.data or {}
+        child_key = str(rule_data.get("rule_key") or rule_data.get("key") or rule.id)
+        if parent_key in _declared_followup_parents(rule_data.get("triggered_by")) and child_key not in built_in_keys:
+            specs.append({"rule_key":child_key, "rule_id":rule.id, "target":str(rule_data.get("followup_target") or "origin")})
+    if not specs:
+        return 0
+
+    sims = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    )))
+    parent_year = _occult_year(save, int(roll.global_day or save.global_day))
+    actor_id = str(data.get("rule_actor_sim_id") or data.get("sim_id") or "")
+    followup_ids = list(data.get("rule_followup_ids") or [])
+    processed = set(str(item) for item in (data.get("automatic_followup_processed") or []))
+    skipped = list(data.get("automatic_followup_skipped") or [])
+    created = 0; missing_rule = False
+
+    for index, spec in enumerate(specs):
+        token = str(spec.get("rule_id") or f"{parent_key}:{index}:{spec.get('rule_key')}:{spec.get('when','triggered')}")
+        if token in processed:
+            continue
+        when = str(spec.get("when") or "triggered")
+        triggered = bool(data.get("triggered"))
+        if (when == "triggered" and not triggered) or (when == "not_triggered" and triggered):
+            processed.add(token); continue
+        if spec.get("minimum_year") is not None and parent_year < int(spec["minimum_year"]):
+            processed.add(token); continue
+        wanted_alignment = str(spec.get("actor_alignment") or "")
+        actor = session.get(Record, actor_id) if actor_id else None
+        if wanted_alignment and (not actor or not occult_rules.aligned(actor.data, wanted_alignment)):
+            processed.add(token); continue
+
+        target_strategy = str(spec.get("target") or "origin")
+        target = _followup_target(session, save, roll, target_strategy, sims)
+        child_key = str(spec.get("rule_key") or "")
+        if not target and spec.get("fallback_rule_key"):
+            child_key = str(spec["fallback_rule_key"])
+            target_strategy = str(spec.get("fallback_target") or "living_victim")
+            target = _followup_target(session, save, roll, target_strategy, sims)
+        if not target:
+            skipped.append({"rule_key":child_key, "reason":"No eligible Sim was available", "global_day":save.global_day})
+            processed.add(token); continue
+
+        age_group = str(spec.get("age_group") or "")
+        if age_group:
+            target_data = target.data or {}
+            birth = target_data.get("birth_global_day", target.global_day)
+            try: age_days = max(0, int(roll.global_day or save.global_day) - int(birth))
+            except (TypeError, ValueError): age_days = 52 if str(target_data.get("game_age_stage") or "").casefold() in {"teen", "young adult", "adult", "elder"} else 20
+            if (age_group == "child" and age_days >= 52) or (age_group == "teen_plus" and age_days < 52):
+                processed.add(token); continue
+
+        due = save.global_day
+        if str(spec.get("due") or "") == "child_stage":
+            try: due = max(save.global_day, int((target.data or {}).get("birth_global_day", target.global_day)) + 20)
+            except (TypeError, ValueError): due = save.global_day
+        rule_year = _occult_year(save, due)
+        rule = _followup_rule(session, save, child_key, rule_year, str(spec.get("rule_id") or ""))
+        if not rule:
+            missing_rule = True
+            continue
+        followup, was_created = _create_automatic_followup(session, save, roll, rule, target, due, actor_id)
+        if followup:
+            if followup.id not in followup_ids: followup_ids.append(followup.id)
+            created += int(was_created); processed.add(token)
+
+    complete = not missing_rule
+    roll.data = {
+        **data,
+        "rule_followup_ids":followup_ids,
+        "automatic_followup_processed":sorted(processed),
+        "automatic_followup_skipped":skipped,
+        "rule_followup_last_created_global_day":save.global_day,
+        "rule_followup_reviewed":complete,
+        "rule_followup_reviewed_global_day":save.global_day if complete else data.get("rule_followup_reviewed_global_day"),
+        "rule_followup_automatic":True,
+        "rule_followup_automation_version":2 if complete else int(data.get("rule_followup_automation_version") or 0),
+    }
+    return created
 
 
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:

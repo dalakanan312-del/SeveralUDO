@@ -1935,6 +1935,111 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(len(followups),1)
                 session.rollback()
 
+    def test_required_occult_followups_schedule_multi_target_and_nontrigger_branches(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Complete automatic chains",global_day=65,start_year=1500,days_per_year=4,settings={"automatic_occult_rolls":True,"automatic_death_causes":True})
+                session.add(save);session.flush()
+                home=Record(save_id=save.id,kind="household",label="Chain House",data={});session.add(home);session.flush()
+                vampire=Record(save_id=save.id,kind="sim",label="Vampire",global_day=1,data={"birth_global_day":1,"species_occult":"Vampire","current_household_id":home.id})
+                spellcaster=Record(save_id=save.id,kind="sim",label="Spellcaster",global_day=1,data={"birth_global_day":1,"species_occult":"Spellcaster","current_household_id":home.id})
+                human=Record(save_id=save.id,kind="sim",label="Human",global_day=1,data={"birth_global_day":1,"species_occult":"Human","current_household_id":home.id})
+                session.add_all([vampire,spellcaster,human]);session.flush();seed_occult_rules(session,save)
+
+                def resolve(rule_key, sim, actual):
+                    rule=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="occult_rule",Record.data["rule_key"].as_string()==rule_key))
+                    roll=Record(save_id=save.id,kind="roll",label=f"{sim.label} — {rule.label}",global_day=save.global_day,data={"sim_id":sim.id,"occult_roll":True,"occult_rule_key":rule_key,"source_rule_key":rule_key,"die":rule.data.get("die"),"trigger_results":rule.data.get("trigger_results"),"result_rules":rule.data.get("result_rules"),"bad_results":"","completed":False})
+                    session.add(roll);session.flush();result=complete_roll(session,save,roll,actual)
+                    children=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==roll.id)))
+                    return result,roll,children
+
+                result,hunt,hunt_children=resolve("vampire_hunt",vampire,1)
+                self.assertEqual(result["automatic_followups"],2)
+                self.assertEqual({item.data["occult_rule_key"] for item in hunt_children},{"vampire_accused","vampire_false_accusation"})
+                false_accusation=next(item for item in hunt_children if item.data["occult_rule_key"]=="vampire_false_accusation")
+                self.assertEqual(false_accusation.data["sim_id"],human.id)
+                self.assertEqual(complete_roll(session,save,false_accusation,18)["automatic_followups"],1)
+
+                result,trial,trial_children=resolve("spellcaster_witch_trial",spellcaster,3)
+                self.assertEqual(result["automatic_followups"],2)
+                false_trial=next(item for item in trial_children if item.data["occult_rule_key"]=="spellcaster_false_accusation")
+                self.assertNotEqual(false_trial.data["sim_id"],spellcaster.id)
+                self.assertEqual(complete_roll(session,save,false_trial,4)["automatic_followups"],1)
+                verdict=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==false_trial.id))
+                self.assertEqual(complete_roll(session,save,verdict,2)["automatic_followups"],1)
+                drowning=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==verdict.id))
+                self.assertEqual(drowning.data["occult_rule_key"],"spellcaster_innocent_drowning")
+                session.rollback()
+
+    def test_werewolf_attack_automatically_selects_victim_and_schedules_survivor_roll(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Werewolf victim chain",global_day=65,start_year=1500,days_per_year=4,settings={"automatic_occult_rolls":True})
+                session.add(save);session.flush()
+                home=Record(save_id=save.id,kind="household",label="Wolf House",data={});session.add(home);session.flush()
+                wolf=Record(save_id=save.id,kind="sim",label="Wolf",global_day=1,data={"birth_global_day":1,"species_occult":"Werewolf","current_household_id":home.id})
+                spouse=Record(save_id=save.id,kind="sim",label="Adult Spouse",global_day=1,data={"birth_global_day":1,"species_occult":"Human","current_household_id":home.id})
+                session.add_all([wolf,spouse]);session.flush()
+                marriage=Record(save_id=save.id,kind="relationship",label="Marriage",global_day=1,data={"partner1_id":wolf.id,"partner2_id":spouse.id,"type":"Marriage","legally_married":True,"status":"Active"})
+                session.add(marriage);session.flush();seed_occult_rules(session,save)
+                attack_rule=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="occult_rule",Record.data["rule_key"].as_string()=="werewolf_attack"))
+                attack=Record(save_id=save.id,kind="roll",label="Werewolf attack",global_day=65,data={"sim_id":wolf.id,"occult_roll":True,"occult_rule_key":"werewolf_attack","source_rule_key":"werewolf_attack","die":"d6","trigger_results":"1","result_rules":attack_rule.data["result_rules"],"completed":False})
+                session.add(attack);session.flush();self.assertEqual(complete_roll(session,save,attack,1)["automatic_followups"],1)
+                relation_roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==attack.id))
+                self.assertEqual((relation_roll.data["occult_rule_key"],relation_roll.data["sim_id"]),("werewolf_close_relation",spouse.id))
+                self.assertEqual(complete_roll(session,save,relation_roll,1)["automatic_followups"],1)
+                death_roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==relation_roll.id))
+                self.assertEqual(death_roll.data["occult_rule_key"],"werewolf_attack_death")
+                self.assertEqual(complete_roll(session,save,death_roll,2)["automatic_followups"],1)
+                turn_roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==death_roll.id))
+                self.assertEqual((turn_roll.data["occult_rule_key"],turn_roll.data["sim_id"]),("werewolf_turn_adult",spouse.id))
+                session.rollback()
+
+    def test_declared_future_changeling_ghost_and_servo_followups_are_automatic(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Remaining automatic chains",global_day=65,start_year=1900,days_per_year=4,settings={"automatic_occult_rolls":True})
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label="Rule Sim",global_day=60,data={"birth_global_day":60,"species_occult":"Human"})
+                victim=Record(save_id=save.id,kind="sim",label="Living Victim",global_day=1,data={"birth_global_day":1,"species_occult":"Human"})
+                session.add_all([sim,victim]);session.flush();seed_occult_rules(session,save)
+
+                def complete_key(key, target, actual):
+                    rule=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="occult_rule",Record.data["rule_key"].as_string()==key))
+                    trigger_results="1" if key=="ghost_persistence" else rule.data.get("trigger_results")
+                    roll=Record(save_id=save.id,kind="roll",label=rule.label,global_day=save.global_day,data={"sim_id":target.id,"occult_roll":True,"occult_rule_key":key,"source_rule_key":key,"die":rule.data.get("die"),"trigger_results":trigger_results,"result_rules":rule.data.get("result_rules"),"completed":False})
+                    session.add(roll);session.flush();result=complete_roll(session,save,roll,actual)
+                    return roll,result,list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==roll.id)))
+
+                changeling,result,children=complete_key("fairy_changeling",sim,1)
+                self.assertEqual(result["automatic_followups"],1);self.assertEqual(children[0].global_day,80)
+
+                sim.data={**sim.data,"death_global_day":65};sim.version+=1
+                ghost,result,children=complete_key("ghost_persistence",sim,1)
+                self.assertEqual(result["automatic_followups"],2)
+                self.assertEqual({item.data["occult_rule_key"] for item in children},{"ghost_haunting","ghost_move_on"})
+                haunting=next(item for item in children if item.data["occult_rule_key"]=="ghost_haunting")
+                self.assertEqual(complete_roll(session,save,haunting,6)["automatic_followups"],1)
+                haunting_death=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==haunting.id))
+                self.assertEqual(haunting_death.data["sim_id"],victim.id)
+
+                servo,result,children=complete_key("servo_malfunction",victim,1)
+                self.assertEqual(result["automatic_followups"],1)
+                breakdown=children[0];self.assertEqual(breakdown.data["occult_rule_key"],"servo_breakdown")
+                self.assertEqual(complete_roll(session,save,breakdown,6)["automatic_followups"],1)
+
+                parent=Record(save_id=save.id,kind="future_rule",label="Declared parent",data={"rule_key":"declared-parent","die":"d6","trigger_results":"1","active":True})
+                child=Record(save_id=save.id,kind="future_rule",label="Declared child",data={"rule_key":"declared-child","triggered_by":"declared-parent","die":"d4","trigger_results":"2","active":True})
+                session.add_all([parent,child]);session.flush()
+                origin=Record(save_id=save.id,kind="roll",label="Declared origin",global_day=65,data={"sim_id":victim.id,"rule_generated":True,"source_rule_key":"declared-parent","die":"d6","trigger_results":"1","completed":False})
+                session.add(origin);session.flush();self.assertEqual(complete_roll(session,save,origin,1)["automatic_followups"],1)
+                declared=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==origin.id))
+                self.assertEqual(declared.data["source_rule_key"],"declared-child")
+                session.rollback()
+
     def test_occult_inheritance_effect_and_every_completed_outcome_enter_storyline(self):
         with TestClient(app):
             with SessionLocal() as session:
