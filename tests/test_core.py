@@ -857,14 +857,23 @@ class CoreSmokeTests(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(configured.content)) as package:
                 private_config = json.loads(package.read("SeveralUDOClockSync/config.json"))
                 self.assertTrue(private_config["enabled"])
+                self.assertTrue(private_config["capture_portraits"])
                 self.assertTrue(private_config["receiver_url"].endswith("/api/clock/report"))
                 self.assertGreaterEqual(len(private_config["sync_token"]), 32)
             private_report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {private_config['sync_token']}"}, json={"game_day": 60, "hour": 12, "minute": 0, "household_members": []})
             self.assertEqual(private_report.status_code, 200)
             clock_link = client.post("/api/clock/links").json()
-            report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {clock_link['token']}"}, json={"game_day": 60, "hour": 13, "minute": 45, "household_members": []})
+            report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {clock_link['token']}"}, json={"game_day": 60, "hour": 13, "minute": 45, "household_members": [{
+                "clock_sync_version":"2.1.0", "game_build":"1.999.1", "installed_packs":["Base Game"],
+                "telemetry_capabilities":{"pregnancy":True,"portraits":False},
+                "clock_sync_diagnostics":{"healthy":True,"errors":[]},
+            }]})
             self.assertEqual(report.status_code, 200)
             self.assertEqual(report.json()["tracker_global_day"], before)
+            self.assertTrue(report.json()["diagnostics_updated"])
+            diagnostics_page = client.get("/p/clock")
+            self.assertIn("SELF-DIAGNOSTICS", diagnostics_page.text)
+            self.assertIn("Clock Sync 2.1.0", diagnostics_page.text)
             report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {clock_link['token']}"}, json={"game_day": 61, "hour": 2, "minute": 5, "household_members": []})
             self.assertEqual(report.json()["tracker_global_day"], before + 1)
             device = client.post("/api/sync/devices", data={"name": "Test desktop"}).json()
@@ -1569,6 +1578,46 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(automation.resolve_parent_links(session, save), 1)
                 self.assertEqual(child.data["mother_id"], parent.id)
                 self.assertEqual(child.data["parent_ids"], [parent.id])
+                session.rollback()
+
+    def test_parent_child_inverse_genealogy_fills_missing_child_parent(self):
+        marker = uuid.uuid4().hex
+        with TestClient(app):
+            with SessionLocal() as session:
+                save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                child = Record(save_id=save.id, kind="sim", label="Inverse Child",
+                               data={"game_sim_id":"inverse-child-"+marker})
+                parent = Record(save_id=save.id, kind="sim", label="Inverse Mother", data={
+                    "game_sim_id":"inverse-parent-"+marker, "sex":"Female",
+                    "child_game_sim_ids":["inverse-child-"+marker],
+                })
+                session.add_all([child, parent]); session.flush()
+                self.assertEqual(automation.resolve_parent_links(session, save), 1)
+                self.assertEqual(child.data["mother_id"], parent.id)
+                self.assertEqual(child.data["parent_ids"], [parent.id])
+                self.assertEqual(child.data["parent_game_sim_ids"], ["inverse-parent-"+marker])
+                session.rollback()
+
+    def test_zero_newborn_pregnancy_ending_stays_zero_and_requires_review(self):
+        marker = uuid.uuid4().hex
+        with TestClient(app):
+            with SessionLocal() as session:
+                save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                sim = Record(save_id=save.id, kind="sim", label="Zero Outcome", data={
+                    "game_sim_id":"zero-outcome-"+marker, "game_was_pregnant":True,
+                    "last_game_pregnancy_count":2,
+                })
+                session.add(sim); session.flush()
+                session.add(Record(save_id=save.id, kind="pregnancy", label="Zero Outcome pregnancy",
+                                   global_day=save.global_day, data={"mother_id":sim.id,"status":"Active","babies_expected":2}))
+                session.flush()
+                made = reconcile_sim(session, save, sim, {
+                    "telemetry_version":4, "is_pregnant":False, "detected_newborn_count":0,
+                })
+                outcome = next(item for item in made if item.data["action"] == "pregnancy_outcome")
+                self.assertEqual(outcome.data["payload"]["babies_delivered"], 0)
+                self.assertEqual(outcome.data["payload"]["babies_delivered_source"], "newborn detection")
+                self.assertEqual(outcome.data["payload"]["suggested_status"], "Miscarriage")
                 session.rollback()
 
     def test_simultaneous_births_are_scoped_to_each_mother(self):

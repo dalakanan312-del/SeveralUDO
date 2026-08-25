@@ -9,7 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from .config import ROOT
 
 
-CLOCK_SYNC_VERSION = "2.0.4"
+CLOCK_SYNC_VERSION = "2.1.0"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
 CLOCK_SYNC_REQUIRED_FILES = (
@@ -26,15 +26,17 @@ def missing_files() -> list[str]:
     return [name for name in CLOCK_SYNC_REQUIRED_FILES if not (BRIDGE_ROOT / name).is_file()]
 
 
-def config_document(endpoint: str = "PASTE_ENDPOINT_FROM_TRACKER", token: str = "PASTE_PRIVATE_TOKEN_FROM_TRACKER") -> bytes:
+def config_document(endpoint: str = "PASTE_ENDPOINT_FROM_TRACKER", token: str = "PASTE_PRIVATE_TOKEN_FROM_TRACKER",
+                    capture_portraits: bool = True) -> bytes:
     return (json.dumps({
         "receiver_url": endpoint,
         "sync_token": token,
         "enabled": True,
+        "capture_portraits": bool(capture_portraits),
     }, indent=2) + "\n").encode("utf-8")
 
 
-def build_bundle(endpoint: str = "", token: str = "") -> bytes:
+def build_bundle(endpoint: str = "", token: str = "", capture_portraits: bool = True) -> bytes:
     """Build a complete Windows Clock Sync folder without retaining secrets."""
     required = CLOCK_SYNC_REQUIRED_FILES
     missing = missing_files()
@@ -57,7 +59,7 @@ def build_bundle(endpoint: str = "", token: str = "") -> bytes:
         archive.writestr(
             f"{CLOCK_SYNC_FOLDER}/KIT CONTENTS - VERIFY.txt",
             (
-                "SeveralUDO Clock Sync 2.0.4 - expected contents\r\n"
+                "SeveralUDO Clock Sync 2.1.0 - expected contents\r\n"
                 "=================================================\r\n\r\n"
                 "The folder must contain the Script Mod, PowerShell relay and BAT starter.\r\n"
                 "If Windows hides either command file, rename its .backup.txt copy by removing .backup.txt.\r\n\r\n"
@@ -79,7 +81,7 @@ def build_bundle(endpoint: str = "", token: str = "") -> bytes:
             ).encode("utf-8"),
         )
         if endpoint and token:
-            archive.writestr(f"{CLOCK_SYNC_FOLDER}/config.json", config_document(endpoint, token))
+            archive.writestr(f"{CLOCK_SYNC_FOLDER}/config.json", config_document(endpoint, token, capture_portraits))
             archive.writestr(
                 f"{CLOCK_SYNC_FOLDER}/PRIVATE CONFIG - DO NOT SHARE.txt",
                 b"This kit contains the private token for one tracker save. Do not upload or share config.json.\r\n",

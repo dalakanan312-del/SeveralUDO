@@ -70,7 +70,81 @@ class ClockModSourceTests(unittest.TestCase):
         self.assertEqual(result["milestones"], ["First Steps"])
         self.assertTrue(result["skills_scan_supported"])
         self.assertTrue(result["milestone_scan_supported"])
-        self.assertEqual(result["telemetry_version"], 3)
+        self.assertEqual(result["telemetry_version"], 4)
+
+    def test_guarded_v4_snapshot_reports_selected_life_history_modules(self):
+        module = self.load_module()
+
+        class RelationshipBit_Spouse:
+            pass
+
+        class Buff_Malaria:
+            pass
+
+        class Career_Apothecary:
+            pass
+
+        class Degree_History:
+            pass
+
+        class Aspiration_Successful_Lineage:
+            pass
+
+        class Trait_Lifestyle_Close_Knit:
+            pass
+
+        child = types.SimpleNamespace(sim_id=22, first_name="Jane", last_name="Doe", gender="Female", age="Child")
+        spouse = types.SimpleNamespace(sim_id=33, first_name="Robin", last_name="Doe", gender="Male", age="Adult")
+        genealogy = types.SimpleNamespace(get_children=lambda: (child,))
+        relationship_tracker = types.SimpleNamespace(
+            get_target_sim_infos=lambda: (spouse,),
+            get_all_bits=lambda target: (RelationshipBit_Spouse,),
+            get_friendship_score=lambda target: 82,
+            get_romance_score=lambda target: 91,
+        )
+        health_buff = types.SimpleNamespace(buff_type=Buff_Malaria, severity="Severe", remaining_minutes=120)
+        career = types.SimpleNamespace(career_tuning=Career_Apothecary, level=4, performance=77)
+        sim = types.SimpleNamespace(
+            sim_id=11, first_name="Anne", last_name="Doe", gender="Female", age="Adult",
+            pregnancy_tracker=types.SimpleNamespace(
+                pregnancy_stage="Third Trimester", pregnancy_progress=.75,
+                hours_remaining=18, is_in_labor=True,
+                expected_offspring_count=2,
+            ),
+            genealogy=genealogy,
+            relationship_tracker=relationship_tracker,
+            buff_component=types.SimpleNamespace(get_all_buffs=lambda: (health_buff,)),
+            age_in_days=103, age_progress_percentage=.75, days_until_age_up=6,
+            career_tracker=types.SimpleNamespace(careers={1: career}),
+            degree_tracker=types.SimpleNamespace(degrees=(Degree_History,)),
+            occult_tracker=types.SimpleNamespace(occult_rank="Master", unlocked_perks=()),
+            aspiration_tracker=types.SimpleNamespace(
+                active_aspiration=Aspiration_Successful_Lineage,
+                completed_aspirations=(),
+            ),
+            trait_tracker=types.SimpleNamespace(traits=(Trait_Lifestyle_Close_Knit,)),
+            portrait_bytes=b"portrait" * 20,
+        )
+        result = module._extended_snapshot(sim, None)
+        self.assertEqual(result["telemetry_version"], 4)
+        self.assertEqual(result["clock_sync_version"], "2.1.0")
+        self.assertEqual(result["child_game_sim_ids"], ["22"])
+        self.assertEqual(result["relationships"][0]["category"], "Marriage")
+        self.assertEqual(result["babies_expected"], 2)
+        self.assertEqual(result["pregnancy_progress_percentage"], 75)
+        self.assertTrue(result["is_in_labor"])
+        self.assertEqual(result["careers"][0]["name"], "Apothecary")
+        self.assertIn("History", result["degrees"])
+        self.assertEqual(result["occult_progress"]["rank"], "Master")
+        self.assertIn("Successful Lineage", result["aspirations"])
+        self.assertTrue(result["illness_scan_supported"])
+        self.assertEqual(result["illnesses"][0]["name"], "Malaria")
+        self.assertEqual(result["game_portrait"]["capture_mode"], "embedded")
+        self.assertTrue(all(result["telemetry_capabilities"].get(name) for name in (
+            "pregnancy", "genealogy", "relationships", "health", "life_stage",
+            "career_education", "occult_progress", "personal_development", "portraits",
+        )))
+        self.assertTrue(result["clock_sync_diagnostics"]["healthy"])
 
     def test_published_archive_keeps_real_compatibility_module(self):
         with ZipFile(ARCHIVE) as archive:

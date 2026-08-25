@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.0.4
+SEVERALUDO CLOCK SYNC 2.1.0
 Complete Windows installation guide
 ===================================
 
@@ -29,7 +29,17 @@ FIRST INSTALLATION - READY-TO-INSTALL PRIVATE KIT
 6. Before opening the game, double-click Start SeveralUDO Clock Relay.bat. A window may flash and disappear; that is normal because the relay runs hidden.
 7. Start The Sims 4, load a household, enter Live Mode, and let in-game time move for a moment. Changing lots also triggers a fresh report.
 8. Open the tracker Game Clock page. Receiver should show Active and Last game day should stop saying Waiting.
-9. Review new Sims, pregnancies, illnesses, deaths, relationships and other detected changes in Automation Inbox before accepting them. Skills and completed milestones are synchronized directly to each Sim profile.
+9. Review new Sims, pregnancy starts and endings, deaths, resurrections, relationships and illnesses in Automation Inbox before accepting them. Skills, milestones, life-stage progress, careers, education, occult progress, aspirations and other safe profile details synchronize directly.
+
+CLOCK SYNC 2.1 DETAIL
+- Pregnancy reports can include stage, time remaining, labor and expected babies. A pregnancy ending with zero detected newborns stays zero for review instead of being changed to one.
+- Genealogy includes available parents, children, siblings, grandparents and grandchildren. The tracker can fill a missing parent link from the parent's child list.
+- Relationships can include game relationship bits plus available friendship and romance scores. Family-changing transitions remain reviewable.
+- Death reports include the game cause and available place details. A previously dead Sim reported alive creates a resurrection review instead of silently changing history.
+- Health telemetry promotes recognized illness and symptom buffs into reviewable illness episodes. Missing optional health mods remain safe.
+- Life-stage progress, career and school details, degrees, occult ranks and powers, aspirations, lifestyles, fears, character values and preferences appear on Sim profiles when the game exposes them.
+- The Game Clock page shows a self-diagnostic capability report for your game build, installed packs and supported telemetry.
+- Portrait capture is best effort because some Sims 4 builds expose only a resource reference. Set "capture_portraits" to false in config.json to disable it.
 
 INSTALLATION - REUSABLE KIT
 1. Follow steps 1 through 5 above.

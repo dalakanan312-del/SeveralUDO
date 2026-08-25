@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, auth, automation, backup_service, calendar_utils, clock, clock_bundle, dice, exports, game_metadata, names, notifications, occult_rules, portraits, save_scanner, sync, storyline, insights
+from . import accounts, auth, automation, backup_service, calendar_utils, clock, clock_bundle, dice, exports, game_metadata, names, notifications, occult_rules, portraits, save_scanner, sync, storyline, telemetry, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -1344,6 +1344,9 @@ def feature_page(request: Request, page: str):
         if page == "clock" and save:
             link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id))
             ctx["clock_link"] = link
+            ctx["clock_diagnostic"] = session.scalar(select(Record).where(
+                Record.save_id == save.id, Record.kind == "clock_diagnostic", Record.deleted.is_(False),
+            ).order_by(Record.updated_at.desc()).limit(1))
             ctx["clock_notice"] = request.session.pop("clock_notice", None)
             if link and link.last_game_day is not None and link.game_anchor_day is not None and link.tracker_anchor_day is not None:
                 ctx["clock_projected_day"] = int(link.tracker_anchor_day) + max(0, int(link.last_game_day) - int(link.game_anchor_day))
@@ -2048,6 +2051,24 @@ async def accept_automation(request: Request, candidate_id: str):
             accepted_estimate=bool(action=="new_sim" and submitted_birth_year is None and birth_estimate and birth==birth_estimate.get("estimated_birth_global_day"))
             occult=game_metadata.occult_identity(payload);species=str(value("species_occult",occult.get("display") or "Human") or "Human")
             sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first or name,"last_name":last,"sex":str(value("sex") or ""),"birth_global_day":birth,"mother_id":mother.id if mother else None,"father_id":father.id if father else None,"current_household_id":home.id if home else None,"pregnancy_id":pregnancy.id if pregnancy else None,"game_sim_id":str(payload.get("game_sim_id") or ""),"game_household_id":payload.get("household_id"),"game_household_name":payload.get("household_name"),"game_age_stage":str(value("age_stage") or ""),"game_age_days_at_detection":submitted_age if submitted_age is not None else birth_estimate.get("estimated_age_days"),"game_age_progress_percentage":payload.get("age_progress_percentage"),"game_career":str(value("career") or ""),"game_education":str(value("education") or ""),"game_traits":detected_form_list(value("traits")),"game_skills":detected_form_list(value("skills")),"game_milestones":detected_form_list(value("milestones")),"parent_game_sim_ids":[str(v) for v in (payload.get("parent_game_sim_ids") or []) if v],"game_parents":[row for row in (payload.get("parents") or []) if isinstance(row,dict)],"last_game_world":payload.get("world_name"),"last_game_lot":payload.get("lot_name"),"last_household_funds":payload.get("household_funds")}
+            sim_data.update({
+                "child_game_sim_ids":[str(v) for v in (payload.get("child_game_sim_ids") or []) if v],
+                "sibling_game_sim_ids":[str(v) for v in (payload.get("sibling_game_sim_ids") or []) if v],
+                "grandparent_game_sim_ids":[str(v) for v in (payload.get("grandparent_game_sim_ids") or []) if v],
+                "grandchild_game_sim_ids":[str(v) for v in (payload.get("grandchild_game_sim_ids") or []) if v],
+                "game_relationships":[row for row in (payload.get("relationships") or []) if isinstance(row,dict)],
+                "game_careers":[row for row in (payload.get("careers") or []) if isinstance(row,dict)],
+                "game_degrees":detected_form_list(payload.get("degrees")),"game_school":payload.get("school"),
+                "game_health_buffs":[row for row in (payload.get("health_buffs") or []) if isinstance(row,dict)],
+                "game_symptoms":detected_form_list(payload.get("symptoms")),"game_occult_progress":payload.get("occult_progress") or {},
+                "game_aspirations":detected_form_list(payload.get("aspirations")),"game_active_aspiration":payload.get("active_aspiration"),
+                "game_completed_aspirations":detected_form_list(payload.get("completed_aspirations")),"game_lifestyles":detected_form_list(payload.get("lifestyles")),
+                "game_fears":detected_form_list(payload.get("fears")),"game_character_values":detected_form_list(payload.get("character_values")),
+                "game_preferences":detected_form_list(payload.get("preferences")),"game_portrait":payload.get("game_portrait") or {},
+                "clock_sync_version":payload.get("clock_sync_version"),"game_build":payload.get("game_build"),
+                "game_installed_packs":detected_form_list(payload.get("installed_packs")),"game_detected_optional_mods":detected_form_list(payload.get("detected_optional_mods")),
+                "game_telemetry_capabilities":payload.get("telemetry_capabilities") or {},"game_clock_diagnostics":payload.get("clock_sync_diagnostics") or {},
+            })
             sim_data["surname_at_birth"] = last
             sim_data["maiden_name"] = last
             sim_data["species_occult"] = species
@@ -2057,7 +2078,7 @@ async def accept_automation(request: Request, candidate_id: str):
                 sim_data.update({key:value for key,value in birth_estimate.items() if key.startswith("birth_estimate_") or key.startswith("estimated_birth_global_day_range_")})
                 sim_data.update({"original_birth_estimate_global_day":birth_estimate.get("estimated_birth_global_day"),"birth_global_day_estimated":accepted_estimate and birth_estimate.get("birth_estimate_precision")!="reported-birth-day"})
             sim_data.update(reviewed_birth_fields);sim_data["birth_time_source"]=reviewed_birth_fields.get("birth_estimate_source") if submitted_birth_year is not None else "Clock Sync newborn detection" if action=="new_baby" and birth_hour is not None and birth_minute is not None else birth_estimate.get("birth_estimate_source") if accepted_estimate else "Reviewed manual birth day"
-            sim=Record(save_id=save.id,kind="sim",label=name,global_day=birth,data=sim_data);session.add(sim);session.flush();domain.journal(session,sim,"upsert",0);resolved_record=sim
+            sim=Record(save_id=save.id,kind="sim",label=name,global_day=birth,data=sim_data);session.add(sim);session.flush();domain.journal(session,sim,"upsert",0);clock._store_game_portrait(session,save,sim,payload);resolved_record=sim
             if pregnancy:
                 pregnancy_base=pregnancy.version;linked=list(pregnancy.data.get("linked_newborn_ids") or [])
                 if sim.id not in linked: linked.append(sim.id)
@@ -2074,7 +2095,7 @@ async def accept_automation(request: Request, candidate_id: str):
             first=str(value("first_name",payload.get("first_name")) or "").strip();last=str(value("last_name",payload.get("last_name")) or "").strip();sex=str(value("sex",payload.get("sex")) or "").strip();name=" ".join(part for part in (first,last) if part) or sim.label
             base=sim.version;sim.label=name;sim.data={**sim.data,"first_name":first or name,"last_name":last,"sex":sex or sim.data.get("sex"),"game_sex":sex or sim.data.get("game_sex")};sim.version+=1;domain.journal(session,sim,"upsert",base);resolved_record=sim
         elif action=="sim_death" and sim:
-            death_day=int_or_none(value("death_global_day",payload.get("detected_tracker_global_day"))) or save.global_day;death_hour=int_or_none(value("death_game_hour",payload.get("detected_game_hour")));death_minute=int_or_none(value("death_game_minute",payload.get("detected_game_minute")));cause=str(value("cause_of_death",payload.get("death_type") or "Detected in game") or "Detected in game");place=str(value("death_place") or "");calendar=death_calendar_fields(save,death_day,death_hour,death_minute)
+            death_details=payload.get("death_details") or {};death_day=int_or_none(value("death_global_day",payload.get("detected_tracker_global_day"))) or save.global_day;death_hour=int_or_none(value("death_game_hour",payload.get("detected_game_hour")));death_minute=int_or_none(value("death_game_minute",payload.get("detected_game_minute")));cause=str(value("cause_of_death",payload.get("death_type") or death_details.get("death_type") or "Detected in game") or "Detected in game");place=str(value("death_place",payload.get("lot_name") or death_details.get("place") or "") or "");calendar=death_calendar_fields(save,death_day,death_hour,death_minute)
             base=sim.version;sim.data={**sim.data,"death_global_day":death_day,"cause_of_death":cause,"death_place":place,"death_confirmed":True,"death_time_source":"Clock Sync death transition" if death_hour is not None and death_minute is not None else "Reviewed detection",**calendar};sim.version+=1;domain.journal(session,sim,"upsert",base)
             death=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id,Record.global_day==death_day).order_by(Record.created_at.desc()).limit(1))
             if death:
@@ -2082,6 +2103,24 @@ async def accept_automation(request: Request, candidate_id: str):
             else:
                 death=Record(save_id=save.id,kind="death",label=f"Death of {sim.label}",global_day=death_day,data={"sim_id":sim.id,"cause":cause,"place":place,"death_global_day":death_day,"completed":True,"confirmed_global_day":death_day,"source":"game","source_candidate_id":item.id,**calendar});session.add(death);session.flush();domain.journal(session,death,"upsert",0)
             resolved_record=death;save.revision+=1+domain.end_illnesses_for_death(session,save,sim,death_day);domain.schedule_rolls(session,save)
+        elif action=="sim_resurrection" and sim:
+            resurrection_day=int_or_none(value("resurrection_global_day",payload.get("detected_tracker_global_day"))) or save.global_day
+            resurrection_hour=int_or_none(value("resurrection_game_hour",payload.get("detected_game_hour")))
+            resurrection_minute=int_or_none(value("resurrection_game_minute",payload.get("detected_game_minute")))
+            prior_death_day=sim.data.get("death_global_day")
+            prior_cause=sim.data.get("cause_of_death")
+            base=sim.version
+            sim.data={**sim.data,"death_global_day":None,"cause_of_death":"","death_place":"","death_confirmed":False,
+                      "death_game_hour":None,"death_game_minute":None,"death_time":None,"historical_death_date":None,
+                      "game_was_dead":False,"resurrection_global_day":resurrection_day,
+                      "resurrection_game_hour":resurrection_hour,"resurrection_game_minute":resurrection_minute,
+                      "resurrection_notes":str(value("resurrection_notes","Detected alive in game") or "Detected alive in game")}
+            sim.version+=1;domain.journal(session,sim,"upsert",base)
+            deaths=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id).order_by(Record.global_day.desc()).limit(1)))
+            if deaths:
+                death=deaths[0];death_base=death.version;death.data={**death.data,"resurrected":True,"resurrection_global_day":resurrection_day};death.version+=1;domain.journal(session,death,"upsert",death_base)
+            resolved_record=telemetry.history_event(session,save,category="resurrection",label=f"{sim.label} returned to life.",snapshot={"detected_game_day":payload.get("detected_game_day"),"detected_game_hour":resurrection_hour,"detected_game_minute":resurrection_minute},sim=sim,details={"prior_death_global_day":prior_death_day,"prior_cause_of_death":prior_cause,"resurrection_global_day":resurrection_day})
+            save.revision+=1;domain.schedule_rolls(session,save)
         elif action=="household_change" and sim:
             home=chosen_household("tracker_household_id");base=sim.version;sim.data={**sim.data,"current_household_id":home.id if home else sim.data.get("current_household_id"),"game_household_id":str(value("game_household_id",payload.get("household_id")) or ""),"game_household_name":str(value("household_name") or ""),"last_game_world":str(value("world_name") or ""),"last_game_lot":str(value("lot_name") or "")};sim.version+=1;domain.journal(session,sim,"upsert",base)
         elif action=="pregnancy_discovered" and sim:
@@ -2844,7 +2883,7 @@ def download_clock_sync(request: Request):
 
 
 @app.post("/downloads/clock-sync/configured")
-def download_configured_clock_sync(request: Request):
+def download_configured_clock_sync(request: Request, capture_portraits: str = Form("true")):
     """Rotate the active save's token and return a private ready-to-install kit."""
     with db() as session:
         ctx = context(request, session)
@@ -2854,7 +2893,10 @@ def download_configured_clock_sync(request: Request):
         raw = rotate_clock_link(session, save.id)
         base_url = str(request.base_url).rstrip("/") if settings.local_mode else settings.public_url
         try:
-            package = clock_bundle.build_bundle(f"{base_url}/api/clock/report", raw)
+            package = clock_bundle.build_bundle(
+                f"{base_url}/api/clock/report", raw,
+                str(capture_portraits).casefold() in {"1", "true", "on", "yes"},
+            )
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
     return Response(package, media_type="application/zip", headers={

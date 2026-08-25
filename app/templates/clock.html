@@ -17,6 +17,15 @@
 <div class="notice"><strong>{{sim_weekday(clock_link.last_game_day)}}</strong> · {{'%02d'|format(clock_link.last_game_hour or 0)}}:{{'%02d'|format(clock_link.last_game_minute or 0)}} · last report {{clock_link.last_seen_at}}</div>
 {% endif %}
 
+{% if clock_diagnostic %}{% set diagnostic=clock_diagnostic.data %}{% set health=diagnostic.get('diagnostics',{}) %}
+<section class="panel">
+  <div class="section-heading"><div><p class="eyebrow">SELF-DIAGNOSTICS</p><h2>Clock Sync {{diagnostic.get('clock_sync_version','Unknown version')}}</h2></div><span class="status {{'alive' if health.get('healthy',True) else 'dead'}}">{{'Healthy' if health.get('healthy',True) else 'Needs attention'}}</span></div>
+  <div class="metrics"><article><strong>{{diagnostic.get('game_build') or 'Not exposed'}}</strong><span>game build</span></article><article><strong>{{diagnostic.get('installed_packs',[])|length}}</strong><span>packs detected</span></article><article><strong>{{diagnostic.get('detected_optional_mods',[])|length}}</strong><span>optional integrations</span></article><article><strong>{{diagnostic.get('telemetry_capabilities',{}).values()|select('equalto',true)|list|length}}</strong><span>telemetry modules ready</span></article></div>
+  <details><summary>Feature capability report</summary><div>{% for name,supported in diagnostic.get('telemetry_capabilities',{}).items() %}<div class="list-row"><strong>{{name|replace('_',' ')|title}}</strong><span>{{'Available' if supported else 'Not exposed by this game or pack'}}</span></div>{% endfor %}{% if health.get('errors') %}<h3>Guarded errors</h3>{% for error in health.get('errors') %}<div class="list-row"><strong>{{error.get('feature','Unknown')|replace('_',' ')|title}}</strong><span>{{error.get('error','Unavailable')}}</span></div>{% endfor %}{% endif %}</div></details>
+  {% if diagnostic.get('detected_optional_mods') %}<p><strong>Detected integrations:</strong> {{diagnostic.get('detected_optional_mods')|join(', ')}}</p>{% endif %}
+</section>
+{% endif %}
+
 {% if clock_link and clock_link.last_game_day is not none %}
 <section class="panel">
   <h2>Clock alignment</h2>
@@ -35,6 +44,7 @@
   <h2>Download a ready-to-install private kit</h2>
   <p>This ZIP contains the Script Mod, local relay, hidden relay starter, detailed guides and a working <strong>config.json</strong> for <strong>{{save.name}}</strong>.</p>
   <form action="/downloads/clock-sync/configured" method="post" onsubmit="return confirm('Create a fresh private Clock Sync token for this save? Any older config for this tracker save will stop working.')">
+    <label>Automatic game portraits<select name="capture_portraits"><option value="true" selected>Try when supported</option><option value="false">Off</option></select><small>Best effort. Some game builds expose only a portrait reference; missing portrait support never blocks other telemetry.</small></label>
     <button class="primary">Create link and download private kit</button>
   </form>
   <p><small>Private kits must not be shared: config.json connects directly to this tracker save. Creating another private kit invalidates the previous token.</small></p>
@@ -44,8 +54,8 @@
   <p class="eyebrow">REUSABLE · NO PRIVATE TOKEN</p>
   <h2>Download the complete reusable kit</h2>
   <p>Use this for updates or public sharing. It includes every Clock Sync file and a blank configuration template, but no workspace or save credential.</p>
-  <p><a class="button primary" href="/downloads/clock-sync">Download Clock Sync 2.0.4 complete kit</a></p>
-  <div class="notice"><strong>Expected inside the SeveralUDOClockSync folder:</strong> <code>SeveralUDOClockRelay.ps1</code> and <code>Start SeveralUDO Clock Relay.bat</code>. Version 2.0.4 fixes the current-game compatibility loader, restores skill and completed-milestone detection, and includes plain-text recovery copies in case Windows security hides either command file during extraction.</div>
+  <p><a class="button primary" href="/downloads/clock-sync">Download Clock Sync 2.1.0 complete kit</a></p>
+  <div class="notice"><strong>Expected inside the SeveralUDOClockSync folder:</strong> <code>SeveralUDOClockRelay.ps1</code> and <code>Start SeveralUDO Clock Relay.bat</code>. Version 2.1.0 adds guarded pregnancy, genealogy, relationship, death, illness, life-stage, career, education, occult, aspiration, diagnostic and optional game-portrait telemetry.</div>
   <details>
     <summary>Download individual files</summary>
     <div class="action-bar">
@@ -113,7 +123,7 @@
   <details><summary>The wrong tracker save is advancing</summary><p>One config.json points to one tracker save. Open the correct save here and download its private kit, then replace the old config.json.</p></details>
   <details><summary>The mod is missing from the game's startup list</summary><p>Enable Script Mods Allowed, keep the .ts4script no more than one folder beneath Mods, remove duplicate old copies and restart The Sims 4. If needed, close the game and remove localthumbcache.package.</p></details>
   <details><summary>The PowerShell relay or BAT file is missing</summary><p>Open and extract the <strong>SeveralUDOClockSync</strong> folder inside the ZIP. If Windows security filtered either command file, rename its matching <code>.backup.txt</code> recovery copy by removing only <code>.backup.txt</code>. The individual download buttons above are another safe fallback.</p></details>
-  <details><summary>ModGuard or security software warns about networking</summary><p>Clock Sync 2.0.4 writes locally inside the game. The separate PowerShell relay performs the HTTPS request. Use only files downloaded from this tracker and never approve differently named scripts or executables.</p></details>
+  <details><summary>ModGuard or security software warns about networking</summary><p>Clock Sync 2.1.0 writes locally inside the game. The separate PowerShell relay performs the HTTPS request. Use only files downloaded from this tracker and never approve differently named scripts or executables.</p></details>
 </section>
 
 {% if local_mode %}

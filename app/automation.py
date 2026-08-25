@@ -100,6 +100,10 @@ def resolve_parent_links(session: Session, save: ChronicleSave) -> int:
     sims = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
     )))
+    by_game_id = {
+        str((sim.data or {}).get("game_sim_id") or "").strip(): sim for sim in sims
+        if str((sim.data or {}).get("game_sim_id") or "").strip()
+    }
     for sim in sims:
         data = dict(sim.data or {})
         if not data.get("parent_game_sim_ids"):
@@ -119,6 +123,36 @@ def resolve_parent_links(session: Session, save: ChronicleSave) -> int:
             sim.version += 1
             journal(session, sim, "upsert", base)
             changed += 1
+    # Some game builds expose a parent's children more reliably than the
+    # child's parents. Use that inverse edge to fill missing factual links.
+    for parent in sims:
+        parent_data = dict(parent.data or {})
+        parent_game_id = str(parent_data.get("game_sim_id") or "").strip()
+        if not parent_game_id:
+            continue
+        for child_game_id in parent_data.get("child_game_sim_ids") or ():
+            child = by_game_id.get(str(child_game_id or "").strip())
+            if not child or child.id == parent.id:
+                continue
+            child_data = dict(child.data or {})
+            parent_ids = [str(value) for value in (child_data.get("parent_ids") or []) if value]
+            game_parent_ids = [str(value) for value in (child_data.get("parent_game_sim_ids") or []) if value]
+            if parent.id not in parent_ids:
+                parent_ids.append(parent.id)
+            if parent_game_id not in game_parent_ids:
+                game_parent_ids.append(parent_game_id)
+            updates = {"parent_ids": parent_ids, "parent_game_sim_ids": game_parent_ids}
+            sex = str(parent_data.get("sex") or parent_data.get("game_sex") or "").casefold()
+            if "female" in sex and not child_data.get("mother_id"):
+                updates["mother_id"] = parent.id
+            elif "male" in sex and "female" not in sex and not child_data.get("father_id"):
+                updates["father_id"] = parent.id
+            if any(child_data.get(key) != value for key, value in updates.items()):
+                base = child.version
+                child.data = {**child_data, **updates}
+                child.version += 1
+                journal(session, child, "upsert", base)
+                changed += 1
     return changed
 
 
@@ -199,8 +233,14 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
     occult = game_metadata.occult_identity(snapshot)
     telemetry_values = {
         "game_age_stage": snapshot.get("age_stage"), "game_sex": incoming_sex or None,
+        "game_age_days": snapshot.get("age_days"),
+        "game_age_progress_percentage": snapshot.get("age_progress_percentage"),
+        "game_days_until_age_up": snapshot.get("days_until_age_up"),
+        "game_age_transition_ready": snapshot.get("age_transition_ready"),
         "game_career": snapshot.get("career"),
         "game_education": snapshot.get("education"), "game_traits": game_metadata.readable_trait_labels(snapshot.get("traits")),
+        "game_careers": [row for row in (snapshot.get("careers") or []) if isinstance(row, dict)],
+        "game_degrees": _detected_list(snapshot.get("degrees")), "game_school": snapshot.get("school"),
         "game_skills": _detected_list(snapshot.get("skills")),
         "game_milestones": _detected_list(snapshot.get("milestones")), "last_household_funds": snapshot.get("household_funds"),
         "last_game_world": snapshot.get("world_name"), "last_game_lot": snapshot.get("lot_name"),
@@ -208,6 +248,31 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         "last_game_pregnancy_partner_game_sim_id": partner_game_id if is_snapshot_pregnant and partner_game_id else None,
         "parent_game_sim_ids": [str(value) for value in (snapshot.get("parent_game_sim_ids") or []) if value],
         "game_parents": [row for row in (snapshot.get("parents") or []) if isinstance(row, dict)],
+        "child_game_sim_ids": [str(value) for value in (snapshot.get("child_game_sim_ids") or []) if value],
+        "sibling_game_sim_ids": [str(value) for value in (snapshot.get("sibling_game_sim_ids") or []) if value],
+        "grandparent_game_sim_ids": [str(value) for value in (snapshot.get("grandparent_game_sim_ids") or []) if value],
+        "grandchild_game_sim_ids": [str(value) for value in (snapshot.get("grandchild_game_sim_ids") or []) if value],
+        "game_relationships": [row for row in (snapshot.get("relationships") or []) if isinstance(row, dict)],
+        "game_health_buffs": [row for row in (snapshot.get("health_buffs") or []) if isinstance(row, dict)],
+        "game_symptoms": _detected_list(snapshot.get("symptoms")),
+        "game_pregnancy_stage": snapshot.get("pregnancy_stage"),
+        "game_pregnancy_hours_remaining": snapshot.get("pregnancy_hours_remaining"),
+        "game_in_labor": snapshot.get("is_in_labor"),
+        "game_occult_progress": snapshot.get("occult_progress") or {},
+        "game_aspirations": _detected_list(snapshot.get("aspirations")),
+        "game_active_aspiration": snapshot.get("active_aspiration"),
+        "game_completed_aspirations": _detected_list(snapshot.get("completed_aspirations")),
+        "game_lifestyles": _detected_list(snapshot.get("lifestyles")),
+        "game_fears": _detected_list(snapshot.get("fears")),
+        "game_character_values": _detected_list(snapshot.get("character_values")),
+        "game_preferences": _detected_list(snapshot.get("preferences")),
+        "game_portrait": snapshot.get("game_portrait") or {},
+        "clock_sync_version": snapshot.get("clock_sync_version"),
+        "game_build": snapshot.get("game_build"),
+        "game_installed_packs": _detected_list(snapshot.get("installed_packs")),
+        "game_detected_optional_mods": _detected_list(snapshot.get("detected_optional_mods")),
+        "game_telemetry_capabilities": snapshot.get("telemetry_capabilities") or {},
+        "game_clock_diagnostics": snapshot.get("clock_sync_diagnostics") or {},
     }
     if occult["display"]:
         telemetry_values.update({
@@ -216,7 +281,7 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         })
     telemetry_version = int(snapshot.get("telemetry_version") or 0)
     clearable = {"game_traits", "game_career", "game_education"} if telemetry_version >= 2 else set()
-    # Clock Sync 2.0.4 reports whether the game actually exposed each optional
+    # Clock Sync 2.1.0 reports whether the game actually exposed each optional
     # tracker.  An empty supported scan is authoritative; an unavailable scan
     # must not erase skill or milestone data captured by an earlier report.
     if telemetry_version == 2 or snapshot.get("skills_scan_supported") is True:
@@ -225,6 +290,19 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         clearable.add("game_milestones")
     if occult["authoritative"]:
         clearable.add("game_occult_types")
+    if telemetry_version >= 4:
+        supported_fields = {
+            "genealogy_scan_supported": {"child_game_sim_ids", "sibling_game_sim_ids", "grandparent_game_sim_ids", "grandchild_game_sim_ids"},
+            "relationship_scan_supported": {"game_relationships"},
+            "health_scan_supported": {"game_health_buffs", "game_symptoms"},
+            "career_scan_supported": {"game_careers"},
+            "education_scan_supported": {"game_degrees", "game_school"},
+            "personal_development_scan_supported": {"game_aspirations", "game_active_aspiration", "game_completed_aspirations", "game_lifestyles", "game_fears", "game_character_values", "game_preferences"},
+            "occult_progress_scan_supported": {"game_occult_progress"},
+        }
+        for supported_key, fields in supported_fields.items():
+            if snapshot.get(supported_key) is True:
+                clearable.update(fields)
     updates = {key: value for key, value in telemetry_values.items() if value not in (None, "", []) or key in clearable}
     changed_telemetry = any(data.get(key) != value for key, value in updates.items())
     if changed_telemetry:
@@ -248,6 +326,9 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
     currently_dead = bool(snapshot.get("is_dead")) if has_death_state else bool(previously_observed_dead)
     if has_death_state and currently_dead and previously_observed_dead is not True and not data.get("death_confirmed"):
         item = candidate(session, save, "sim_death", sim, f"Death detected: {sim.label}", snapshot, str(save.global_day))
+        if item: made.append(item)
+    elif has_death_state and not currently_dead and previously_observed_dead is True and data.get("death_confirmed"):
+        item = candidate(session, save, "sim_resurrection", sim, f"Resurrection detected: {sim.label}", snapshot, str(save.global_day))
         if item: made.append(item)
     old_household = str(data.get("game_household_id") or "")
     new_household = str(snapshot.get("household_id") or "")
@@ -333,8 +414,25 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         data["last_game_pregnancy_count"] = reported_count
     if has_pregnancy_state and is_pregnant and not was_pregnant:
         sequence = int(data.get("game_pregnancy_sequence") or 0) + 1
+        conception_estimate = save.global_day
+        due_estimate = save.global_day + save.pregnancy_days
+        try:
+            progress = max(0.0, min(100.0, float(snapshot.get("pregnancy_progress_percentage"))))
+            elapsed = round(save.pregnancy_days * progress / 100.0)
+            conception_estimate = max(1, save.global_day - elapsed)
+            due_estimate = conception_estimate + save.pregnancy_days
+        except (TypeError, ValueError):
+            try:
+                remaining_days = max(0, round(float(snapshot.get("pregnancy_hours_remaining")) / 24.0))
+                due_estimate = save.global_day + remaining_days
+                conception_estimate = max(1, due_estimate - save.pregnancy_days)
+            except (TypeError, ValueError):
+                pass
         pregnancy_payload = {
             **snapshot, "babies_expected": reported_count or 1,
+            "conception_global_day": conception_estimate,
+            "due_global_day": due_estimate,
+            "pregnancy_date_estimate": True,
             "inferred_other_parent_id": partner.id if partner else None,
             "inferred_other_parent_name": partner.label if partner else "",
         }
@@ -347,16 +445,26 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             Record.data["mother_id"].as_string() == sim.id,
         ).order_by(Record.global_day.desc())) if str((record.data or {}).get("status") or "active").casefold() not in {"delivered", "miscarriage", "stillbirth", "cancelled", "canceled", "ended", "closed"}), None)
         active_expected = (active.data or {}).get("babies_expected") if active else None
-        delivered = _positive_count(
-            snapshot.get("babies_delivered"), snapshot.get("detected_newborn_count"),
+        explicit_delivery = None
+        explicit_source = ""
+        for field, label in (("babies_delivered", "game report"), ("detected_newborn_count", "newborn detection")):
+            if field not in snapshot:
+                continue
+            try:
+                explicit_delivery = max(0, int(snapshot.get(field)))
+                explicit_source = label
+                break
+            except (TypeError, ValueError):
+                pass
+        delivered = explicit_delivery if explicit_delivery is not None else (_positive_count(
             data.get("last_game_pregnancy_count"), active_expected,
-        ) or 1
-        source = "game report" if snapshot.get("babies_delivered") else (
-            "newborn detection" if snapshot.get("detected_newborn_count") else (
+        ) or 1)
+        source = explicit_source or (
                 "pregnancy scan" if data.get("last_game_pregnancy_count") else "pregnancy record"
-            )
         )
+        suggested_status = str(snapshot.get("pregnancy_outcome") or ("Delivered" if delivered > 0 else "Miscarriage"))
         outcome_payload = {**snapshot, "babies_delivered": delivered, "babies_delivered_source": source,
+                           "suggested_status": suggested_status,
                            "pregnancy_id": active.id if active else None}
         item = candidate(session, save, "pregnancy_outcome", sim, f"Pregnancy outcome detected: {sim.label}", outcome_payload, str(save.global_day))
         if item: made.append(item)

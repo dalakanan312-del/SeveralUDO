@@ -107,6 +107,54 @@ def capture_sim_changes(session: Session, save: ChronicleSave, sim: Record, snap
                       details={"from": old or None, "to": new or None})
         entries.append(label)
 
+    old_careers = _items(previous.get("game_careers"))
+    new_careers = _items(snapshot.get("careers"))
+    if old_careers and new_careers and new_careers != old_careers:
+        label = f"{sim.label}'s career standing changed to {', '.join(new_careers)}."
+        history_event(session, save, category="career_progress", label=label, snapshot=snapshot, sim=sim,
+                      details={"from": old_careers, "to": new_careers})
+        entries.append(label)
+
+    for source, stored, category, sentence in (
+        ("degrees", "game_degrees", "education", "completed or reported the degree"),
+        ("completed_aspirations", "game_completed_aspirations", "aspiration", "completed the aspiration"),
+        ("lifestyles", "game_lifestyles", "lifestyle", "gained the lifestyle"),
+        ("fears", "game_fears", "fear", "developed the fear"),
+    ):
+        old_values = set(_items(previous.get(stored)))
+        new_values = _items(snapshot.get(source))
+        if stored not in previous:
+            continue
+        for value in (item for item in new_values if item not in old_values):
+            label = f"{sim.label} {sentence} {value}."
+            history_event(session, save, category=category, label=label, snapshot=snapshot, sim=sim,
+                          details={"value": value})
+            entries.append(label)
+
+    old_aspiration = _text(previous.get("game_active_aspiration"))
+    new_aspiration = _text(snapshot.get("active_aspiration"))
+    if old_aspiration and new_aspiration and old_aspiration.casefold() != new_aspiration.casefold():
+        label = f"{sim.label}'s active aspiration changed from {old_aspiration} to {new_aspiration}."
+        history_event(session, save, category="aspiration", label=label, snapshot=snapshot, sim=sim,
+                      details={"from": old_aspiration, "to": new_aspiration})
+        entries.append(label)
+
+    old_occult_progress = previous.get("game_occult_progress") or {}
+    new_occult_progress = snapshot.get("occult_progress") or {}
+    old_rank = _text(old_occult_progress.get("rank")) if isinstance(old_occult_progress, dict) else ""
+    new_rank = _text(new_occult_progress.get("rank")) if isinstance(new_occult_progress, dict) else ""
+    if old_rank and new_rank and old_rank.casefold() != new_rank.casefold():
+        label = f"{sim.label}'s occult rank changed from {old_rank} to {new_rank}."
+        history_event(session, save, category="occult_progress", label=label, snapshot=snapshot, sim=sim,
+                      details={"from": old_rank, "to": new_rank, "progress": new_occult_progress})
+        entries.append(label)
+
+    if bool(snapshot.get("is_in_labor")) and not bool(previous.get("game_in_labor")):
+        label = f"{sim.label} entered labor."
+        history_event(session, save, category="pregnancy_labor", label=label, snapshot=snapshot, sim=sim,
+                      details={"pregnancy_stage": snapshot.get("pregnancy_stage")})
+        entries.append(label)
+
     old_milestones = set(_items(previous.get("game_milestones")))
     new_milestones = _items(snapshot.get("milestones"))
     for milestone in (item for item in new_milestones if "game_milestones" in previous and item not in old_milestones):
@@ -149,7 +197,11 @@ def capture_pregnancy_progress(session: Session, save: ChronicleSave, sim: Recor
                                snapshot: dict) -> list[str]:
     if not bool(snapshot.get("is_pregnant")):
         return []
-    percent = _progress_number(snapshot.get("pregnancy_progress"))
+    percent = _progress_number(
+        snapshot.get("pregnancy_progress")
+        if snapshot.get("pregnancy_progress") is not None
+        else snapshot.get("pregnancy_progress_percentage")
+    )
     if percent is None:
         return []
     pregnancy = next((record for record in session.scalars(select(Record).where(

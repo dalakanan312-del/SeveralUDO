@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import math
 import re
 from datetime import datetime, timezone
@@ -7,9 +8,9 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import ChronicleSave, ClockLink, Record
+from .models import ChronicleSave, ClockLink, Portrait, Record
 from .domain import AGING_STAGE_OFFSETS, CLOSED_ILLNESSES, journal, schedule_rolls, sync_generations
-from . import automation, game_metadata, telemetry, sync, notifications, storyline
+from . import automation, game_metadata, telemetry, sync, notifications, portraits, storyline
 
 
 CLOSED_PREGNANCIES = {"delivered", "miscarriage", "stillbirth", "cancelled", "canceled", "ended", "closed"}
@@ -156,6 +157,68 @@ def attach_game_identity(session: Session, save: ChronicleSave, sim: Record, sna
     return linked
 
 
+def _store_game_portrait(session: Session, save: ChronicleSave, sim: Record, snapshot: dict) -> bool:
+    """Store an embedded game thumbnail when the current game build exposes bytes."""
+    encoded = snapshot.get("portrait_image_base64")
+    if not encoded:
+        return False
+    try:
+        raw = base64.b64decode(str(encoded), validate=True)
+        normalized, mime = portraits.normalize_image(raw, max_pixels=512)
+    except Exception:
+        return False
+    stage = _stage_key(snapshot.get("age_stage")) or "default"
+    item = session.scalar(select(Portrait).where(Portrait.record_id == sim.id, Portrait.stage == stage))
+    if item and item.image == normalized:
+        return False
+    if item:
+        item.image = normalized
+        item.mime_type = mime
+        item.source = "clock-sync-game"
+    else:
+        item = Portrait(save_id=save.id, record_id=sim.id, stage=stage,
+                        image=normalized, mime_type=mime, source="clock-sync-game")
+        session.add(item)
+    session.flush()
+    sync.sync_portrait(session, save, item, sim.id, stage)
+    return True
+
+
+def _update_clock_diagnostic(session: Session, save: ChronicleSave, members: list[dict],
+                             game_day: int, hour: int, minute: int) -> bool:
+    source = next((item for item in members if item.get("clock_sync_diagnostics") or item.get("telemetry_capabilities")), None)
+    if not source:
+        return False
+    payload = {
+        "clock_sync_version": source.get("clock_sync_version"),
+        "game_build": source.get("game_build"),
+        "installed_packs": source.get("installed_packs") or [],
+        "detected_optional_mods": source.get("detected_optional_mods") or [],
+        "telemetry_capabilities": source.get("telemetry_capabilities") or {},
+        "diagnostics": source.get("clock_sync_diagnostics") or {},
+        "last_game_day": game_day,
+        "last_tracker_global_day": save.global_day,
+    }
+    record = session.scalar(select(Record).where(
+        Record.save_id == save.id, Record.kind == "clock_diagnostic", Record.deleted.is_(False),
+    ).limit(1))
+    if record and record.data == payload:
+        return False
+    if record:
+        base = record.version
+        record.data = payload
+        record.global_day = save.global_day
+        record.label = f"Clock Sync {payload.get('clock_sync_version') or 'diagnostics'}"
+        record.version += 1
+        journal(session, record, "upsert", base)
+    else:
+        record = Record(save_id=save.id, kind="clock_diagnostic",
+                        label=f"Clock Sync {payload.get('clock_sync_version') or 'diagnostics'}",
+                        global_day=save.global_day, data=payload)
+        session.add(record); session.flush(); journal(session, record, "upsert", 0)
+    return True
+
+
 def _illness_review_candidate(session: Session, save: ChronicleSave, sim: Record, illness: Record,
                               action: str, payload: dict, candidate_sink: list[Record] | None = None) -> Record | None:
     label = (f"Illness detected: {sim.label} — {payload.get('illness_name') or illness.label}"
@@ -201,6 +264,8 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
                 "contagious": bool(item.get("contagious", old.get("contagious", False))),
                 "provider": item.get("provider") or old.get("provider") or "game",
                 "last_detected_global_day": save.global_day,
+                "symptoms": item.get("symptoms") or snapshot.get("symptoms") or old.get("symptoms") or [],
+                "health_buffs": item.get("health_buffs") or snapshot.get("health_buffs") or old.get("health_buffs") or [],
             }
             if any(old.get(field) != value for field, value in updates.items()):
                 base = record.version
@@ -217,6 +282,8 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
             "treatment": "", "outcome": "", "notes": "Detected automatically in The Sims 4.",
             "source": "game", "source_key": key, "provider": item.get("provider") or "game",
             "last_detected_global_day": save.global_day,
+            "symptoms": item.get("symptoms") or snapshot.get("symptoms") or [],
+            "health_buffs": item.get("health_buffs") or snapshot.get("health_buffs") or [],
         }
         record = Record(save_id=save.id, kind="illness", label=f"{sim.label} — {item['name']}", global_day=save.global_day, data=data)
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
@@ -478,7 +545,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         save.revision += 1
     link.last_game_day, link.last_game_hour, link.last_game_minute = game_day, hour, minute
     link.last_seen_at = datetime.now(timezone.utc)
-    candidates = []; illnesses_created = illnesses_ended = 0; journal_entries = []
+    candidates = []; illnesses_created = illnesses_ended = portrait_updates = 0; journal_entries = []
     members = list(report.get("household_members", report.get("household_sims", [])) or [])
     incoming_ids = {str(item.get("game_sim_id") or "") for item in members if item.get("game_sim_id")}
     tracked = list(session.scalars(select(Record).where(
@@ -581,6 +648,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             linked_newborns = newborns_by_mother.get(existing.id) or []
             if linked_newborns:
                 enriched.update({"detected_newborn_count": len(linked_newborns), "detected_newborns": linked_newborns})
+            if _store_game_portrait(session, save, existing, enriched):
+                portrait_updates += 1
             changes = automation.reconcile_sim(session, save, existing, enriched)
             for item in changes:
                 notifications.candidate_event(session, save, item)
@@ -614,6 +683,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         journal_entries.append(f"{household_members_linked} Sim household assignment{'s' if household_members_linked != 1 else ''} {verb} synchronized.")
     parent_link_updates = automation.resolve_parent_links(session, save)
     generation_updates = sync_generations(session, save)
+    diagnostic_updated = _update_clock_diagnostic(session, save, members, game_day, hour, minute)
     # Event and lifecycle obligations are true roll records. Reconcile once when
     # the in-game calendar advances instead of producing parallel event-result
     # rows on every clock report.
@@ -624,7 +694,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         notifications.record(session,save,"roll",f"{rolls_created} new roll{'s' if rolls_created != 1 else ''} are ready",
                              "Open Today to complete the newly scheduled obligations.","/p/today",f"clock-rolls:{game_day}")
     journal_record = automation.session_journal(session, save, journal_entries, game_day, hour, minute)
-    save.revision += illnesses_created + illnesses_ended + len(candidates) + event_results + parent_link_updates + generation_updates + bool(journal_record)
+    save.revision += illnesses_created + illnesses_ended + portrait_updates + len(candidates) + event_results + parent_link_updates + generation_updates + bool(journal_record) + bool(diagnostic_updated)
     if day_advanced and bool((save.settings or {}).get("automatic_storyline")):
         prior_story = session.scalar(select(Record.id).where(
             Record.save_id == save.id, Record.kind == "story_entry", Record.deleted.is_(False),
@@ -644,5 +714,6 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         "households_created": households_created, "households_updated": households_updated,
         "household_members_linked": household_members_linked,
         "parent_links_updated": parent_link_updates, "generations_updated": generation_updates,
+        "portraits_updated": portrait_updates, "diagnostics_updated": bool(diagnostic_updated),
         "journal_updated": bool(journal_record),
     }
