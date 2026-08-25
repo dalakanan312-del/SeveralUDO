@@ -130,6 +130,28 @@ def birth_calendar_fields(save: ChronicleSave, global_day: int | None, hour, min
     return event_calendar_fields(save, "birth", global_day, hour, minute)
 
 
+def resolve_birth_input(save: ChronicleSave, global_day, birth_year, hour=None, minute=None) -> tuple[int | None, dict]:
+    """Resolve an exact tracker day or an explicitly approximate historical year."""
+    year = int_or_none(birth_year)
+    if year is not None:
+        first, last = calendar_utils.global_day_range_for_year(year, save.start_year, save.days_per_year)
+        representative = calendar_utils.representative_global_day_for_year(year, save.start_year, save.days_per_year)
+        return representative, {
+            "birth_year": year,
+            "birth_year_only": True,
+            "birth_global_day_estimated": True,
+            "birth_estimate_precision": "historical-year-only",
+            "birth_estimate_source": f"Historical birth year {year}; midpoint Global Day used for scheduling",
+            "original_birth_estimate_global_day": representative,
+            "estimated_birth_global_day_range_start": first,
+            "estimated_birth_global_day_range_end": last,
+            "historical_birth_date_range": f"{year} (exact date unknown)",
+            "birth_date_precision": "historical-year-only",
+        }
+    day = int_or_none(global_day)
+    return day, birth_calendar_fields(save, day, hour, minute)
+
+
 def death_calendar_fields(save: ChronicleSave, global_day: int | None, hour, minute) -> dict:
     return event_calendar_fields(save, "death", global_day, hour, minute)
 
@@ -140,6 +162,8 @@ def marriage_calendar_fields(save: ChronicleSave, global_day: int | None, hour, 
 
 def sim_birth_display(save: ChronicleSave, record: Record) -> str:
     data=record.data or {}
+    if data.get("birth_year_only") and data.get("birth_year") is not None:
+        return f"{data.get('birth_year')} (exact date unknown)"
     return str(data.get("historical_birth_date") or data.get("historical_birth_date_range") or challenge_date_label(save,data.get("birth_global_day")))
 
 
@@ -1533,11 +1557,11 @@ async def add_sim(request: Request):
                 if not linked or linked.save_id!=save.id or linked.kind!=kind or linked.deleted: raise HTTPException(400,"A selected family or household record is invalid.")
         sim_number = next_sim_number(session, save.id)
         name = " ".join(part for part in (title,first_name,last_name,suffix) if part)
-        birth=int_or_none(form.get("birth_global_day"));death=int_or_none(form.get("death_global_day"))
+        birth,birth_fields=resolve_birth_input(save,form.get("birth_global_day"),form.get("birth_year"),form.get("birth_game_hour"),form.get("birth_game_minute"));death=int_or_none(form.get("death_global_day"))
         birth_surname=str(form.get("surname_at_birth") or form.get("maiden_name") or last_name).strip();married_surname=str(form.get("married_surname") or form.get("married_name") or "").strip()
         sim_data={"sim_number":sim_number,"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":int_or_none(form.get("generation")),"birth_global_day":birth,"death_global_day":death,"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":"include_in_family_tree" not in form or str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"birthplace":str(form.get("birthplace") or ""),"cause_of_death":str(form.get("cause_of_death") or ""),"death_place":str(form.get("death_place") or ""),"notes":str(form.get("notes") or "")}
         if sim_data["generation"] is not None: sim_data["generation_source"]="manual"
-        sim_data.update(birth_calendar_fields(save,birth,form.get("birth_game_hour"),form.get("birth_game_minute")));sim_data.update(death_calendar_fields(save,death,form.get("death_game_hour"),form.get("death_game_minute")))
+        sim_data.update(birth_fields);sim_data.update(death_calendar_fields(save,death,form.get("death_game_hour"),form.get("death_game_minute")))
         record = Record(save_id=save.id, kind="sim", label=name, global_day=birth, data=sim_data)
         session.add(record); session.flush(); session.add(Change(save_id=save.id, device_id="local" if settings.local_mode else "web", record_id=record.id, kind="sim", operation="upsert", base_version=0, new_version=1, payload=sync.serialize(record))); save.revision += 1+domain.sync_generations(session,save); domain.schedule_rolls(session, save)
         return RedirectResponse(f"/sims/{record.id}", status_code=303)
@@ -1560,16 +1584,17 @@ async def edit_sim(request: Request, sim_id: str):
             if record_id:
                 linked=session.get(Record,record_id)
                 if not linked or linked.save_id!=save.id or linked.kind!=kind or linked.deleted: raise HTTPException(400,"A selected family or household record is invalid.")
-        data = dict(record.data or {});previous_generation=data.get("generation");previous_generation_source=str(data.get("generation_source") or "").casefold();submitted_generation=int_or_none(form.get("generation"));birth_surname=str(form.get("surname_at_birth") or form.get("maiden_name") or data.get("surname_at_birth") or data.get("maiden_name") or last_name).strip();married_surname=str(form.get("married_surname") or form.get("married_name") or "").strip();data.update({"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":submitted_generation,"birth_global_day":int_or_none(form.get("birth_global_day")),"death_global_day":int_or_none(form.get("death_global_day")),"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"occult_alignment":str(form.get("occult_alignment") or ""),"dormant_occult_types":detected_form_list(str(form.get("dormant_occult_types") or "")),"occult_water_access":str(form.get("occult_water_access") or "Unknown"),"werewolf_confined":str(form.get("werewolf_confined") or "").casefold() in {"1","true","on","yes"},"occult_notes":str(form.get("occult_notes") or ""),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"cause_of_death":str(form.get("cause_of_death") or ""),"birthplace":str(form.get("birthplace") or ""),"death_place":str(form.get("death_place") or ""),"game_career":str(form.get("game_career") or "").strip(),"game_education":str(form.get("game_education") or "").strip(),"game_traits":detected_form_list(str(form.get("game_traits") or "")),"game_skills":detected_form_list(str(form.get("game_skills") or "")),"game_milestones":detected_form_list(str(form.get("game_milestones") or "")),"notes":str(form.get("notes") or "")})
+        birth,birth_fields=resolve_birth_input(save,form.get("birth_global_day"),form.get("birth_year"),form.get("birth_game_hour"),form.get("birth_game_minute"))
+        data = dict(record.data or {});previous_generation=data.get("generation");previous_generation_source=str(data.get("generation_source") or "").casefold();submitted_generation=int_or_none(form.get("generation"));birth_surname=str(form.get("surname_at_birth") or form.get("maiden_name") or data.get("surname_at_birth") or data.get("maiden_name") or last_name).strip();married_surname=str(form.get("married_surname") or form.get("married_name") or "").strip();data.update({"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":submitted_generation,"birth_global_day":birth,"death_global_day":int_or_none(form.get("death_global_day")),"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"occult_alignment":str(form.get("occult_alignment") or ""),"dormant_occult_types":detected_form_list(str(form.get("dormant_occult_types") or "")),"occult_water_access":str(form.get("occult_water_access") or "Unknown"),"werewolf_confined":str(form.get("werewolf_confined") or "").casefold() in {"1","true","on","yes"},"occult_notes":str(form.get("occult_notes") or ""),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"cause_of_death":str(form.get("cause_of_death") or ""),"birthplace":str(form.get("birthplace") or ""),"death_place":str(form.get("death_place") or ""),"game_career":str(form.get("game_career") or "").strip(),"game_education":str(form.get("game_education") or "").strip(),"game_traits":detected_form_list(str(form.get("game_traits") or "")),"game_skills":detected_form_list(str(form.get("game_skills") or "")),"game_milestones":detected_form_list(str(form.get("game_milestones") or "")),"notes":str(form.get("notes") or "")})
         if last_name != previous_current_surname or married_surname != previous_married_surname:
             data.pop("married_name_source_relationship_id",None)
         if submitted_generation is None:
             data.pop("generation_source",None);data.pop("generation_source_ids",None)
         elif previous_generation_source not in domain.AUTOMATIC_GENERATION_SOURCES or int_or_none(previous_generation)!=submitted_generation:
             data["generation_source"]="manual";data.pop("generation_source_ids",None)
-        for key in ("birth_game_hour","birth_game_minute","birth_time","historical_birth_date","historical_birth_date_range","birth_date_precision"):
+        for key in ("birth_game_hour","birth_game_minute","birth_time","historical_birth_date","historical_birth_date_range","birth_date_precision","birth_year","birth_year_only","birth_global_day_estimated","birth_estimate_precision","birth_estimate_source","original_birth_estimate_global_day","estimated_birth_global_day_range_start","estimated_birth_global_day_range_end"):
             data.pop(key,None)
-        data.update(birth_calendar_fields(save,data["birth_global_day"],form.get("birth_game_hour"),form.get("birth_game_minute")))
+        data.update(birth_fields)
         for key in ("death_game_hour","death_game_minute","death_time","historical_death_date","historical_death_date_range","death_date_precision"):
             data.pop(key,None)
         data.update(death_calendar_fields(save,data["death_global_day"],form.get("death_game_hour"),form.get("death_game_minute")))
@@ -1852,15 +1877,16 @@ async def accept_automation(request: Request, candidate_id: str):
         elif action in {"new_sim","new_baby"}:
             first=str(value("first_name") or "").strip();last=str(value("last_name") or "").strip();name=" ".join(x for x in (first,last) if x) or item.label
             birth_estimate=clock.estimate_new_sim_birth(session,save,payload,item.global_day) if action=="new_sim" else {}
-            submitted_birth=int_or_none(value("birth_global_day"));submitted_age=int_or_none(value("age_days"))
+            submitted_birth=int_or_none(value("birth_global_day"));submitted_birth_year=int_or_none(value("birth_year"));submitted_age=int_or_none(value("age_days"))
             birth=submitted_birth if submitted_birth is not None else (save.global_day if action=="new_baby" else int(birth_estimate.get("estimated_birth_global_day",save.global_day-(submitted_age or 0))))
             birth_hour=int_or_none(value("birth_game_hour",item.data.get("hour") if action=="new_baby" else ""));birth_minute=int_or_none(value("birth_game_minute",item.data.get("minute") if action=="new_baby" else ""))
+            birth,reviewed_birth_fields=resolve_birth_input(save,birth,submitted_birth_year,birth_hour,birth_minute)
             home=chosen_household() if "household_id" in form else payload_household("inferred_household_id")
             mother=chosen_sim("mother_id") if "mother_id" in form else payload_sim("inferred_mother_id")
             father=chosen_sim("father_id") if "father_id" in form else payload_sim("inferred_father_id")
             pregnancy=session.get(Record,str(payload.get("pregnancy_id") or "")) if action=="new_baby" and payload.get("pregnancy_id") else None
             if pregnancy and (pregnancy.kind!="pregnancy" or pregnancy.save_id!=save.id or pregnancy.deleted): pregnancy=None
-            accepted_estimate=bool(action=="new_sim" and birth_estimate and birth==birth_estimate.get("estimated_birth_global_day"))
+            accepted_estimate=bool(action=="new_sim" and submitted_birth_year is None and birth_estimate and birth==birth_estimate.get("estimated_birth_global_day"))
             occult=game_metadata.occult_identity(payload);species=str(value("species_occult",occult.get("display") or "Human") or "Human")
             sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first or name,"last_name":last,"sex":str(value("sex") or ""),"birth_global_day":birth,"mother_id":mother.id if mother else None,"father_id":father.id if father else None,"current_household_id":home.id if home else None,"pregnancy_id":pregnancy.id if pregnancy else None,"game_sim_id":str(payload.get("game_sim_id") or ""),"game_household_id":payload.get("household_id"),"game_household_name":payload.get("household_name"),"game_age_stage":str(value("age_stage") or ""),"game_age_days_at_detection":submitted_age if submitted_age is not None else birth_estimate.get("estimated_age_days"),"game_age_progress_percentage":payload.get("age_progress_percentage"),"game_career":str(value("career") or ""),"game_education":str(value("education") or ""),"game_traits":detected_form_list(value("traits")),"game_skills":detected_form_list(value("skills")),"game_milestones":detected_form_list(value("milestones")),"parent_game_sim_ids":[str(v) for v in (payload.get("parent_game_sim_ids") or []) if v],"game_parents":[row for row in (payload.get("parents") or []) if isinstance(row,dict)],"last_game_world":payload.get("world_name"),"last_game_lot":payload.get("lot_name"),"last_household_funds":payload.get("household_funds")}
             sim_data["surname_at_birth"] = last
@@ -1871,7 +1897,7 @@ async def accept_automation(request: Request, candidate_id: str):
             if birth_estimate:
                 sim_data.update({key:value for key,value in birth_estimate.items() if key.startswith("birth_estimate_") or key.startswith("estimated_birth_global_day_range_")})
                 sim_data.update({"original_birth_estimate_global_day":birth_estimate.get("estimated_birth_global_day"),"birth_global_day_estimated":accepted_estimate and birth_estimate.get("birth_estimate_precision")!="reported-birth-day"})
-            sim_data.update(birth_calendar_fields(save,birth,birth_hour,birth_minute));sim_data["birth_time_source"]="Clock Sync newborn detection" if action=="new_baby" and birth_hour is not None and birth_minute is not None else birth_estimate.get("birth_estimate_source") if accepted_estimate else "Reviewed manual birth day"
+            sim_data.update(reviewed_birth_fields);sim_data["birth_time_source"]=reviewed_birth_fields.get("birth_estimate_source") if submitted_birth_year is not None else "Clock Sync newborn detection" if action=="new_baby" and birth_hour is not None and birth_minute is not None else birth_estimate.get("birth_estimate_source") if accepted_estimate else "Reviewed manual birth day"
             sim=Record(save_id=save.id,kind="sim",label=name,global_day=birth,data=sim_data);session.add(sim);session.flush();domain.journal(session,sim,"upsert",0);resolved_record=sim
             if pregnancy:
                 pregnancy_base=pregnancy.version;linked=list(pregnancy.data.get("linked_newborn_ids") or [])

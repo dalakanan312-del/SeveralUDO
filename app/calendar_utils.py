@@ -12,6 +12,19 @@ def global_day_parts(global_day: int, start_year: int, days_per_year: int) -> tu
     return int(start_year) + (day - 1) // per_year, ((day - 1) % per_year) + 1
 
 
+def global_day_range_for_year(year: int, start_year: int, days_per_year: int) -> tuple[int, int]:
+    """Return the inclusive tracker-day range covered by one historical year."""
+    per_year = max(1, int(days_per_year))
+    first = (int(year) - int(start_year)) * per_year + 1
+    return first, first + per_year - 1
+
+
+def representative_global_day_for_year(year: int, start_year: int, days_per_year: int) -> int:
+    """Choose a stable midpoint when a migration only supplies a birth year."""
+    first, last = global_day_range_for_year(year, start_year, days_per_year)
+    return (first + last) // 2
+
+
 def date_range_label(global_day: int, start_year: int, days_per_year: int) -> str:
     year, challenge_day = global_day_parts(global_day, start_year, days_per_year)
     if int(days_per_year) == 4:

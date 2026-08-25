@@ -27,7 +27,7 @@ from app.dice import notation_for_roll, parse, verify
 from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, occult_identity, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
-from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, sim_weekday
+from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
@@ -318,6 +318,25 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(death_calendar_fields(save, 1, 12, 0)["historical_death_date"], "February 15, 1550")
         self.assertEqual(marriage_calendar_fields(save, 1, 12, 0)["historical_marriage_date"], "February 15, 1550")
 
+    def test_historical_birth_year_becomes_an_explicit_approximate_tracker_day(self):
+        save = ChronicleSave(start_year=1550, days_per_year=4)
+        birth_day, fields = resolve_birth_input(save, 999, 1540, 12, 30)
+        self.assertEqual(birth_day, -38)
+        self.assertEqual(fields["birth_year"], 1540)
+        self.assertEqual(fields["estimated_birth_global_day_range_start"], -39)
+        self.assertEqual(fields["estimated_birth_global_day_range_end"], -36)
+        self.assertTrue(fields["birth_year_only"])
+        self.assertTrue(fields["birth_global_day_estimated"])
+        self.assertEqual(fields["birth_date_precision"], "historical-year-only")
+        self.assertNotIn("birth_time", fields)
+        sim = Record(kind="sim", label="Imported Sim", data={"birth_global_day":birth_day, **fields})
+        self.assertEqual(sim_birth_display(save, sim), "1540 (exact date unknown)")
+
+        exact_day, exact_fields = resolve_birth_input(save, 5, "", 8, 15)
+        self.assertEqual(exact_day, 5)
+        self.assertEqual(exact_fields["birth_time"], "08:15")
+        self.assertNotIn("birth_year", exact_fields)
+
     def test_newborn_clock_candidate_preserves_detection_time(self):
         game_sim_id = "newborn-" + uuid.uuid4().hex
         with TestClient(app):
@@ -454,6 +473,35 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertTrue(sim.data["birth_global_day_estimated"])
                 self.assertIn("Teen at 50%", sim.data["birth_time_source"])
                 session.execute(delete(Record).where(Record.save_id==save_id)); session.execute(delete(ClockLink).where(ClockLink.save_id==save_id)); session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id)); session.commit()
+
+    def test_accepting_non_newborn_with_birth_year_overrides_clock_age_estimate(self):
+        marker = "year-only-" + uuid.uuid4().hex
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Year-only Sim import", global_day=100, start_year=1550, days_per_year=4)
+                session.add(save); session.flush()
+                candidate = Record(save_id=save.id, kind="game_candidate", label="Imported Year Sim", global_day=100, data={
+                    "action":"new_sim", "status":"pending", "source_key":"new_sim:" + marker,
+                    "payload":{"game_sim_id":marker,"first_name":"Imported","last_name":"Year Sim","age_stage":"Age.ADULT","estimated_birth_global_day":-150},
+                })
+                session.add(candidate); session.commit(); candidate_id, save_id = candidate.id, save.id
+            client.post("/saves/select", data={"save_id":save_id})
+            page = client.get("/p/automation")
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("Historical birth year", page.text)
+            response = client.post(f"/automation/{candidate_id}/accept", data={
+                "first_name":"Imported", "last_name":"Year Sim", "birth_global_day":"-150", "birth_year":"1540", "age_stage":"Age.ADULT",
+            }, follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            with SessionLocal() as session:
+                sim = session.scalar(select(Record).where(Record.save_id==save_id, Record.kind=="sim", Record.data["game_sim_id"].as_string()==marker))
+                self.assertEqual(sim.data["birth_global_day"], -38)
+                self.assertEqual(sim.data["birth_year"], 1540)
+                self.assertTrue(sim.data["birth_year_only"])
+                self.assertEqual(sim.data["birth_estimate_precision"], "historical-year-only")
+                self.assertIn("Historical birth year 1540", sim.data["birth_time_source"])
+                session.execute(delete(Record).where(Record.save_id==save_id)); session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id)); session.commit()
 
     def test_newborn_clock_candidate_infers_parents_from_completed_pregnancy(self):
         marker = uuid.uuid4().hex
