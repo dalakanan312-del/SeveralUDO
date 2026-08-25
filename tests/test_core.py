@@ -666,6 +666,7 @@ class CoreSmokeTests(unittest.TestCase):
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
             self.assertEqual(health.json()["version"], "4.2.3")
+            self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
             self.assertEqual(client.get("/p/automation").status_code, 200)

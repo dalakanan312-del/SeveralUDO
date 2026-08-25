@@ -12,6 +12,18 @@ from .config import ROOT
 CLOCK_SYNC_VERSION = "2.0.2"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
+CLOCK_SYNC_REQUIRED_FILES = (
+    "SeveralUDOClockSync.ts4script",
+    "SeveralUDOClockRelay.ps1",
+    "Start SeveralUDO Clock Relay.bat",
+    "README - Install Clock Sync.txt",
+    "TROUBLESHOOTING.txt",
+)
+
+
+def missing_files() -> list[str]:
+    """Report files omitted from a desktop or hosted deployment bundle."""
+    return [name for name in CLOCK_SYNC_REQUIRED_FILES if not (BRIDGE_ROOT / name).is_file()]
 
 
 def config_document(endpoint: str = "PASTE_ENDPOINT_FROM_TRACKER", token: str = "PASTE_PRIVATE_TOKEN_FROM_TRACKER") -> bytes:
@@ -24,14 +36,8 @@ def config_document(endpoint: str = "PASTE_ENDPOINT_FROM_TRACKER", token: str = 
 
 def build_bundle(endpoint: str = "", token: str = "") -> bytes:
     """Build a complete Windows Clock Sync folder without retaining secrets."""
-    required = (
-        "SeveralUDOClockSync.ts4script",
-        "SeveralUDOClockRelay.ps1",
-        "Start SeveralUDO Clock Relay.bat",
-        "README - Install Clock Sync.txt",
-        "TROUBLESHOOTING.txt",
-    )
-    missing = [name for name in required if not (BRIDGE_ROOT / name).is_file()]
+    required = CLOCK_SYNC_REQUIRED_FILES
+    missing = missing_files()
     if missing:
         raise FileNotFoundError(f"Clock Sync kit is missing: {', '.join(missing)}")
 

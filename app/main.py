@@ -2823,7 +2823,7 @@ def generate_marriage_portrait(request: Request, relationship_id: str, first_sim
 
 @app.get("/healthz")
 def health():
-    payload = {"status": "ok", "version": app.version, "storage": "local" if settings.local_mode else "hosted", "google": settings.google_enabled, "portrait": portraits.provider_status()}
+    payload = {"status": "ok", "version": app.version, "storage": "local" if settings.local_mode else "hosted", "google": settings.google_enabled, "portrait": portraits.provider_status(), "clock_sync_ready": not clock_bundle.missing_files()}
     try:
         with engine.connect() as connection:
             connection.execute(select(User.id).limit(1))
