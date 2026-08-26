@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import struct
@@ -9,6 +10,7 @@ from pathlib import Path
 
 
 STBL_RESOURCE = 0x220557DA
+_BUNDLED_LOCALIZATIONS = Path(__file__).with_name("game_localization_fallbacks.json")
 _HASH_LABEL = re.compile(
     r"^\s*(?:(?:hash|localization(?:\s+key)?|string(?:\s+id)?)\s*[:#=]?\s*)"
     r"(-?(?:0x)?[0-9a-f]+)\s*$",
@@ -298,7 +300,7 @@ def _refpack_decompress(stored: bytes, expected_size: int = 0) -> bytes | None:
         return None
 
 
-def _read_stbl(raw: bytes) -> dict[int, str]:
+def _read_stbl(raw: bytes, wanted_keys: set[int] | None = None) -> dict[int, str]:
     if len(raw) < 21 or raw[:4] != b"STBL":
         return {}
     try:
@@ -318,13 +320,14 @@ def _read_stbl(raw: bytes) -> dict[int, str]:
         if len(value) != length:
             break
         text = value.decode("utf-8", errors="replace").strip("\x00 ")
-        if text:
+        if text and (wanted_keys is None or key in wanted_keys):
             result[key] = text
     return result
 
 
-def _package_localizations(paths) -> dict[int, str]:
+def _package_localizations(paths, wanted_keys: set[int] | None = None) -> dict[int, str]:
     labels: dict[int, str] = {}
+    targets = set(wanted_keys) if wanted_keys is not None else None
     for path in paths:
         try:
             with path.open("rb") as package:
@@ -345,7 +348,9 @@ def _package_localizations(paths) -> dict[int, str]:
                     package.seek(offset)
                     resource = _decode_resource(package.read(stored_size), stored_size, raw_size, compression)
                     if resource:
-                        labels.update(_read_stbl(resource))
+                        labels.update(_read_stbl(resource, targets))
+                        if targets is not None and targets.issubset(labels):
+                            return labels
         except OSError:
             continue
     return labels
@@ -381,8 +386,32 @@ def healthcare_localizations() -> dict[int, str]:
 
 
 @lru_cache(maxsize=1)
+def bundled_localizations() -> dict[int, str]:
+    """Load the compact, non-personal name dictionary shipped to hosted editions."""
+    try:
+        payload = json.loads(_BUNDLED_LOCALIZATIONS.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    rows = payload.get("names", payload) if isinstance(payload, dict) else {}
+    result: dict[int, str] = {}
+    for raw_key, raw_name in rows.items() if isinstance(rows, dict) else ():
+        try:
+            key = int(str(raw_key), 0) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            continue
+        name = str(raw_name or "").strip()
+        if key and name:
+            result[key] = name
+    return result
+
+
+@lru_cache(maxsize=1)
 def trait_localizations() -> dict[int, str]:
-    labels = dict(game_localizations())
+    # Railway cannot access a player's Sims installation. Keep a compact set
+    # of observed public game labels in the app, then let local files override
+    # it when the desktop edition is available.
+    labels = dict(bundled_localizations())
+    labels.update(game_localizations())
     labels.update(gameplay_mod_localizations())
     labels.update(healthcare_localizations())
     return labels

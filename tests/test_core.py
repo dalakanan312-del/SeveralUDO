@@ -27,7 +27,7 @@ from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
 from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
-from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
+from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Record, User, Workspace
@@ -1882,6 +1882,19 @@ class CoreSmokeTests(unittest.TestCase):
             ["First Steps"],
         )
         self.assertEqual(readable_trait_labels(["hash#1"], localizations), ["Self-Assured"])
+
+    def test_hosted_fallback_resolves_observed_profile_names(self):
+        labels = bundled_localizations()
+        self.assertEqual(labels[2243298849], "Gardening")
+        self.assertEqual(labels[1004514555], "First Visit to the Doctor")
+        self.assertEqual(
+            readable_named_labels(["hash: 2364309712 (level 4)"], kind="skill", localizations=labels),
+            ["Charisma (level 4)"],
+        )
+        self.assertEqual(
+            readable_named_labels(["hash: 739252487"], kind="milestone", localizations=labels),
+            ["Manifested as a Fairy"],
+        )
 
     def test_clock_sync_details_are_a_safe_online_fallback_for_hashes(self):
         self.assertEqual(
