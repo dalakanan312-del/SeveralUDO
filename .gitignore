@@ -4,6 +4,7 @@
 .venv/
 .runtime/
 .test_runtime/
+.desktop_runtime/
 data/
 save_backups/
 uploads/

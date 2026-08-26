@@ -1,8 +1,14 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Compiler = Join-Path $Root "tools\InnoSetup\ISCC.exe"
+$CompilerCandidates = @(
+  $env:INNO_SETUP_COMPILER,
+  (Join-Path $Root "tools\InnoSetup\ISCC.exe"),
+  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+  "C:\Program Files\Inno Setup 6\ISCC.exe"
+)
+$Compiler = $CompilerCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
 $Script = Join-Path $Root "installer\DecadesTracker.iss"
-if (-not (Test-Path -LiteralPath $Compiler -PathType Leaf)) { throw "Inno Setup compiler is not installed in tools\InnoSetup." }
+if (-not $Compiler) { throw "Inno Setup 6 is required. Install it or set INNO_SETUP_COMPILER to ISCC.exe." }
 if (-not (Test-Path -LiteralPath (Join-Path $Root "dist\Decades Tracker\Decades Tracker.exe") -PathType Leaf)) { throw "Build the desktop application first." }
 & $Compiler $Script
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }

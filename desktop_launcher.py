@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import html
 import os
 import socket
 import sys
 import threading
 import time
-import urllib.request
-import webbrowser
 import traceback
+import urllib.request
 from pathlib import Path
 
 
@@ -35,102 +35,155 @@ def port_open() -> bool:
         return False
 
 
-def open_app() -> None:
-    edge = Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
-    if not edge.exists():
-        edge = Path(os.environ.get("PROGRAMFILES", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
-    if edge.exists():
-        import subprocess
-        subprocess.Popen([str(edge), f"--app={URL}", "--start-maximized"])
-    else:
-        webbrowser.open(URL)
-
-
-def show_splash(start_server) -> None:
+def tracker_ready() -> bool:
     try:
-        import tkinter as tk
-        window = tk.Tk(); window.overrideredirect(True); window.configure(bg="#111318")
-        width, height = 520, 310
-        x = (window.winfo_screenwidth() - width) // 2; y = (window.winfo_screenheight() - height) // 2
-        window.geometry(f"{width}x{height}+{x}+{y}")
-        frame = tk.Frame(window, bg="#17191e", highlightbackground="#9a7135", highlightthickness=2); frame.pack(fill="both", expand=True, padx=8, pady=8)
-        try:
-            logo = tk.PhotoImage(file=str(resource("assets/decades-app-icon.png"))).subsample(5, 5)
-            label = tk.Label(frame, image=logo, bg="#17191e"); label.image = logo; label.pack(pady=(20, 5))
-        except Exception:
-            pass
-        tk.Label(frame, text="DECΛDES", fg="#eee8dc", bg="#17191e", font=("Georgia", 30, "bold")).pack()
-        tk.Label(frame, text="THE LIVING FAMILY CHRONICLE", fg="#c79442", bg="#17191e", font=("Segoe UI", 9, "bold")).pack(pady=(0, 20))
-        status = tk.Label(frame, text="Opening your chronicle…", fg="#aaa59b", bg="#17191e", font=("Segoe UI", 10)); status.pack()
-        start_server()
-        def check():
-            try:
-                urllib.request.urlopen(URL + "/healthz", timeout=.5).read()
-                status.configure(text="Chronicle ready")
-                window.after(350, lambda: (open_app(), window.destroy()))
-            except Exception:
-                window.after(150, check)
-        check(); window.mainloop()
+        with urllib.request.urlopen(URL + "/healthz", timeout=.6) as response:
+            return response.status == 200
     except Exception:
-        start_server()
-        for _ in range(100):
-            if port_open(): break
-            time.sleep(.1)
-        open_app()
+        return False
 
 
-def show_native_splash(start_server) -> None:
-    """Use a dedicated Edge app window as a lightweight, console-free splash."""
-    edge = Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
-    if not edge.exists():
-        edge = Path(os.environ.get("PROGRAMFILES", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
-    splash = None
-    if edge.exists():
-        import subprocess
-        splash_url = resource("assets/loading.html").as_uri()
-        profile = data_root() / "splash-profile"
-        splash = subprocess.Popen([str(edge), f"--app={splash_url}", f"--user-data-dir={profile}", "--window-size=540,350", "--no-first-run"])
-    start_server()
-    for _ in range(200):
-        try:
-            urllib.request.urlopen(URL + "/healthz", timeout=.4).read(); break
-        except Exception:
-            time.sleep(.1)
-    if splash and splash.poll() is None:
-        splash.terminate()
-    open_app()
+def write_startup_error(details: str) -> Path:
+    destination = data_root() / "startup-error.log"
+    destination.write_text(details, encoding="utf-8")
+    return destination
 
 
-def main() -> None:
-    if port_open():
-        open_app(); return
-    db_path = data_root() / "decades-v4.db"
-    os.environ.setdefault("DATABASE_URL", "sqlite:///" + db_path.as_posix())
-    os.environ.setdefault("PUBLIC_URL", URL)
-    holder = {}
-    def start_server():
-        if holder: return
-        def run_server():
+class LocalTracker:
+    """Own the local API server only when this process started it."""
+
+    def __init__(self) -> None:
+        self.server = None
+        self.thread: threading.Thread | None = None
+        self.owned = False
+        self.error = ""
+
+    def start(self) -> None:
+        if tracker_ready():
+            return
+        self.owned = True
+
+        def run_server() -> None:
             try:
                 import uvicorn
                 from app.main import app
-                server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=PORT, log_config=None, access_log=False))
-                holder["server"] = server; server.run()
+
+                self.server = uvicorn.Server(uvicorn.Config(
+                    app,
+                    host=HOST,
+                    port=PORT,
+                    log_config=None,
+                    access_log=False,
+                ))
+                self.server.run()
             except Exception:
-                (data_root() / "startup-error.log").write_text(traceback.format_exc(), encoding="utf-8")
-        holder["starting"] = True
-        thread = threading.Thread(target=run_server, name="DecadesTrackerServer", daemon=False)
-        holder["thread"] = thread; thread.start()
-    show_native_splash(start_server)
-    if holder.get("thread"):
-        holder["thread"].join()
+                self.error = traceback.format_exc()
+                write_startup_error(self.error)
+
+        self.thread = threading.Thread(
+            target=run_server,
+            name="DecadesTrackerServer",
+            daemon=True,
+        )
+        self.thread.start()
+
+    def wait_until_ready(self, timeout: float = 45.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if tracker_ready():
+                return True
+            if self.error or (self.thread is not None and not self.thread.is_alive()):
+                return False
+            time.sleep(.15)
+        return False
+
+    def stop(self) -> None:
+        if not self.owned:
+            return
+        if self.server is not None:
+            self.server.should_exit = True
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=8)
+
+
+def startup_failure_html(log_path: Path) -> str:
+    safe_path = html.escape(str(log_path))
+    return f"""<!doctype html><html><head><meta charset=\"utf-8\"><style>
+html,body{{height:100%;margin:0;background:#101217;color:#eee8dc;font-family:'Segoe UI',sans-serif}}
+body{{display:grid;place-items:center}}main{{max-width:620px;padding:42px;border:1px solid #9a7135;background:#17191e}}
+h1{{font:700 32px Georgia,serif}}p{{line-height:1.6;color:#c9c3b8}}code{{word-break:break-all;color:#d8a44e}}
+</style></head><body><main><h1>The chronicle could not open</h1>
+<p>The local tracker server did not become ready. No save data was removed.</p>
+<p>Diagnostic details were written to:<br><code>{safe_path}</code></p>
+</main></body></html>"""
+
+
+def open_native_window(tracker: LocalTracker) -> None:
+    import webview
+
+    webview.settings["ALLOW_DOWNLOADS"] = True
+    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
+    loading_page = resource("assets/loading.html")
+    icon = resource("assets/decades-app-icon.ico")
+    storage = data_root() / "webview-profile"
+    storage.mkdir(parents=True, exist_ok=True)
+    window = webview.create_window(
+        APP_NAME,
+        url=str(loading_page),
+        width=1380,
+        height=900,
+        min_size=(900, 640),
+        maximized=True,
+        background_color="#101217",
+        text_select=True,
+        zoomable=True,
+    )
+
+    def load_tracker(target) -> None:
+        if tracker.wait_until_ready():
+            target.load_url(URL)
+            return
+        log_path = write_startup_error(tracker.error or "The local tracker timed out during startup.\n")
+        target.load_html(startup_failure_html(log_path))
+
+    webview.start(
+        load_tracker,
+        args=(window,),
+        gui="edgechromium",
+        private_mode=False,
+        storage_path=str(storage),
+        icon=str(icon),
+    )
+
+
+def native_error_dialog(message: str) -> None:
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, 0x10)
+    except Exception:
+        pass
+
+
+def main() -> None:
+    root = data_root()
+    db_path = root / "decades-v4.db"
+    os.environ.setdefault("DATABASE_URL", "sqlite:///" + db_path.as_posix())
+    os.environ.setdefault("PUBLIC_URL", URL)
+    tracker = LocalTracker()
+    tracker.start()
+    try:
+        open_native_window(tracker)
+    finally:
+        tracker.stop()
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception:
-        try:
-            (data_root() / "startup-error.log").write_text(traceback.format_exc(), encoding="utf-8")
-        except Exception:
-            pass
+        log_path = write_startup_error(traceback.format_exc())
+        native_error_dialog(
+            "Decades Tracker could not open its Windows window. "
+            f"Diagnostic details were saved to:\n{log_path}"
+        )

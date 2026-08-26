@@ -49,7 +49,31 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Open {#MyAppName}"; Flags: nowa
 Type: filesandordirs; Name: "{app}"
 
 [Code]
-function InitializeSetup(): Boolean;
+function WebView2Installed(): Boolean;
+var
+  Version: String;
 begin
-  Result := True;
+  Result :=
+    (RegQueryStringValue(HKLM32,
+      'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+      'pv', Version) and (Version <> '') and (Version <> '0.0.0.0')) or
+    (RegQueryStringValue(HKCU,
+      'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+      'pv', Version) and (Version <> '') and (Version <> '0.0.0.0'));
+end;
+
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := WebView2Installed();
+  if not Result then
+  begin
+    if MsgBox(
+      'Decades Tracker requires the Microsoft Edge WebView2 Runtime. ' +
+      'Would you like to open Microsoft''s official download page now?',
+      mbConfirmation, MB_YESNO) = IDYES then
+      ShellExec('open', 'https://developer.microsoft.com/microsoft-edge/webview2/', '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+    MsgBox('Install the WebView2 Runtime, then run this installer again.', mbInformation, MB_OK);
+  end;
 end;

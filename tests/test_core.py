@@ -104,14 +104,50 @@ class CoreSmokeTests(unittest.TestCase):
         build_script = Path("build_desktop.ps1").read_text(encoding="utf-8")
         spec = Path("Decades Tracker.spec").read_text(encoding="utf-8")
         installer_script = Path("build_installer.ps1").read_text(encoding="utf-8")
+        installer_definition = Path("installer/DecadesTracker.iss").read_text(encoding="utf-8")
+        launcher = Path("desktop_launcher.py").read_text(encoding="utf-8")
+        desktop_requirements = Path("requirements-desktop.txt").read_text(encoding="utf-8")
+        desktop_readme = Path("assets/README - Native Desktop.txt").read_text(encoding="utf-8")
         version_info = Path("assets/decades-version-info.txt").read_text(encoding="utf-8")
         self.assertIn("--noupx", build_script)
         self.assertIn("--version-file", build_script)
+        self.assertIn("--collect-all webview", build_script)
+        self.assertIn("START HERE - Decades Tracker.txt", build_script)
         self.assertNotIn("upx=True", spec)
         self.assertIn("version='assets/decades-version-info.txt'", spec)
+        self.assertIn("collect_all('webview')", spec)
+        self.assertIn("game_localization_fallbacks.json", spec)
+        self.assertIn("('clock_bridge', 'clock_bridge')", spec)
         self.assertIn("SeveralUDO", version_info)
         self.assertIn("Get-FileHash", installer_script)
         self.assertIn(".sha256", installer_script)
+        self.assertIn("pywebview", desktop_requirements)
+        self.assertIn("Local AppData", desktop_readme)
+        self.assertIn("WebView2", desktop_readme)
+        self.assertIn("gui=\"edgechromium\"", launcher)
+        self.assertIn('webview.settings["ALLOW_DOWNLOADS"] = True', launcher)
+        self.assertNotIn("webbrowser.open", launcher)
+        self.assertIn("F3017226-FE2A-4295-8BDF-00C3A9A7E4C5", installer_definition)
+
+    def test_native_desktop_server_stops_only_when_owned(self):
+        from desktop_launcher import LocalTracker, startup_failure_html
+        from types import SimpleNamespace
+
+        tracker = LocalTracker()
+        tracker.server = SimpleNamespace(should_exit=False)
+        tracker.thread = mock.Mock()
+        tracker.thread.is_alive.return_value = True
+        tracker.owned = True
+        tracker.stop()
+        self.assertTrue(tracker.server.should_exit)
+        tracker.thread.join.assert_called_once_with(timeout=8)
+        self.assertIn("No save data was removed", startup_failure_html(Path("diagnostics.log")))
+
+        shared = LocalTracker()
+        shared.server = SimpleNamespace(should_exit=False)
+        shared.owned = False
+        shared.stop()
+        self.assertFalse(shared.server.should_exit)
 
     def test_stay_signed_in_cookie_policy_is_per_login(self):
         test_app = FastAPI()
