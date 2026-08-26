@@ -44,6 +44,62 @@ def _positive_count(*values) -> int | None:
     return None
 
 
+def _percentage(*values) -> float | None:
+    """Return the first reported fraction/percentage as a 0–100 value."""
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        return round(max(0.0, min(100.0, number * 100 if number <= 1 else number)), 2)
+    return None
+
+
+# Fields with a dedicated tracker destination. Any future Clock Sync field not
+# listed here is retained in ``game_telemetry_extra`` instead of disappearing.
+_CONSUMED_SIM_TELEMETRY = {
+    "game_sim_id", "first_name", "last_name", "name", "sex", "gender",
+    "gender_value", "age_value", "age_stage", "age_days", "current_age_days",
+    "sim_age_days", "age_progress", "age_progress_percentage",
+    "age_progress_percent", "life_stage_progress", "days_until_age_up",
+    "age_transition_ready", "is_baby", "birth_global_day", "game_birth_global_day",
+    "household_id", "household_name", "household_funds", "is_household_head",
+    "household_member_game_ids", "household_last_played_game_sim_id",
+    "household_is_unplayed", "household_is_player", "world_name", "lot_name",
+    "career", "education", "careers", "degrees", "school", "traits", "skills",
+    "milestones", "skill_details", "milestone_details", "trait_details",
+    "degree_details", "aspiration_details", "stable_tuning_ids",
+    "parents", "parent_game_sim_ids", "children",
+    "child_game_sim_ids", "siblings", "sibling_game_sim_ids", "grandparents",
+    "grandparent_game_sim_ids", "grandchildren", "grandchild_game_sim_ids",
+    "relationships", "significant_other_game_id", "is_pregnant",
+    "pregnancy_stage", "pregnancy_progress", "pregnancy_progress_percentage",
+    "pregnancy_hours_remaining", "is_in_labor", "babies_expected",
+    "pregnancy_offspring_count", "offspring_count", "baby_count",
+    "babies_delivered", "pregnancy_outcome", "pregnancy_partner_game_sim_id",
+    "other_parent_game_sim_id", "illnesses", "health_buffs", "symptoms",
+    "unknown_health_traits", "occult_types", "species_occult", "occult_progress",
+    "aspirations", "active_aspiration", "completed_aspirations", "lifestyles",
+    "fears", "character_values", "preferences", "is_dead", "death_type",
+    "death_details", "is_ghost", "game_portrait", "portrait_image_base64",
+    "portrait_mime_type", "clock_sync_version", "game_build", "installed_packs",
+    "detected_optional_mods", "telemetry_capabilities", "clock_sync_diagnostics",
+    "telemetry_version", "detected_game_day", "detected_game_hour",
+    "detected_game_minute", "detected_game_second", "detected_tracker_global_day", "source",
+    "inferred_tracker_household_id", "detected_newborn_count", "detected_newborns",
+}
+
+
+def _unmapped_telemetry(snapshot: dict) -> dict:
+    """Keep the latest unknown values so protocol additions are not discarded."""
+    return {
+        str(key): value for key, value in snapshot.items()
+        if not str(key).startswith("_")
+        and key not in _CONSUMED_SIM_TELEMETRY
+        and not str(key).endswith("_scan_supported")
+    }
+
+
 def _game_sim(session: Session, save: ChronicleSave, game_sim_id: str) -> Record | None:
     game_sim_id = str(game_sim_id or "").strip()
     if not game_sim_id:
@@ -161,6 +217,256 @@ def _significant_relationship(category: str) -> bool:
     return any(marker in value for marker in ("marriage", "married", "spouse", "fianc", "engag"))
 
 
+_GENERIC_RELATIONSHIP_CATEGORIES = {"", "relationship", "unknown", "other", "unspecified"}
+
+
+def _relationship_score(value) -> float | None:
+    try:
+        return round(float(value), 1) if value is not None and value != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _family_game_ids(value: dict) -> set[str]:
+    result = set()
+    for key in (
+        "parent_game_sim_ids", "child_game_sim_ids", "sibling_game_sim_ids",
+        "grandparent_game_sim_ids", "grandchild_game_sim_ids",
+    ):
+        result.update(str(item).strip() for item in (value.get(key) or []) if str(item).strip())
+    return result
+
+
+def classify_game_relationship(relationship: dict) -> dict:
+    """Classify Clock Sync relationships using only already-received data.
+
+    Relationship bits are authoritative. Scores are a fallback for game builds
+    or optional mods whose tuning names are unavailable to the script mod.
+    Multiple natures are retained as tags because relatives and romantic
+    partners can also be friends.
+    """
+    result = dict(relationship or {})
+    raw_category = str(result.get("category") or "Relationship").strip()
+    folded_category = raw_category.casefold()
+    bit_labels = game_metadata.readable_named_labels(
+        result.get("relationship_bits"), result.get("relationship_bit_details"), kind="relationship bit",
+    )
+    bit_text = " ".join(bit_labels).casefold().replace("_", " ").replace("-", " ")
+    friendship = _relationship_score(result.get("friendship_score"))
+    romance = _relationship_score(result.get("romance_score"))
+    bit_words = set(bit_text.split())
+
+    def contains(*markers: str) -> bool:
+        return any(marker in bit_text for marker in markers)
+
+    def has_word(*markers: str) -> bool:
+        return any(marker in bit_words for marker in markers)
+
+    marriage = contains("married", "marriage", "spouse", "husband", "wife")
+    engagement = contains("fiance", "fiancé", "engaged", "betroth")
+    former = contains("widow", "widower", "divorc", "ex spouse")
+    family = bool(result.get("genealogy_family")) or has_word(
+        "family", "relative", "parent", "mother", "father", "child", "son", "daughter",
+        "sibling", "brother", "sister", "grandparent", "grandchild", "aunt", "uncle",
+        "niece", "nephew", "cousin",
+    )
+    romantic = contains("romance", "romantic", "lover", "lovebirds", "sweetheart", "partner")
+    friendship_bit = contains("friend", "besties", "acquaintance")
+
+    # Preserve a useful explicit category, but replace the generic Clock Sync
+    # fallback with evidence from bits and scores.
+    source = "reported category"
+    if folded_category not in _GENERIC_RELATIONSHIP_CATEGORIES:
+        category = raw_category.title()
+    elif former:
+        category, source = ("Widowed" if contains("widow", "widower") else "Divorced"), "relationship bits"
+    elif marriage:
+        category, source = "Marriage", "relationship bits"
+    elif engagement:
+        category, source = "Engagement", "relationship bits"
+    elif family:
+        category, source = "Family", "genealogy" if result.get("genealogy_family") else "relationship bits"
+    elif romantic or (romance is not None and abs(romance) >= 1):
+        category, source = "Romantic", "relationship bits" if romantic else "romance score"
+    elif friendship_bit or (friendship is not None and friendship >= 35):
+        category, source = "Friendship", "relationship bits" if friendship_bit else "friendship score"
+    elif friendship is not None or romance is not None:
+        category, source = "Acquaintance", "relationship scores"
+    else:
+        category, source = "Relationship", "insufficient game detail"
+
+    tags = []
+    if family or category == "Family":
+        tags.append("Family")
+    if marriage or engagement or romantic or category in {"Marriage", "Engagement", "Romantic", "Divorced", "Widowed"} or (romance is not None and abs(romance) >= 1):
+        tags.append("Romantic")
+    if friendship_bit or category == "Friendship" or (friendship is not None and friendship >= 35):
+        tags.append("Friendship")
+    if category == "Acquaintance" and not tags:
+        tags.append("Acquaintance")
+    result.update(
+        category=category,
+        relationship_bits=bit_labels,
+        relationship_tags=tags,
+        relationship_classification_source=source,
+        friendship_score=friendship,
+        romance_score=romance,
+    )
+    return result
+
+
+def _relationship_candidate_worthy(relationship: dict) -> bool:
+    return str((relationship or {}).get("category") or "Relationship").casefold() not in {
+        "", "relationship", "unknown", "other", "unspecified", "acquaintance",
+    }
+
+
+def repair_relationship_inbox(session: Session, save: ChronicleSave) -> dict[str, int]:
+    """Repair old generic relationship reviews and silence acquaintances.
+
+    This is deliberately tracker-side: it uses candidate payloads and the most
+    recent game relationship snapshot already stored on each Sim.
+    """
+    rows = list(session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "game_candidate",
+        Record.deleted.is_(False),
+        Record.data["status"].as_string() == "pending",
+        Record.data["action"].as_string().in_(("relationship_change", "relationship_end")),
+    )))
+    result = {"classified": 0, "dismissed": 0}
+    for item in rows:
+        item_data = dict(item.data or {})
+        if item_data.get("action") not in {"relationship_change", "relationship_end"}:
+            continue
+        payload = dict(item_data.get("payload") or {})
+        if str(payload.get("category") or "Relationship").casefold() not in _GENERIC_RELATIONSHIP_CATEGORIES:
+            continue
+        sim = session.get(Record, item_data.get("sim_id")) if item_data.get("sim_id") else None
+        other_game_id = str(payload.get("other_game_sim_id") or "").strip()
+        stored = {}
+        for relationship in ((sim.data or {}).get("game_relationships") or []) if sim else []:
+            if isinstance(relationship, dict) and str(relationship.get("other_game_sim_id") or "").strip() == other_game_id:
+                stored = relationship
+                break
+        evidence = {**stored, **{key: value for key, value in payload.items() if value not in (None, "", [])}}
+        if sim and other_game_id in _family_game_ids(sim.data or {}):
+            evidence["genealogy_family"] = True
+        classified = classify_game_relationship(evidence)
+        base = item.version
+        if _relationship_candidate_worthy(classified):
+            item_data["payload"] = classified
+            item.label = f"{classified['category']} detected for {sim.label if sim else item.label}"
+            result["classified"] += 1
+        else:
+            item_data.update(
+                status="dismissed",
+                auto_resolution="Generic acquaintance suppressed by relationship classifier",
+            )
+            item_data["payload"] = classified
+            result["dismissed"] += 1
+        item.data = item_data
+        item.version += 1
+        journal(session, item, "upsert", base)
+    return result
+
+
+_HASH_NAME_REPAIR_VERSION = 2
+_HASHED_SIM_COLLECTIONS = (
+    ("game_traits", "game_trait_details", "trait"),
+    ("game_skills", "game_skill_details", "skill"),
+    ("game_milestones", "game_milestone_details", "milestone"),
+    ("game_degrees", "game_degree_details", "degree"),
+    ("game_aspirations", "game_aspiration_details", "aspiration"),
+    ("game_completed_aspirations", "game_aspiration_details", "aspiration"),
+    ("game_lifestyles", "game_trait_details", "lifestyle"),
+    ("game_fears", "game_trait_details", "fear"),
+    ("game_character_values", "game_trait_details", "trait"),
+    ("game_preferences", None, "preference"),
+)
+
+
+def repair_hashed_sim_metadata(session: Session, save: ChronicleSave) -> dict[str, int]:
+    """Replace legacy hash labels using local STBL and Clock Sync details once."""
+    settings = dict(save.settings or {})
+    if int(settings.get("hash_name_repair_version") or 0) >= _HASH_NAME_REPAIR_VERSION:
+        return {"sims": 0, "labels": 0}
+    sims = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    )))
+    aliases: dict[int, str] = {}
+    for sim in sims:
+        data = sim.data or {}
+        for field, detail_field, kind in _HASHED_SIM_COLLECTIONS:
+            aliases.update(game_metadata.localization_aliases(
+                data.get(field), data.get(detail_field) if detail_field else None, kind,
+            ))
+    changed_sims = changed_labels = 0
+    def values_of(value):
+        return value if isinstance(value, (list, tuple, set)) else ([] if value in (None, "") else [value])
+    for sim in sims:
+        data = dict(sim.data or {})
+        updates = {}
+        raw_values = dict(data.get("game_raw_localization_values") or {})
+        for field, detail_field, kind in _HASHED_SIM_COLLECTIONS:
+            if field not in data:
+                continue
+            resolved = game_metadata.readable_named_labels(
+                data.get(field), data.get(detail_field) if detail_field else None,
+                kind=kind, aliases=aliases,
+            )
+            if resolved != data.get(field):
+                updates[field] = resolved
+                if any(game_metadata.localization_hash(value) is not None for value in values_of(data.get(field))):
+                    raw_values[field] = data.get(field)
+                changed_labels += sum(
+                    game_metadata.localization_hash(value) is not None
+                    for value in values_of(data.get(field))
+                )
+        relationships = []
+        relationship_changed = False
+        for relationship in data.get("game_relationships") or []:
+            if not isinstance(relationship, dict):
+                relationships.append(relationship)
+                continue
+            normalized = classify_game_relationship(relationship)
+            relationships.append(normalized)
+            relationship_changed = relationship_changed or normalized != relationship
+        if relationship_changed:
+            updates["game_relationships"] = relationships
+        active_aspiration = data.get("game_active_aspiration")
+        if active_aspiration not in (None, ""):
+            resolved_active = game_metadata.readable_named_labels(
+                active_aspiration, kind="aspiration", aliases=aliases,
+            )
+            if resolved_active and resolved_active[0] != active_aspiration:
+                updates["game_active_aspiration"] = resolved_active[0]
+                if game_metadata.localization_hash(active_aspiration) is not None:
+                    raw_values["game_active_aspiration"] = active_aspiration
+                    changed_labels += 1
+        if raw_values != (data.get("game_raw_localization_values") or {}):
+            updates["game_raw_localization_values"] = raw_values
+        if not updates:
+            continue
+        base = sim.version
+        data.update(updates)
+        if aliases:
+            data["game_localization_names"] = {str(key): value for key, value in sorted(aliases.items())}
+        sim.data = data
+        sim.version += 1
+        journal(session, sim, "upsert", base)
+        changed_sims += 1
+    settings["hash_name_repair_version"] = _HASH_NAME_REPAIR_VERSION
+    settings["hash_name_repair_unresolved"] = sum(
+        1 for sim in sims for field, _, _ in _HASHED_SIM_COLLECTIONS
+        for value in values_of((sim.data or {}).get(field))
+        if game_metadata.localization_hash(value) is not None
+    )
+    save.settings = settings
+    save.revision += changed_sims + 1
+    return {"sims": changed_sims, "labels": changed_labels}
+
+
 def _existing_relationship(session: Session, save: ChronicleSave, first: Record,
                            second: Record | None, category: str) -> bool:
     if not second:
@@ -173,6 +479,23 @@ def _existing_relationship(session: Session, save: ChronicleSave, first: Record,
             continue
         existing_type = str(data.get("type") or "relationship").casefold()
         if (_significant_relationship(category) and (bool(data.get("legally_married")) or _significant_relationship(existing_type))) or existing_type == str(category or "relationship").casefold():
+            return True
+    return False
+
+
+def _existing_relationship_pair(session: Session, save: ChronicleSave, first: Record,
+                                second: Record | None) -> bool:
+    """Return true for any current relationship between two tracker Sims."""
+    if not second:
+        return False
+    closed = {"ended", "divorced", "annulled", "separated", "inactive", "closed"}
+    for relationship in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "relationship", Record.deleted.is_(False),
+    )):
+        data = relationship.data or {}
+        if {str(data.get("partner1_id") or ""), str(data.get("partner2_id") or "")} != {first.id, second.id}:
+            continue
+        if str(data.get("status") or "active").casefold() not in closed:
             return True
     return False
 
@@ -194,6 +517,42 @@ def candidate(session: Session, save: ChronicleSave, action: str, sim: Record | 
 
 def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: dict) -> list[Record]:
     """Turn one guarded game snapshot into safe telemetry and confirmable changes."""
+    named_collections = (
+        ("traits", "trait_details", "trait"),
+        ("skills", "skill_details", "skill"),
+        ("milestones", "milestone_details", "milestone"),
+        ("degrees", "degree_details", "degree"),
+        ("aspirations", "aspiration_details", "aspiration"),
+        ("completed_aspirations", "aspiration_details", "aspiration"),
+        ("lifestyles", "trait_details", "lifestyle"),
+        ("fears", "trait_details", "fear"),
+        ("character_values", "trait_details", "trait"),
+        ("preferences", None, "preference"),
+    )
+    if any(source in snapshot for source, _, _ in named_collections):
+        snapshot = dict(snapshot)
+        for source, detail_source, kind in named_collections:
+            if source in snapshot:
+                snapshot[source] = game_metadata.readable_named_labels(
+                    snapshot.get(source), snapshot.get(detail_source), kind=kind,
+                )
+        if snapshot.get("active_aspiration") not in (None, ""):
+            active = game_metadata.readable_named_labels(
+                snapshot.get("active_aspiration"), kind="aspiration",
+            )
+            snapshot["active_aspiration"] = active[0] if active else None
+    if "relationships" in snapshot:
+        family_game_ids = _family_game_ids(snapshot)
+        snapshot = {
+            **snapshot,
+            "relationships": [
+                classify_game_relationship({
+                    **value,
+                    "genealogy_family": str(value.get("other_game_sim_id") or "").strip() in family_game_ids,
+                })
+                for value in (snapshot.get("relationships") or []) if isinstance(value, dict)
+            ],
+        }
     made = []
     data = dict(sim.data or {})
     history_entries = telemetry.capture_sim_changes(session, save, sim, snapshot, data)
@@ -204,6 +563,7 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
     old_first = str(data.get("first_name") or "").strip()
     old_last = str(data.get("last_name") or "").strip()
     old_sex = str(data.get("sex") or "").strip()
+    previous_significant_other = str(data.get("game_significant_other_game_sim_id") or "").strip()
     name_changed = bool(incoming_first and (incoming_first.casefold(), incoming_last.casefold()) != (old_first.casefold(), old_last.casefold()))
     sex_changed = bool(incoming_sex and old_sex and incoming_sex.casefold() != old_sex.casefold())
     if name_changed or sex_changed:
@@ -231,10 +591,30 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         snapshot.get("offspring_count"), snapshot.get("baby_count"),
     )
     occult = game_metadata.occult_identity(snapshot)
+    age_progress = _percentage(
+        snapshot.get("age_progress_percentage"), snapshot.get("age_progress"),
+        snapshot.get("age_progress_percent"), snapshot.get("life_stage_progress"),
+    )
+    pregnancy_progress = _percentage(
+        snapshot.get("pregnancy_progress_percentage"), snapshot.get("pregnancy_progress"),
+    )
+    scan_support = {
+        str(key).removesuffix("_scan_supported"): bool(value)
+        for key, value in snapshot.items() if str(key).endswith("_scan_supported")
+    }
+    prior_extra = dict(data.get("game_telemetry_extra") or {})
+    extra = _unmapped_telemetry(snapshot)
+    if extra:
+        prior_extra.update(extra)
     telemetry_values = {
+        "game_reported_first_name": incoming_first or None,
+        "game_reported_last_name": incoming_last or None,
         "game_age_stage": snapshot.get("age_stage"), "game_sex": incoming_sex or None,
+        "game_raw_gender_value": snapshot.get("gender_value"),
+        "game_raw_age_value": snapshot.get("age_value"),
+        "game_is_baby": snapshot.get("is_baby") if "is_baby" in snapshot else None,
         "game_age_days": snapshot.get("age_days"),
-        "game_age_progress_percentage": snapshot.get("age_progress_percentage"),
+        "game_age_progress_percentage": age_progress,
         "game_days_until_age_up": snapshot.get("days_until_age_up"),
         "game_age_transition_ready": snapshot.get("age_transition_ready"),
         "game_career": snapshot.get("career"),
@@ -243,14 +623,32 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         "game_degrees": _detected_list(snapshot.get("degrees")), "game_school": snapshot.get("school"),
         "game_skills": _detected_list(snapshot.get("skills")),
         "game_milestones": _detected_list(snapshot.get("milestones")), "last_household_funds": snapshot.get("household_funds"),
+        "game_skill_details": [row for row in (snapshot.get("skill_details") or []) if isinstance(row, dict)],
+        "game_milestone_details": [row for row in (snapshot.get("milestone_details") or []) if isinstance(row, dict)],
+        "game_trait_details": [row for row in (snapshot.get("trait_details") or []) if isinstance(row, dict)],
+        "game_degree_details": [row for row in (snapshot.get("degree_details") or []) if isinstance(row, dict)],
+        "game_aspiration_details": [row for row in (snapshot.get("aspiration_details") or []) if isinstance(row, dict)],
+        "game_stable_tuning_ids": snapshot.get("stable_tuning_ids") or {},
         "last_game_world": snapshot.get("world_name"), "last_game_lot": snapshot.get("lot_name"),
+        "game_is_household_head": snapshot.get("is_household_head") if "is_household_head" in snapshot else None,
+        "game_household_member_game_ids": [str(value) for value in (snapshot.get("household_member_game_ids") or []) if value],
+        "game_household_last_played_game_sim_id": snapshot.get("household_last_played_game_sim_id"),
+        "game_household_is_unplayed": snapshot.get("household_is_unplayed") if "household_is_unplayed" in snapshot else None,
+        "game_household_is_player": snapshot.get("household_is_player") if "household_is_player" in snapshot else None,
+        "game_is_pregnant": snapshot.get("is_pregnant") if "is_pregnant" in snapshot else None,
+        "game_pregnancy_progress_percentage": pregnancy_progress,
         "last_game_pregnancy_count": reported_count if is_snapshot_pregnant else None,
         "last_game_pregnancy_partner_game_sim_id": partner_game_id if is_snapshot_pregnant and partner_game_id else None,
+        "game_significant_other_game_sim_id": snapshot.get("significant_other_game_id"),
         "parent_game_sim_ids": [str(value) for value in (snapshot.get("parent_game_sim_ids") or []) if value],
         "game_parents": [row for row in (snapshot.get("parents") or []) if isinstance(row, dict)],
+        "game_children": [row for row in (snapshot.get("children") or []) if isinstance(row, dict)],
         "child_game_sim_ids": [str(value) for value in (snapshot.get("child_game_sim_ids") or []) if value],
+        "game_siblings": [row for row in (snapshot.get("siblings") or []) if isinstance(row, dict)],
         "sibling_game_sim_ids": [str(value) for value in (snapshot.get("sibling_game_sim_ids") or []) if value],
+        "game_grandparents": [row for row in (snapshot.get("grandparents") or []) if isinstance(row, dict)],
         "grandparent_game_sim_ids": [str(value) for value in (snapshot.get("grandparent_game_sim_ids") or []) if value],
+        "game_grandchildren": [row for row in (snapshot.get("grandchildren") or []) if isinstance(row, dict)],
         "grandchild_game_sim_ids": [str(value) for value in (snapshot.get("grandchild_game_sim_ids") or []) if value],
         "game_relationships": [row for row in (snapshot.get("relationships") or []) if isinstance(row, dict)],
         "game_health_buffs": [row for row in (snapshot.get("health_buffs") or []) if isinstance(row, dict)],
@@ -266,6 +664,10 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         "game_fears": _detected_list(snapshot.get("fears")),
         "game_character_values": _detected_list(snapshot.get("character_values")),
         "game_preferences": _detected_list(snapshot.get("preferences")),
+        "game_is_dead": snapshot.get("is_dead") if "is_dead" in snapshot else None,
+        "game_death_type": snapshot.get("death_type"),
+        "game_death_details": snapshot.get("death_details") if isinstance(snapshot.get("death_details"), dict) else None,
+        "game_is_ghost": snapshot.get("is_ghost") if "is_ghost" in snapshot else None,
         "game_portrait": snapshot.get("game_portrait") or {},
         "clock_sync_version": snapshot.get("clock_sync_version"),
         "game_build": snapshot.get("game_build"),
@@ -273,6 +675,10 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         "game_detected_optional_mods": _detected_list(snapshot.get("detected_optional_mods")),
         "game_telemetry_capabilities": snapshot.get("telemetry_capabilities") or {},
         "game_clock_diagnostics": snapshot.get("clock_sync_diagnostics") or {},
+        "game_scan_support": scan_support,
+        "game_latest_telemetry_version": int(snapshot.get("telemetry_version") or 0),
+        "game_latest_telemetry_source": snapshot.get("source") or "Clock Sync",
+        "game_telemetry_extra": prior_extra,
     }
     if occult["display"]:
         telemetry_values.update({
@@ -292,17 +698,34 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         clearable.add("game_occult_types")
     if telemetry_version >= 4:
         supported_fields = {
-            "genealogy_scan_supported": {"child_game_sim_ids", "sibling_game_sim_ids", "grandparent_game_sim_ids", "grandchild_game_sim_ids"},
+            "pregnancy_scan_supported": {
+                "game_pregnancy_stage", "game_pregnancy_progress_percentage",
+                "game_pregnancy_hours_remaining", "last_game_pregnancy_count",
+                "last_game_pregnancy_partner_game_sim_id",
+            },
+            "genealogy_scan_supported": {
+                "game_children", "child_game_sim_ids", "game_siblings",
+                "sibling_game_sim_ids", "game_grandparents",
+                "grandparent_game_sim_ids", "game_grandchildren",
+                "grandchild_game_sim_ids",
+            },
             "relationship_scan_supported": {"game_relationships"},
             "health_scan_supported": {"game_health_buffs", "game_symptoms"},
             "career_scan_supported": {"game_careers"},
             "education_scan_supported": {"game_degrees", "game_school"},
             "personal_development_scan_supported": {"game_aspirations", "game_active_aspiration", "game_completed_aspirations", "game_lifestyles", "game_fears", "game_character_values", "game_preferences"},
             "occult_progress_scan_supported": {"game_occult_progress"},
+            "death_scan_supported": {"game_death_type", "game_death_details"},
         }
         for supported_key, fields in supported_fields.items():
             if snapshot.get(supported_key) is True:
                 clearable.update(fields)
+    if telemetry_version >= 5:
+        if snapshot.get("skills_scan_supported") is True:
+            clearable.add("game_skill_details")
+        if snapshot.get("milestone_scan_supported") is True:
+            clearable.add("game_milestone_details")
+        clearable.update({"game_trait_details", "game_degree_details", "game_aspiration_details", "game_stable_tuning_ids"})
     updates = {key: value for key, value in telemetry_values.items() if value not in (None, "", []) or key in clearable}
     changed_telemetry = any(data.get(key) != value for key, value in updates.items())
     if changed_telemetry:
@@ -352,10 +775,20 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         category = str(rel.get("category") or "relationship")
         relationship_key = f"{other}:{category.casefold()}"
         other_sim = _game_sim(session, save, other)
-        is_new_transition = has_relationship_baseline and relationship_key not in prior_relationship_keys
+        prior_categories_for_other = {
+            key.partition(":")[2] for key in prior_relationship_keys
+            if key.partition(":")[0] == other
+        }
+        is_classifier_upgrade = (
+            relationship_key not in prior_relationship_keys
+            and prior_categories_for_other
+            and prior_categories_for_other.issubset(_GENERIC_RELATIONSHIP_CATEGORIES | {"acquaintance"})
+        )
+        is_new_transition = has_relationship_baseline and relationship_key not in prior_relationship_keys and not is_classifier_upgrade
         is_initial_significant = not has_relationship_baseline and _significant_relationship(category)
         is_canonical_endpoint = not (other_sim and current_game_id and other and current_game_id > other)
         if (other and (is_new_transition or is_initial_significant) and is_canonical_endpoint
+                and _relationship_candidate_worthy(rel)
                 and not _existing_relationship(session, save, sim, other_sim, category)):
             rel_payload = {
                 **rel,
@@ -364,18 +797,56 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
                 "detected_game_day": snapshot.get("detected_game_day"),
                 "detected_game_hour": snapshot.get("detected_game_hour"),
                 "detected_game_minute": snapshot.get("detected_game_minute"),
+                "detected_game_second": snapshot.get("detected_game_second"),
                 "detected_tracker_global_day": snapshot.get("detected_tracker_global_day", save.global_day),
             }
             item = candidate(session, save, "relationship_change", sim, f"{category.title()} detected for {sim.label}", rel_payload, f"{other}:{category}")
             if item: made.append(item)
+    # Save files expose one significant-other ID even when their compact
+    # summary does not contain the full relationship collection. Preserve the
+    # ID and offer a review instead of guessing that it means marriage.
+    significant_other = str(snapshot.get("significant_other_game_id") or "").strip()
+    if significant_other and significant_other != current_game_id and significant_other != previous_significant_other:
+        other_sim = _game_sim(session, save, significant_other)
+        already_reported = any(
+            str(rel.get("other_game_sim_id") or "") == significant_other
+            and _significant_relationship(str(rel.get("category") or ""))
+            for rel in relationships
+        )
+        already_made = any(
+            (item.data or {}).get("action") == "relationship_change"
+            and str(((item.data or {}).get("payload") or {}).get("other_game_sim_id") or "") == significant_other
+            for item in made
+        )
+        if not already_reported and not already_made and not _existing_relationship_pair(session, save, sim, other_sim):
+            payload = {
+                "other_game_sim_id": significant_other,
+                "other_sim_id": other_sim.id if other_sim else None,
+                "other_sim_name": other_sim.label if other_sim else "",
+                "category": "Romantic",
+                "source": snapshot.get("source") or "Sims 4 save summary",
+                "detected_game_day": snapshot.get("detected_game_day"),
+                "detected_game_hour": snapshot.get("detected_game_hour"),
+                "detected_game_minute": snapshot.get("detected_game_minute"),
+                "detected_game_second": snapshot.get("detected_game_second"),
+                "detected_tracker_global_day": snapshot.get("detected_tracker_global_day", save.global_day),
+            }
+            item = candidate(
+                session, save, "relationship_change", sim,
+                f"Significant other detected for {sim.label}", payload,
+                f"significant-other:{significant_other}",
+            )
+            if item:
+                made.append(item)
     # A disappeared relationship is also meaningful.  Use a per-relationship
     # sequence so a later reconciliation of the same pair can be reviewed again,
     # while ordinary repeat reports remain silent.  When both Sims are tracked,
     # only the lower game id creates the shared review item.
     end_sequences = dict(data.get("game_relationship_end_sequences") or {})
+    current_relationship_others = {key.partition(":")[0] for key in relationship_keys}
     for old_key in sorted(prior_relationship_keys - set(relationship_keys)) if has_relationship_baseline and has_relationship_state else ():
         other, _, category = old_key.partition(":")
-        if not other:
+        if not other or other in current_relationship_others or not _significant_relationship(category):
             continue
         other_sim = session.scalar(select(Record).where(
             Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
@@ -393,6 +864,7 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             "detected_game_day": snapshot.get("detected_game_day"),
             "detected_game_hour": snapshot.get("detected_game_hour"),
             "detected_game_minute": snapshot.get("detected_game_minute"),
+            "detected_game_second": snapshot.get("detected_game_second"),
             "detected_tracker_global_day": snapshot.get("detected_tracker_global_day", save.global_day),
         }
         item = candidate(

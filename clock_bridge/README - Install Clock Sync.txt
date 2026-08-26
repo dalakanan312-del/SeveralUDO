@@ -1,16 +1,18 @@
-SEVERALUDO CLOCK SYNC 2.1.0
+SEVERALUDO CLOCK SYNC 2.2.3
 Complete Windows installation guide
 ===================================
 
 WHAT THIS KIT DOES
 Clock Sync reads supported information from the active or played Sims 4 household and sends a report to one selected Decades Tracker save. The tracker never edits your Sims 4 save. New Sims and uncertain changes are placed in Automation Inbox for review.
 
-THE FIVE FILES
+THE INCLUDED TOOLS
 1. SeveralUDOClockSync.ts4script - the Sims 4 Script Mod.
 2. SeveralUDOClockRelay.ps1 - sends locally prepared reports to the tracker.
 3. Start SeveralUDO Clock Relay.bat - starts the relay in the background.
-4. config.json - your private connection to one tracker save. A reusable kit contains config-template.json instead.
-5. This guide and TROUBLESHOOTING.txt.
+4. Install or Update SeveralUDO Clock Sync.bat - backs up and installs this exact kit, while moving exact-name duplicate Script Mods into a recoverable backup.
+5. Test SeveralUDO Clock Sync.bat - checks the install, private config, queue, and tracker receiver without changing tracker time.
+6. config.json - your private connection to one tracker save. A reusable kit contains config-template.json instead.
+7. This guide and TROUBLESHOOTING.txt.
 
 VERIFY THE DOWNLOAD BEFORE INSTALLING
 - Open the SeveralUDOClockSync folder inside the ZIP. The relay and starter are inside that folder, not beside it.
@@ -21,17 +23,21 @@ VERIFY THE DOWNLOAD BEFORE INSTALLING
 FIRST INSTALLATION - READY-TO-INSTALL PRIVATE KIT
 1. Close The Sims 4 before installing or replacing a .ts4script file.
 2. Download the private ready-to-install kit from the tracker Game Clock page. Download it only from the save you want the game to update. Creating this kit replaces that save's previous clock token.
-3. Open the downloaded ZIP. Copy its SeveralUDOClockSync folder into:
-   Documents\Electronic Arts\The Sims 4\Mods
+3. Extract the ZIP, open its SeveralUDOClockSync folder, and double-click Install or Update SeveralUDO Clock Sync.bat. The installer backs up the prior folder before copying the new files.
 4. Confirm this exact file exists no more than one folder deep:
    Mods\SeveralUDOClockSync\SeveralUDOClockSync.ts4script
 5. In The Sims 4, open Game Options > Other. Turn on both Custom Content and Mods and Script Mods Allowed. Restart the game if you changed either setting.
-6. Before opening the game, double-click Start SeveralUDO Clock Relay.bat. A window may flash and disappear; that is normal because the relay runs hidden.
+6. Run Test SeveralUDO Clock Sync.bat. When it passes, double-click Start SeveralUDO Clock Relay.bat. A window may flash and disappear; that is normal because the relay runs hidden.
 7. Start The Sims 4, load a household, enter Live Mode, and let in-game time move for a moment. Changing lots also triggers a fresh report.
 8. Open the tracker Game Clock page. Receiver should show Active and Last game day should stop saying Waiting.
 9. Review new Sims, pregnancy starts and endings, deaths, resurrections, relationships and illnesses in Automation Inbox before accepting them. Skills, milestones, life-stage progress, careers, education, occult progress, aspirations and other safe profile details synchronize directly.
 
-CLOCK SYNC 2.1 DETAIL
+CLOCK SYNC 2.2 DETAIL
+- The first complete report establishes a played-population baseline. Later unchanged reports are omitted or sent as smaller deltas, with one guarded full population check each game day.
+- Every report has an ordered sequence and SHA-256 checksum. The relay stores reports in report_queue while offline and sends them oldest first after reconnection.
+- The tracker binds one Clock Sync link to one Sims save slot. A different save is rejected before tracker data changes unless you explicitly clear the pairing on Game Clock.
+- Reports include exact game seconds and stable tuning IDs when the game exposes them. Labels remain readable when IDs are unavailable.
+- Missing relationships, recovered illnesses, ended pregnancies, moves and Sims absent from the full played population become guarded updates or review items rather than silent deletion.
 - Pregnancy reports can include stage, time remaining, labor and expected babies. A pregnancy ending with zero detected newborns stays zero for review instead of being changed to one.
 - Genealogy includes available parents, children, siblings, grandparents and grandchildren. The tracker can fill a missing parent link from the parent's child list.
 - Relationships can include game relationship bits plus available friendship and romance scores. Family-changing transitions remain reviewable.
@@ -51,9 +57,9 @@ INSTALLATION - REUSABLE KIT
 UPDATING CLOCK SYNC
 1. Close The Sims 4.
 2. Download the newest reusable complete kit.
-3. Replace the .ts4script, relay and starter files in the existing SeveralUDOClockSync folder.
-4. Keep your working config.json unless you intentionally created a new link for another tracker save.
-5. Start the relay, restart the game and verify the Last game day on the tracker.
+3. Extract it and run Install or Update SeveralUDO Clock Sync.bat. The old folder is backed up, the private config is preserved unless the new kit contains a replacement, and exact-name duplicate Script Mods are moved into the backup.
+4. Run Test SeveralUDO Clock Sync.bat, then start the relay and restart the game.
+5. Verify the paired slot, ordered report number and Last game day on the tracker.
 
 HOSTED AND DESKTOP EDITIONS
 - Hosted tracker: config.json uses the private HTTPS Railway receiver.
@@ -70,7 +76,13 @@ SECURITY
 NORMAL DAILY USE
 1. Start the relay.
 2. Open The Sims 4 and play in Live Mode.
-3. Keep the tracker open when convenient; reports can arrive while it is closed and will be visible when you return.
+3. The hosted tracker may be closed or temporarily unreachable. The relay keeps reports in order locally until it reconnects. The desktop tracker must be running for its local receiver to accept reports.
 4. Review Automation Inbox before accepting uncertain changes.
 
 Clock Sync reports game data; it does not install packs, change game saves, or bypass missing optional mods.
+
+OPTIONAL HEALTHCARE REDUX SUPPORT
+- Healthcare Redux is never required and Clock Sync never imports its Python modules.
+- When Healthcare Redux is installed, Clock Sync reads active disease buffs and diagnosed traits through the normal Sims trackers. Supported names include Influenza, Cold, Ear Infection, Gastroenteritis, Bronchitis, Sinusitis, Pneumonia, Malaria, Meningitis, Tonsillitis, Tuberculosis, urinary tract and yeast infections, plus supported chronic conditions.
+- Immunity, vaccination, recent-illness, medication, treatment, removal, broadcaster and testing markers are ignored so they do not create false illness episodes.
+- When Healthcare Redux is absent, these optional checks return no matches and all other Clock Sync features continue normally.

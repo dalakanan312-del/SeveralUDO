@@ -108,7 +108,7 @@ def challenge_date_label(save: ChronicleSave, global_day: int | None) -> str:
     return f"Year {year}, challenge day {day}"
 
 
-def event_calendar_fields(save: ChronicleSave, event: str, global_day: int | None, hour, minute) -> dict:
+def event_calendar_fields(save: ChronicleSave, event: str, global_day: int | None, hour, minute, second=None) -> dict:
     day = int_or_none(global_day)
     if day is None:
         return {}
@@ -118,7 +118,13 @@ def event_calendar_fields(save: ChronicleSave, event: str, global_day: int | Non
         result[f"{event}_date_precision"] = "challenge-day-only"
         return result
     parsed_hour=max(0,min(23,parsed_hour));parsed_minute=max(0,min(59,parsed_minute))
-    result.update({f"{event}_game_hour":parsed_hour,f"{event}_game_minute":parsed_minute,f"{event}_time":f"{parsed_hour:02d}:{parsed_minute:02d}"})
+    parsed_second=int_or_none(second)
+    result.update({f"{event}_game_hour":parsed_hour,f"{event}_game_minute":parsed_minute,
+                   f"{event}_time":f"{parsed_hour:02d}:{parsed_minute:02d}"})
+    if parsed_second is not None:
+        parsed_second=max(0,min(59,parsed_second))
+        result.update({f"{event}_game_second":parsed_second,
+                       f"{event}_time":f"{parsed_hour:02d}:{parsed_minute:02d}:{parsed_second:02d}"})
     exact=calendar_utils.exact_historical_label(day,parsed_hour,parsed_minute,save.start_year,save.days_per_year)
     if exact:
         result.update({f"historical_{event}_date":exact,f"{event}_date_precision":"exact"})
@@ -127,11 +133,11 @@ def event_calendar_fields(save: ChronicleSave, event: str, global_day: int | Non
     return result
 
 
-def birth_calendar_fields(save: ChronicleSave, global_day: int | None, hour, minute) -> dict:
-    return event_calendar_fields(save, "birth", global_day, hour, minute)
+def birth_calendar_fields(save: ChronicleSave, global_day: int | None, hour, minute, second=None) -> dict:
+    return event_calendar_fields(save, "birth", global_day, hour, minute, second)
 
 
-def resolve_birth_input(save: ChronicleSave, global_day, birth_year, hour=None, minute=None) -> tuple[int | None, dict]:
+def resolve_birth_input(save: ChronicleSave, global_day, birth_year, hour=None, minute=None, second=None) -> tuple[int | None, dict]:
     """Resolve an exact tracker day or an explicitly approximate historical year."""
     year = int_or_none(birth_year)
     if year is not None:
@@ -150,15 +156,15 @@ def resolve_birth_input(save: ChronicleSave, global_day, birth_year, hour=None, 
             "birth_date_precision": "historical-year-only",
         }
     day = int_or_none(global_day)
-    return day, birth_calendar_fields(save, day, hour, minute)
+    return day, birth_calendar_fields(save, day, hour, minute, second)
 
 
-def death_calendar_fields(save: ChronicleSave, global_day: int | None, hour, minute) -> dict:
-    return event_calendar_fields(save, "death", global_day, hour, minute)
+def death_calendar_fields(save: ChronicleSave, global_day: int | None, hour, minute, second=None) -> dict:
+    return event_calendar_fields(save, "death", global_day, hour, minute, second)
 
 
-def marriage_calendar_fields(save: ChronicleSave, global_day: int | None, hour, minute) -> dict:
-    return event_calendar_fields(save, "marriage", global_day, hour, minute)
+def marriage_calendar_fields(save: ChronicleSave, global_day: int | None, hour, minute, second=None) -> dict:
+    return event_calendar_fields(save, "marriage", global_day, hour, minute, second)
 
 
 def sim_birth_display(save: ChronicleSave, record: Record) -> str:
@@ -263,25 +269,9 @@ def create_rule_roll_record(session, save: ChronicleSave, rule: Record, sim: Rec
     return roll,True
 
 
-def detected_labels(value) -> list[str]:
+def detected_labels(value, details=None, kind: str = "") -> list[str]:
     """Render old and new Clock Sync collection formats consistently."""
-    if value in (None, ""):
-        return []
-    if isinstance(value, dict):
-        value = [{"name": key, "value": item} for key, item in value.items()]
-    elif not isinstance(value, (list, tuple, set)):
-        value = [value]
-    labels = []
-    for item in value:
-        if isinstance(item, dict):
-            name = str(item.get("name") or item.get("display_name") or item.get("title") or item.get("trait") or item.get("skill") or "").strip()
-            level = item.get("level", item.get("value"))
-            label = f"{name} (level {level})" if name and level not in (None, "") else name
-        else:
-            label = str(item).strip()
-        if label and label not in labels:
-            labels.append(label)
-    return labels
+    return game_metadata.readable_named_labels(value, details, kind=kind)
 
 
 def detected_form_list(value) -> list[str]:
@@ -365,7 +355,12 @@ def sim_status(record: Record, save: ChronicleSave) -> str:
     return "Deceased" if death <= save.global_day else "Alive · death scheduled"
 
 
-templates.env.globals.update(sim_status=sim_status, detected_labels=detected_labels, trait_labels=game_metadata.readable_trait_labels)
+templates.env.globals.update(
+    sim_status=sim_status,
+    detected_labels=detected_labels,
+    trait_labels=game_metadata.readable_trait_labels,
+    game_labels=game_metadata.readable_named_labels,
+)
 
 
 @contextmanager
@@ -997,6 +992,18 @@ def feature_page(request: Request, page: str):
         if not ctx["user"]: return RedirectResponse("/", status_code=303)
         save = ctx["save"]
         if save:
+            hash_name_repair = automation.repair_hashed_sim_metadata(session, save)
+            if hash_name_repair["sims"] or hash_name_repair["labels"]:
+                session.flush()
+                ctx["hash_name_repair"] = hash_name_repair
+        if save and page == "automation":
+            relationship_repair = automation.repair_relationship_inbox(session, save)
+            repaired_count = relationship_repair["classified"] + relationship_repair["dismissed"]
+            if repaired_count:
+                save.revision += repaired_count
+                session.flush()
+                ctx["relationship_inbox_repair"] = relationship_repair
+        if save:
             ctx["automation_pending"] = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending")) or 0
         kind = KIND_BY_PAGE.get(page)
         records = []
@@ -1344,6 +1351,10 @@ def feature_page(request: Request, page: str):
         if page == "clock" and save:
             link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id))
             ctx["clock_link"] = link
+            ctx["clock_sync_version"] = clock_bundle.CLOCK_SYNC_VERSION
+            ctx["clock_protocol"] = session.scalar(select(Record).where(
+                Record.save_id == save.id, Record.kind == "clock_protocol_state", Record.deleted.is_(False),
+            ).limit(1))
             ctx["clock_diagnostic"] = session.scalar(select(Record).where(
                 Record.save_id == save.id, Record.kind == "clock_diagnostic", Record.deleted.is_(False),
             ).order_by(Record.updated_at.desc()).limit(1))
@@ -2027,13 +2038,19 @@ async def accept_automation(request: Request, candidate_id: str):
                     illness_data.update({"illness_name":illness_name,"onset_global_day":onset,"status":status,
                                          "severity":str(value("severity",illness_data.get("severity") or "Unrated") or "Unrated"),
                                          "contagious":checked("contagious",bool(illness_data.get("contagious"))),
-                                         "end_global_day":None if status.casefold() not in domain.CLOSED_ILLNESSES else illness_data.get("end_global_day")})
+                                         "end_global_day":None if status.casefold() not in domain.CLOSED_ILLNESSES else illness_data.get("end_global_day"),
+                                         "onset_game_hour":int_or_none(value("onset_game_hour",payload.get("detected_game_hour"))),
+                                         "onset_game_minute":int_or_none(value("onset_game_minute",payload.get("detected_game_minute"))),
+                                         "onset_game_second":int_or_none(value("onset_game_second",payload.get("detected_game_second"))) or 0})
                 else:
                     status=str(value("status","Recovered") or "Recovered")
                     recovery=int_or_none(value("recovery_global_day",illness_data.get("end_global_day"))) or save.global_day
                     illness_data.update({"illness_name":illness_name,"status":status,
                                          "end_global_day":recovery if status.casefold() in domain.CLOSED_ILLNESSES else None,
-                                         "outcome":str(value("outcome",illness_data.get("outcome") or "No longer detected in game") or "")})
+                                         "outcome":str(value("outcome",illness_data.get("outcome") or "No longer detected in game") or ""),
+                                         "recovery_game_hour":int_or_none(value("recovery_game_hour",payload.get("detected_game_hour"))),
+                                         "recovery_game_minute":int_or_none(value("recovery_game_minute",payload.get("detected_game_minute"))),
+                                         "recovery_game_second":int_or_none(value("recovery_game_second",payload.get("detected_game_second"))) or 0})
                 illness.label=f"{sim.label} — {illness_name}";illness.data=illness_data;illness.version+=1
                 domain.journal(session,illness,"upsert",base);resolved_record=illness;save.revision+=1
         elif action in {"new_sim","new_baby"}:
@@ -2041,8 +2058,8 @@ async def accept_automation(request: Request, candidate_id: str):
             birth_estimate=clock.estimate_new_sim_birth(session,save,payload,item.global_day) if action=="new_sim" else {}
             submitted_birth=int_or_none(value("birth_global_day"));submitted_birth_year=int_or_none(value("birth_year"));submitted_age=int_or_none(value("age_days"))
             birth=submitted_birth if submitted_birth is not None else (save.global_day if action=="new_baby" else int(birth_estimate.get("estimated_birth_global_day",save.global_day-(submitted_age or 0))))
-            birth_hour=int_or_none(value("birth_game_hour",item.data.get("hour") if action=="new_baby" else ""));birth_minute=int_or_none(value("birth_game_minute",item.data.get("minute") if action=="new_baby" else ""))
-            birth,reviewed_birth_fields=resolve_birth_input(save,birth,submitted_birth_year,birth_hour,birth_minute)
+            birth_hour=int_or_none(value("birth_game_hour",item.data.get("hour") if action=="new_baby" else ""));birth_minute=int_or_none(value("birth_game_minute",item.data.get("minute") if action=="new_baby" else ""));birth_second=int_or_none(value("birth_game_second",payload.get("detected_game_second") if action=="new_baby" else ""))
+            birth,reviewed_birth_fields=resolve_birth_input(save,birth,submitted_birth_year,birth_hour,birth_minute,birth_second)
             home=chosen_household() if "household_id" in form else payload_household("inferred_household_id")
             mother=chosen_sim("mother_id") if "mother_id" in form else payload_sim("inferred_mother_id")
             father=chosen_sim("father_id") if "father_id" in form else payload_sim("inferred_father_id")
@@ -2058,16 +2075,22 @@ async def accept_automation(request: Request, candidate_id: str):
                 "grandchild_game_sim_ids":[str(v) for v in (payload.get("grandchild_game_sim_ids") or []) if v],
                 "game_relationships":[row for row in (payload.get("relationships") or []) if isinstance(row,dict)],
                 "game_careers":[row for row in (payload.get("careers") or []) if isinstance(row,dict)],
-                "game_degrees":detected_form_list(payload.get("degrees")),"game_school":payload.get("school"),
+                "game_degrees":game_metadata.readable_named_labels(payload.get("degrees"),payload.get("degree_details"),kind="degree"),"game_school":payload.get("school"),
                 "game_health_buffs":[row for row in (payload.get("health_buffs") or []) if isinstance(row,dict)],
                 "game_symptoms":detected_form_list(payload.get("symptoms")),"game_occult_progress":payload.get("occult_progress") or {},
-                "game_aspirations":detected_form_list(payload.get("aspirations")),"game_active_aspiration":payload.get("active_aspiration"),
-                "game_completed_aspirations":detected_form_list(payload.get("completed_aspirations")),"game_lifestyles":detected_form_list(payload.get("lifestyles")),
-                "game_fears":detected_form_list(payload.get("fears")),"game_character_values":detected_form_list(payload.get("character_values")),
-                "game_preferences":detected_form_list(payload.get("preferences")),"game_portrait":payload.get("game_portrait") or {},
+                "game_aspirations":game_metadata.readable_named_labels(payload.get("aspirations"),payload.get("aspiration_details"),kind="aspiration"),"game_active_aspiration":next(iter(game_metadata.readable_named_labels(payload.get("active_aspiration"),kind="aspiration")),None),
+                "game_completed_aspirations":game_metadata.readable_named_labels(payload.get("completed_aspirations"),payload.get("aspiration_details"),kind="aspiration"),"game_lifestyles":game_metadata.readable_named_labels(payload.get("lifestyles"),payload.get("trait_details"),kind="lifestyle"),
+                "game_fears":game_metadata.readable_named_labels(payload.get("fears"),payload.get("trait_details"),kind="fear"),"game_character_values":game_metadata.readable_named_labels(payload.get("character_values"),payload.get("trait_details"),kind="trait"),
+                "game_preferences":game_metadata.readable_named_labels(payload.get("preferences"),kind="preference"),"game_portrait":payload.get("game_portrait") or {},
                 "clock_sync_version":payload.get("clock_sync_version"),"game_build":payload.get("game_build"),
                 "game_installed_packs":detected_form_list(payload.get("installed_packs")),"game_detected_optional_mods":detected_form_list(payload.get("detected_optional_mods")),
                 "game_telemetry_capabilities":payload.get("telemetry_capabilities") or {},"game_clock_diagnostics":payload.get("clock_sync_diagnostics") or {},
+                "game_skill_details":[row for row in (payload.get("skill_details") or []) if isinstance(row,dict)],
+                "game_milestone_details":[row for row in (payload.get("milestone_details") or []) if isinstance(row,dict)],
+                "game_trait_details":[row for row in (payload.get("trait_details") or []) if isinstance(row,dict)],
+                "game_degree_details":[row for row in (payload.get("degree_details") or []) if isinstance(row,dict)],
+                "game_aspiration_details":[row for row in (payload.get("aspiration_details") or []) if isinstance(row,dict)],
+                "game_stable_tuning_ids":payload.get("stable_tuning_ids") or {},
             })
             sim_data["surname_at_birth"] = last
             sim_data["maiden_name"] = last
@@ -2095,7 +2118,7 @@ async def accept_automation(request: Request, candidate_id: str):
             first=str(value("first_name",payload.get("first_name")) or "").strip();last=str(value("last_name",payload.get("last_name")) or "").strip();sex=str(value("sex",payload.get("sex")) or "").strip();name=" ".join(part for part in (first,last) if part) or sim.label
             base=sim.version;sim.label=name;sim.data={**sim.data,"first_name":first or name,"last_name":last,"sex":sex or sim.data.get("sex"),"game_sex":sex or sim.data.get("game_sex")};sim.version+=1;domain.journal(session,sim,"upsert",base);resolved_record=sim
         elif action=="sim_death" and sim:
-            death_details=payload.get("death_details") or {};death_day=int_or_none(value("death_global_day",payload.get("detected_tracker_global_day"))) or save.global_day;death_hour=int_or_none(value("death_game_hour",payload.get("detected_game_hour")));death_minute=int_or_none(value("death_game_minute",payload.get("detected_game_minute")));cause=str(value("cause_of_death",payload.get("death_type") or death_details.get("death_type") or "Detected in game") or "Detected in game");place=str(value("death_place",payload.get("lot_name") or death_details.get("place") or "") or "");calendar=death_calendar_fields(save,death_day,death_hour,death_minute)
+            death_details=payload.get("death_details") or {};death_day=int_or_none(value("death_global_day",payload.get("detected_tracker_global_day"))) or save.global_day;death_hour=int_or_none(value("death_game_hour",payload.get("detected_game_hour")));death_minute=int_or_none(value("death_game_minute",payload.get("detected_game_minute")));death_second=int_or_none(value("death_game_second",payload.get("detected_game_second")));cause=str(value("cause_of_death",payload.get("death_type") or death_details.get("death_type") or "Detected in game") or "Detected in game");place=str(value("death_place",payload.get("lot_name") or death_details.get("place") or "") or "");calendar=death_calendar_fields(save,death_day,death_hour,death_minute,death_second)
             base=sim.version;sim.data={**sim.data,"death_global_day":death_day,"cause_of_death":cause,"death_place":place,"death_confirmed":True,"death_time_source":"Clock Sync death transition" if death_hour is not None and death_minute is not None else "Reviewed detection",**calendar};sim.version+=1;domain.journal(session,sim,"upsert",base)
             death=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id,Record.global_day==death_day).order_by(Record.created_at.desc()).limit(1))
             if death:
@@ -2131,26 +2154,30 @@ async def accept_automation(request: Request, candidate_id: str):
                 expected=max(1,int_or_none(value("babies_expected",payload.get("pregnancy_offspring_count"))) or int_or_none(payload.get("pregnancy_offspring_count")) or 1)
                 try: domain.validate_multiple_birth_count(session,save,due,expected)
                 except ValueError as exc: raise HTTPException(400,str(exc)) from exc
-                pregnancy=Record(save_id=save.id,kind="pregnancy",label=f"{sim.label} pregnancy",global_day=due,data={"mother_id":sim.id,"mother_name":sim.label,"father_id":father.id if father else None,"father_name":father.label if father else "","conception_global_day":conception,"due_global_day":due,"babies_expected":expected,"babies_delivered":0,"status":"Active","maternal_rolls_required":checked("maternal_rolls_required",True),"birth_newborn_rolls_required":checked("birth_newborn_rolls_required",True),"source":"game","game_pregnancy_sequence":sim.data.get("game_pregnancy_sequence")});session.add(pregnancy);session.flush();domain.journal(session,pregnancy,"upsert",0);domain.schedule_rolls(session,save)
+                discovered_hour=int_or_none(payload.get("detected_game_hour"));discovered_minute=int_or_none(payload.get("detected_game_minute"));discovered_second=int_or_none(payload.get("detected_game_second"))
+                pregnancy_data={"mother_id":sim.id,"mother_name":sim.label,"father_id":father.id if father else None,"father_name":father.label if father else "","conception_global_day":conception,"due_global_day":due,"babies_expected":expected,"babies_delivered":0,"status":"Active","maternal_rolls_required":checked("maternal_rolls_required",True),"birth_newborn_rolls_required":checked("birth_newborn_rolls_required",True),"source":"game","game_pregnancy_sequence":sim.data.get("game_pregnancy_sequence"),"discovered_global_day":int_or_none(payload.get("detected_tracker_global_day")) or save.global_day,"discovered_game_hour":discovered_hour,"discovered_game_minute":discovered_minute,"discovered_game_second":discovered_second}
+                if discovered_hour is not None and discovered_minute is not None: pregnancy_data["discovered_game_time"]=(f"{discovered_hour:02d}:{discovered_minute:02d}:{discovered_second:02d}" if discovered_second is not None else f"{discovered_hour:02d}:{discovered_minute:02d}")
+                pregnancy=Record(save_id=save.id,kind="pregnancy",label=f"{sim.label} pregnancy",global_day=due,data=pregnancy_data);session.add(pregnancy);session.flush();domain.journal(session,pregnancy,"upsert",0);domain.schedule_rolls(session,save)
         elif action=="pregnancy_outcome" and sim:
             pregnancy=session.get(Record,str(payload.get("pregnancy_id") or "")) if payload.get("pregnancy_id") else None
             if not pregnancy or pregnancy.kind!="pregnancy" or pregnancy.save_id!=save.id: pregnancy=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="pregnancy",Record.deleted.is_(False),Record.data["mother_id"].as_string()==sim.id).order_by(Record.global_day.desc()))
             if pregnancy:
                 status=str(value("status","Delivered") or "Delivered");delivery=int_or_none(value("delivery_global_day")) or save.global_day;detected=int_or_none(value("babies_delivered",payload.get("babies_delivered")));delivered=max(0,detected if detected is not None else (int_or_none(pregnancy.data.get("babies_expected")) or 1))
                 if status.casefold() in {"miscarriage","cancelled","canceled"} and "babies_delivered" not in form: delivered=0
-                delivery_hour=int_or_none(value("delivery_game_hour",payload.get("detected_game_hour")));delivery_minute=int_or_none(value("delivery_game_minute",payload.get("detected_game_minute")));delivery_exact=calendar_utils.exact_historical_label(delivery,delivery_hour,delivery_minute,save.start_year,save.days_per_year) if delivery_hour is not None and delivery_minute is not None else ""
-                delivery_details={"delivery_game_hour":delivery_hour,"delivery_game_minute":delivery_minute,"delivery_time":f"{delivery_hour:02d}:{delivery_minute:02d}" if delivery_hour is not None and delivery_minute is not None else None,"historical_delivery_date":delivery_exact or None}
+                delivery_hour=int_or_none(value("delivery_game_hour",payload.get("detected_game_hour")));delivery_minute=int_or_none(value("delivery_game_minute",payload.get("detected_game_minute")));delivery_second=int_or_none(value("delivery_game_second",payload.get("detected_game_second")));delivery_exact=calendar_utils.exact_historical_label(delivery,delivery_hour,delivery_minute,save.start_year,save.days_per_year) if delivery_hour is not None and delivery_minute is not None else ""
+                delivery_details={"delivery_game_hour":delivery_hour,"delivery_game_minute":delivery_minute,"delivery_time":(f"{delivery_hour:02d}:{delivery_minute:02d}:{delivery_second:02d}" if delivery_second is not None else f"{delivery_hour:02d}:{delivery_minute:02d}") if delivery_hour is not None and delivery_minute is not None else None,"historical_delivery_date":delivery_exact or None}
+                if delivery_second is not None: delivery_details["delivery_game_second"]=delivery_second
                 base=pregnancy.version;pregnancy.data={**pregnancy.data,"status":status,"babies_delivered":delivered,"actual_delivery_global_day":delivery,"delivery_global_day":delivery,"outcome":str(value("outcome",status) or status),"complication":str(value("complication") or "") or None,**delivery_details};pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=domain.retire_pregnancy_rolls(session,save,pregnancy.id,f"Pregnancy reviewed as {status}")
                 resolved_record=pregnancy
         elif action=="relationship_change" and sim:
             other=chosen_sim("other_sim_id") or session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.data["game_sim_id"].as_string()==str(payload.get("other_game_sim_id") or "")))
             if other:
-                category=str(value("relationship_type",payload.get("category") or "Relationship")).title();start=int_or_none(value("start_global_day",payload.get("detected_tracker_global_day"))) or save.global_day;married=checked("legally_married",category.casefold()=="marriage") or "marriage" in category.casefold();marriage_hour=int_or_none(value("marriage_game_hour",payload.get("detected_game_hour"))) if married else None;marriage_minute=int_or_none(value("marriage_game_minute",payload.get("detected_game_minute"))) if married else None
+                category=str(value("relationship_type",payload.get("category") or "Relationship")).title();start=int_or_none(value("start_global_day",payload.get("detected_tracker_global_day"))) or save.global_day;married=checked("legally_married",category.casefold()=="marriage") or "marriage" in category.casefold();marriage_hour=int_or_none(value("marriage_game_hour",payload.get("detected_game_hour"))) if married else None;marriage_minute=int_or_none(value("marriage_game_minute",payload.get("detected_game_minute"))) if married else None;marriage_second=int_or_none(value("marriage_game_second",payload.get("detected_game_second"))) if married else None
                 existing_relationships=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="relationship",Record.deleted.is_(False))))
                 rel=next((record for record in existing_relationships if {str((record.data or {}).get("partner1_id") or ""),str((record.data or {}).get("partner2_id") or "")}=={sim.id,other.id} and (("marriage" in str((record.data or {}).get("type") or "").casefold() or bool((record.data or {}).get("legally_married"))) if married else str((record.data or {}).get("type") or "").casefold()==category.casefold())),None)
-                calendar=marriage_calendar_fields(save,start,marriage_hour,marriage_minute) if married else {}
+                calendar=marriage_calendar_fields(save,start,marriage_hour,marriage_minute,marriage_second) if married else {}
                 surname_rule=str(value("surname_rule","automatic") or "automatic")
-                rel_data={"partner1_id":sim.id,"partner2_id":other.id,"partner1_name":sim.label,"partner2_name":other.label,"type":category,"status":str(value("relationship_status","Active") or "Active"),"start_global_day":start,"legally_married":married,"surname_rule":surname_rule,"game_detected":True,"source_candidate_id":item.id,**calendar}
+                rel_data={"partner1_id":sim.id,"partner2_id":other.id,"partner1_name":sim.label,"partner2_name":other.label,"type":category,"status":str(value("relationship_status","Active") or "Active"),"start_global_day":start,"legally_married":married,"surname_rule":surname_rule,"game_detected":True,"source_candidate_id":item.id,"relationship_tags":payload.get("relationship_tags") or [],"relationship_bits":payload.get("relationship_bits") or [],"friendship_score":payload.get("friendship_score"),"romance_score":payload.get("romance_score"),"relationship_classification_source":payload.get("relationship_classification_source"),**calendar}
                 if married: rel_data["marriage_global_day"]=start;rel_data["marriage_time_source"]="Clock Sync marriage transition" if marriage_hour is not None and marriage_minute is not None else "Reviewed detection"
                 if rel:
                     rel_base=rel.version;rel.global_day=start;rel.data={**rel.data,**rel_data}
@@ -2169,10 +2196,12 @@ async def accept_automation(request: Request, candidate_id: str):
                 rel=next((record for record in matches if category in str((record.data or {}).get("type") or "relationship").casefold()),None) or (matches[0] if len(matches)==1 else None)
                 if rel:
                     end_day=int_or_none(value("end_global_day",payload.get("detected_tracker_global_day"))) or save.global_day
-                    end_hour=int_or_none(value("end_game_hour",payload.get("detected_game_hour")));end_minute=int_or_none(value("end_game_minute",payload.get("detected_game_minute")))
+                    end_hour=int_or_none(value("end_game_hour",payload.get("detected_game_hour")));end_minute=int_or_none(value("end_game_minute",payload.get("detected_game_minute")));end_second=int_or_none(value("end_game_second",payload.get("detected_game_second")))
                     end_status=str(value("relationship_status","Ended") or "Ended")
                     historical_end=calendar_utils.exact_historical_label(end_day,end_hour,end_minute,save.start_year,save.days_per_year) if end_hour is not None and end_minute is not None else None
-                    rel_base=rel.version;rel.data={**rel.data,"status":end_status,"end_global_day":end_day,"end_game_hour":end_hour,"end_game_minute":end_minute,"end_time":f"{end_hour:02d}:{end_minute:02d}" if end_hour is not None and end_minute is not None else None,"historical_end_date":historical_end,"legally_married":bool((rel.data or {}).get("legally_married")) and end_status.casefold()=="widowed","end_source":"Clock Sync relationship transition","source_candidate_id":item.id};rel.version+=1;domain.journal(session,rel,"upsert",rel_base);resolved_record=rel;save.revision+=1+domain.sync_generations(session,save);domain.schedule_marriage_rolls(session,save)
+                    end_fields={"end_game_hour":end_hour,"end_game_minute":end_minute,"end_time":(f"{end_hour:02d}:{end_minute:02d}:{end_second:02d}" if end_second is not None else f"{end_hour:02d}:{end_minute:02d}") if end_hour is not None and end_minute is not None else None}
+                    if end_second is not None: end_fields["end_game_second"]=end_second
+                    rel_base=rel.version;rel.data={**rel.data,"status":end_status,"end_global_day":end_day,**end_fields,"historical_end_date":historical_end,"legally_married":bool((rel.data or {}).get("legally_married")) and end_status.casefold()=="widowed","end_source":"Clock Sync relationship transition","source_candidate_id":item.id};rel.version+=1;domain.journal(session,rel,"upsert",rel_base);resolved_record=rel;save.revision+=1+domain.sync_generations(session,save);domain.schedule_marriage_rolls(session,save)
         automation.resolve_parent_links(session,save)
         reviewed={key:str(value) for key,value in form.multi_items() if key not in {"confirm"}}
         base=item.version;item.data={**item.data,"status":"accepted","reviewed_details":reviewed,"resolved_record_id":resolved_record.id if resolved_record else None};item.version+=1;domain.journal(session,item,"upsert",base);save.revision+=2
@@ -2814,6 +2843,30 @@ def reanchor_clock_link(request: Request):
     return RedirectResponse("/p/clock", status_code=303)
 
 
+@app.post("/api/clock/trust-next-save")
+def trust_next_clock_save(request: Request):
+    """Clear only the Sims save-slot binding after explicit owner confirmation."""
+    with db() as session:
+        ctx = context(request, session)
+        save = ctx.get("save")
+        if not save:
+            raise HTTPException(400, "Open a tracker save first.")
+        state = session.scalar(select(Record).where(
+            Record.save_id == save.id, Record.kind == "clock_protocol_state", Record.deleted.is_(False),
+        ).limit(1))
+        if state:
+            base = state.version
+            data = dict(state.data or {})
+            data.update(save_identity=None, save_slot_id=None, save_slot_name=None,
+                        last_report_sequence=0, last_report_checksum="", last_report_id=None,
+                        binding_cleared_at=datetime.now(timezone.utc).isoformat())
+            state.data = data
+            state.version += 1
+            domain.journal(session, state, "upsert", base)
+        request.session["clock_notice"] = "The old game-save binding was cleared. Enter Live Mode and let time move; the next valid report will pair this tracker save with the currently loaded Sims save."
+    return RedirectResponse("/p/clock", status_code=303)
+
+
 @app.post("/api/game-save/scan")
 async def scan_game_save(request: Request):
     if not settings.local_mode:
@@ -2834,14 +2887,16 @@ async def scan_game_save(request: Request):
             request.session["game_save_notice"] = str(exc)
         else:
             households, sims = save_scanner.relevant_population(scan)
-            tracked = {str(item.data.get("game_sim_id") or ""):item for item in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False))) if item.data.get("game_sim_id")}
-            for item in sims:
-                match = tracked.get(str(item.get("game_sim_id") or ""))
-                item["tracker_record_id"] = match.id if match else None
-                item["tracker_record_label"] = match.label if match else None
-            scan["relevant_households"], scan["relevant_sims"] = households, sims
+            comparison = save_scanner.compare_scan(session, save, scan)
+            scan["relevant_households"], scan["relevant_sims"] = households, comparison["rows"]
+            scan["comparison"] = comparison
             _SAVE_SCAN_CACHE[save.id] = scan
-            request.session["game_save_notice"] = f"Read {len(sims)} Sims from {len(households)} active or player-owned households. Nothing has been imported yet."
+            request.session["game_save_notice"] = (
+                f"Read {len(sims)} Sims from {len(households)} player households: "
+                f"{comparison['counts']['changed']} changed, {comparison['counts']['new']} new, "
+                f"and {comparison['counts']['missing']} linked tracker Sims absent from this played-population snapshot. "
+                "Nothing has been imported yet."
+            )
     return RedirectResponse("/p/clock#save-scan", status_code=303)
 
 
@@ -2863,6 +2918,7 @@ async def apply_game_save_scan(request: Request):
         selected &= allowed
         if not selected:
             raise HTTPException(400, "Select at least one Sim to reconcile.")
+        backup_service.create_snapshot(session, save, "before read-only game-save reconciliation", force=True)
         result = save_scanner.reconcile_scan(session, save, scan, selected, str(form.get("advance_clock") or "").casefold() in {"1","true","on","yes"})
         request.session["game_save_notice"] = f"Save scan applied: {result['updated']} linked Sim(s) refreshed, {result['linked']} imported match(es) linked, {result['candidates']} review item(s) created, tracker advanced {result['advanced']} day(s)."
     return RedirectResponse("/p/automation", status_code=303)
@@ -2947,6 +3003,26 @@ async def clock_report(request: Request, authorization: str | None = Header(None
         link = session.scalar(select(ClockLink).where(ClockLink.token_hash == digest, ClockLink.enabled.is_(True)))
         if not link: raise HTTPException(401, "Invalid clock token")
         return clock.receive(session, link, await request.json())
+
+
+@app.get("/api/clock/ping")
+def clock_ping(authorization: str | None = Header(None)):
+    """Validate a private relay link without advancing time or changing records."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401)
+    digest = hash_secret(authorization[7:].strip())
+    with db() as session:
+        link = session.scalar(select(ClockLink).where(
+            ClockLink.token_hash == digest, ClockLink.enabled.is_(True),
+        ))
+        if not link:
+            raise HTTPException(401, "Invalid clock token")
+        save = session.get(ChronicleSave, link.save_id)
+        return {
+            "ok": True, "clock_sync_version": clock_bundle.CLOCK_SYNC_VERSION,
+            "save_id": save.id, "save_name": save.name,
+            "tracker_global_day": save.global_day, "last_game_day": link.last_game_day,
+        }
 
 
 @app.get("/portraits/{record_id}/{stage}")

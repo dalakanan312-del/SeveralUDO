@@ -21,7 +21,7 @@
 <section class="panel">
   <div class="section-heading"><div><p class="eyebrow">SELF-DIAGNOSTICS</p><h2>Clock Sync {{diagnostic.get('clock_sync_version','Unknown version')}}</h2></div><span class="status {{'alive' if health.get('healthy',True) else 'dead'}}">{{'Healthy' if health.get('healthy',True) else 'Needs attention'}}</span></div>
   <div class="metrics"><article><strong>{{diagnostic.get('game_build') or 'Not exposed'}}</strong><span>game build</span></article><article><strong>{{diagnostic.get('installed_packs',[])|length}}</strong><span>packs detected</span></article><article><strong>{{diagnostic.get('detected_optional_mods',[])|length}}</strong><span>optional integrations</span></article><article><strong>{{diagnostic.get('telemetry_capabilities',{}).values()|select('equalto',true)|list|length}}</strong><span>telemetry modules ready</span></article></div>
-  <details><summary>Feature capability report</summary><div>{% for name,supported in diagnostic.get('telemetry_capabilities',{}).items() %}<div class="list-row"><strong>{{name|replace('_',' ')|title}}</strong><span>{{'Available' if supported else 'Not exposed by this game or pack'}}</span></div>{% endfor %}{% if health.get('errors') %}<h3>Guarded errors</h3>{% for error in health.get('errors') %}<div class="list-row"><strong>{{error.get('feature','Unknown')|replace('_',' ')|title}}</strong><span>{{error.get('error','Unavailable')}}</span></div>{% endfor %}{% endif %}</div></details>
+  <details><summary>Feature capability report</summary><div>{% for name,supported in diagnostic.get('telemetry_capabilities',{}).items() %}<div class="list-row"><strong>{{name|replace('_',' ')|title}}</strong><span>{{'Available' if supported else 'Not exposed by this game or pack'}}</span></div>{% endfor %}{% if health.get('errors') %}<h3>Guarded errors</h3>{% for error in health.get('errors') %}<div class="list-row"><strong>{{error.get('feature','Unknown')|replace('_',' ')|title}}</strong><span>{{error.get('error','Unavailable')}}</span></div>{% endfor %}{% endif %}{% if diagnostic.get('unmapped_report_telemetry') %}<h3>Forward-compatible report data retained</h3><p>The receiver kept these newer report fields even though this tracker version does not use them yet: <code>{{diagnostic.get('unmapped_report_telemetry',{}).keys()|join(', ')}}</code>.</p>{% endif %}</div></details>
   {% if diagnostic.get('detected_optional_mods') %}<p><strong>Detected integrations:</strong> {{diagnostic.get('detected_optional_mods')|join(', ')}}</p>{% endif %}
 </section>
 {% endif %}
@@ -54,14 +54,16 @@
   <p class="eyebrow">REUSABLE · NO PRIVATE TOKEN</p>
   <h2>Download the complete reusable kit</h2>
   <p>Use this for updates or public sharing. It includes every Clock Sync file and a blank configuration template, but no workspace or save credential.</p>
-  <p><a class="button primary" href="/downloads/clock-sync">Download Clock Sync 2.1.0 complete kit</a></p>
-  <div class="notice"><strong>Expected inside the SeveralUDOClockSync folder:</strong> <code>SeveralUDOClockRelay.ps1</code> and <code>Start SeveralUDO Clock Relay.bat</code>. Version 2.1.0 adds guarded pregnancy, genealogy, relationship, death, illness, life-stage, career, education, occult, aspiration, diagnostic and optional game-portrait telemetry.</div>
+  <p><a class="button primary" href="/downloads/clock-sync">Download Clock Sync {{clock_sync_version}} complete kit</a></p>
+  <div class="notice"><strong>Expected inside the SeveralUDOClockSync folder:</strong> the Script Mod, ordered offline relay, installer/updater, self-test, instructions, and BAT starters. Version {{clock_sync_version}} adds save-slot protection, full played-population baselines, smaller delta reports, ordered checksummed delivery, exact seconds, stable tuning IDs, removal detection, and offline recovery.</div>
   <details>
     <summary>Download individual files</summary>
     <div class="action-bar">
       <a class="button" href="/downloads/clock-sync/script">Script Mod</a>
       <a class="button" href="/downloads/clock-sync/relay">PowerShell relay</a>
       <a class="button" href="/downloads/clock-sync/starter">Relay starter BAT</a>
+      <a class="button" href="/downloads/clock-sync/self-test">Self-test BAT</a>
+      <a class="button" href="/downloads/clock-sync/updater-starter">Installer / updater BAT</a>
       <a class="button" href="/downloads/clock-sync/config-template">Config template</a>
       <a class="button" href="/downloads/clock-sync/instructions">Installation guide</a>
       <a class="button" href="/downloads/clock-sync/troubleshooting">Troubleshooting guide</a>
@@ -81,10 +83,10 @@
   <h2>Install Clock Sync on Windows</h2>
   <ol>
     <li><strong>Close The Sims 4</strong> before installing or replacing the <code>.ts4script</code> file.</li>
-    <li>Download the <strong>ready-to-install private kit</strong> above. Open the ZIP and copy its <strong>SeveralUDOClockSync</strong> folder into <strong>Documents → Electronic Arts → The Sims 4 → Mods</strong>.</li>
+    <li>Download the <strong>ready-to-install private kit</strong> above and extract it. Open its <strong>SeveralUDOClockSync</strong> folder, then double-click <strong>Install or Update SeveralUDO Clock Sync.bat</strong>. It backs up the prior install and safely moves exact-name duplicate Script Mods into that backup.</li>
     <li>Confirm the file is no deeper than <strong>Mods → SeveralUDOClockSync → SeveralUDOClockSync.ts4script</strong>. Script Mods cannot be buried in extra folders.</li>
     <li>In The Sims 4, open <strong>Game Options → Other</strong>. Enable both <strong>Custom Content and Mods</strong> and <strong>Script Mods Allowed</strong>, then restart the game if either setting changed.</li>
-    <li>Before opening the game, double-click <strong>Start SeveralUDO Clock Relay.bat</strong>. A window may flash and disappear; that is normal because the relay stays hidden.</li>
+    <li>Double-click <strong>Test SeveralUDO Clock Sync.bat</strong>. It checks the files, private config, writable queue and tracker receiver without advancing time. Then start <strong>Start SeveralUDO Clock Relay.bat</strong>.</li>
     <li>Start The Sims 4, load a household, enter Live Mode and let in-game time move briefly. Changing lots also triggers a new report.</li>
     <li>Return here. <strong>Receiver</strong> should say Active, and <strong>Last game day</strong> should no longer say Waiting.</li>
     <li>Open <a href="/p/automation">Automation Inbox</a> to verify new Sims, pregnancies, illnesses, deaths, relationships and other detected details before accepting them.</li>
@@ -99,6 +101,8 @@
       <dt><strong>SeveralUDOClockSync.ts4script</strong></dt><dd>Reads supported game data and writes a local pending report.</dd>
       <dt><strong>SeveralUDOClockRelay.ps1</strong></dt><dd>Sends that pending report to the configured tracker receiver.</dd>
       <dt><strong>Start SeveralUDO Clock Relay.bat</strong></dt><dd>Starts the relay hidden. Running it twice is safe.</dd>
+      <dt><strong>Install or Update…</strong></dt><dd>Backs up the current install, places the new files, preserves the private config, and moves exact-name duplicates into a recoverable backup.</dd>
+      <dt><strong>Test SeveralUDO Clock Sync.bat</strong></dt><dd>Checks the local installation and verifies the private tracker receiver without changing the chronicle.</dd>
       <dt><strong>config.json</strong></dt><dd>Contains the private endpoint and token for one tracker save. Never share it.</dd>
       <dt><strong>README and TROUBLESHOOTING</strong></dt><dd>Offline copies of these instructions for installation and support.</dd>
     </dl>
@@ -119,18 +123,26 @@
   <h2>Troubleshooting</h2>
   <details open><summary>Receiver still says Waiting</summary><p>Start the BAT file, load a household in Live Mode and let time advance or change lots. Confirm config.json is beside the Script Mod. Refresh this page after the report.</p></details>
   <details><summary>The BAT file flashes and disappears</summary><p>That is expected. The relay runs in a hidden PowerShell window. A built-in mutex prevents duplicate relay processes.</p></details>
-  <details><summary>pending_report.json remains in the folder</summary><p>Open last_result.json in Notepad. It records the most recent delivery error. Common causes are no internet connection, a stopped desktop tracker, an expired token or the wrong receiver URL. The relay retries after the cause is fixed.</p></details>
-  <details><summary>The wrong tracker save is advancing</summary><p>One config.json points to one tracker save. Open the correct save here and download its private kit, then replace the old config.json.</p></details>
+  <details><summary>Reports are waiting in report_queue</summary><p>Open <code>relay_health.json</code> or <code>last_result.json</code>. The relay keeps every report in order while offline and removes a report only after the tracker acknowledges it. Fix the connection and leave the relay running; it resumes automatically.</p></details>
+  <details><summary>The wrong Sims save was loaded</summary><p>Clock Sync 2.2 rejects a different Sims save slot before changing the tracker. If you intentionally switched this tracker to that game save, use the protected reset below, return to Live Mode and let time move.</p></details>
   <details><summary>The mod is missing from the game's startup list</summary><p>Enable Script Mods Allowed, keep the .ts4script no more than one folder beneath Mods, remove duplicate old copies and restart The Sims 4. If needed, close the game and remove localthumbcache.package.</p></details>
   <details><summary>The PowerShell relay or BAT file is missing</summary><p>Open and extract the <strong>SeveralUDOClockSync</strong> folder inside the ZIP. If Windows security filtered either command file, rename its matching <code>.backup.txt</code> recovery copy by removing only <code>.backup.txt</code>. The individual download buttons above are another safe fallback.</p></details>
-  <details><summary>ModGuard or security software warns about networking</summary><p>Clock Sync 2.1.0 writes locally inside the game. The separate PowerShell relay performs the HTTPS request. Use only files downloaded from this tracker and never approve differently named scripts or executables.</p></details>
+  <details><summary>ModGuard or security software warns about networking</summary><p>Clock Sync {{clock_sync_version}} writes locally inside the game. The separate PowerShell relay performs the HTTPS request. Use only files downloaded from this tracker and never approve differently named scripts or executables.</p></details>
 </section>
+
+{% if clock_protocol %}{% set protocol=clock_protocol.data %}
+<section class="panel">
+  <p class="eyebrow">SAVE-SLOT PROTECTION</p><h2>Paired Sims save</h2>
+  <div class="metrics"><article><strong>{{protocol.get('save_slot_name') or protocol.get('save_slot_id') or 'Unlabelled slot'}}</strong><span>accepted game save</span></article><article><strong>{{protocol.get('last_report_sequence') or 0}}</strong><span>last ordered report</span></article><article><strong>{{protocol.get('last_report_kind','—')|title}}</strong><span>last report type</span></article><article><strong>{{'Gap detected' if protocol.get('last_sequence_gap') else 'Continuous'}}</strong><span>delivery chain</span></article></div>
+  <details><summary>Intentionally pair a different Sims save</summary><p>This clears only the protected slot identity. It does not rotate the private token, change Global Day, edit Sims, or touch the game save.</p><form action="/api/clock/trust-next-save" method="post" onsubmit="return confirm('Trust the next Sims save reported by Clock Sync? Only use this after intentionally switching this tracker to a different game save.')"><button>Trust the next reported Sims save</button></form></details>
+</section>
+{% endif %}
 
 {% if local_mode %}
 <section class="panel" id="save-scan">
   <p class="eyebrow">NO MOD REQUIRED · READ ONLY</p>
   <h2>Scan a Sims 4 save file</h2>
-  <p>This supplements Clock Sync by reading the selected primary save without changing it. It can find active/player households, Sims, names, life stages, funds, spouses and the saved game day/time. Live illnesses, traits, skills, milestones, parent detail and moment-to-moment changes still come from Clock Sync.</p>
+  <p>This supplements Clock Sync by reading the selected primary save without changing it. It can find active/player households, Sims, names, life-stage progress, funds, significant-other hints, pregnancy progress and the saved game day/time. Live illnesses, traits, skills, milestones, parent detail and moment-to-moment changes still come from Clock Sync.</p>
   {% if game_save_notice %}<div class="notice">{{game_save_notice}}</div>{% endif %}
   {% if game_save_files %}
   <form action="/api/game-save/scan" method="post">
@@ -140,10 +152,12 @@
   {% else %}<div class="empty">No primary saves were found in Documents → Electronic Arts → The Sims 4 → saves.</div>{% endif %}
   {% if game_save_scan %}
   {% set slot=game_save_scan.slot %}
-  <div class="metrics"><article><strong>{{slot.game_day}}</strong><span>saved game day</span></article><article><strong>{{'%02d:%02d'|format(slot.game_hour,slot.game_minute)}}</strong><span>saved game time</span></article><article><strong>{{game_save_scan.relevant_households|length}}</strong><span>player households</span></article><article><strong>{{game_save_scan.relevant_sims|length}}</strong><span>reviewable Sims</span></article></div>
+  <div class="metrics"><article><strong>{{slot.game_day}}</strong><span>saved game day</span></article><article><strong>{{'%02d:%02d:%02d'|format(slot.game_hour,slot.game_minute,slot.game_second or 0)}}</strong><span>saved game time</span></article><article><strong>{{game_save_scan.relevant_households|length}}</strong><span>player households</span></article><article><strong>{{game_save_scan.relevant_sims|length}}</strong><span>reviewable Sims</span></article></div>
+  {% if game_save_scan.comparison %}{% set counts=game_save_scan.comparison.counts %}<div class="notice"><strong>Read-only comparison:</strong> {{counts.matched}} unchanged · {{counts.changed}} changed · {{counts.new}} new · {{counts.missing}} absent from this played-population snapshot. A restorable tracker backup is created before any selected reconciliation is applied.</div>{% endif %}
   <form action="/api/game-save/apply" method="post">
     <label class="check-row"><input type="checkbox" name="advance_clock" checked> Advance the tracker from this save-file clock (first scan anchors; later scans advance only)</label>
-    <div class="scan-list">{% for sim in game_save_scan.relevant_sims %}<label class="scan-row"><input type="checkbox" name="game_sim_id" value="{{sim.game_sim_id}}" checked><span><strong>{{sim.name}}</strong><small>{{sim.age_stage|replace('youngadult','young adult')|title}} · {{sim.game_household_id}}{% if sim.tracker_record_id %} · linked to {{sim.tracker_record_label}}{% else %} · review as new or match by exact name{% endif %}</small></span></label>{% endfor %}</div>
+    <div class="scan-list">{% for sim in game_save_scan.relevant_sims %}<label class="scan-row"><input type="checkbox" name="game_sim_id" value="{{sim.game_sim_id}}" {% if sim.comparison_status != 'matched' %}checked{% endif %}><span><strong>{{sim.name}}</strong><small>{{sim.age_stage|replace('youngadult','young adult')|title}} · {{sim.household_name or sim.game_household_id}} · {{sim.comparison_status|title}}{% if sim.tracker_record_id %} · {{sim.match_source}} match: {{sim.tracker_record_label}}{% else %} · review as new{% endif %}{% if sim.differences %} · {{sim.differences|map(attribute='field')|join(', ')}} changed{% endif %}</small></span></label>{% endfor %}</div>
+    {% if game_save_scan.comparison.missing %}<details><summary>{{game_save_scan.comparison.missing|length}} linked tracker Sim(s) absent from this save snapshot</summary><p>This can mean they moved to an unplayed household, were deleted, or the save exposes only a partial population. The scanner never deletes them automatically.</p>{% for person in game_save_scan.comparison.missing %}<div class="list-row"><strong>{{person.tracker_record_label}}</strong><span>{{person.game_sim_id}}</span></div>{% endfor %}</details>{% endif %}
     <button class="primary">Reconcile selected Sims</button>
     <small>New Sims and uncertain changes go to Automation Inbox for approval.</small>
   </form>

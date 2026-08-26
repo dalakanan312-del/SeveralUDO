@@ -10,6 +10,7 @@ produces an empty/partial preview instead of damaging a save.
 
 import os
 import struct
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -154,7 +155,17 @@ def _parse_sim(raw: bytes) -> dict:
     age_value = _value(fields, 8)
     age_labels = {1: "newborn", 2: "infant", 4: "toddler", 8: "child", 16: "teen", 32: "youngadult", 64: "adult", 128: "elder"}
     gender_labels = {4096: "Male", 8192: "Female"}
-    return {
+    age_progress = _float32(fields, 13)
+    pregnancy_progress = _float32(fields, 48)
+    age_progress_percentage = None
+    if age_progress is not None:
+        age_progress_percentage = round(age_progress * 100 if age_progress <= 1 else age_progress, 2)
+    pregnancy_progress_percentage = None
+    if pregnancy_progress is not None:
+        pregnancy_progress_percentage = round(
+            pregnancy_progress * 100 if pregnancy_progress <= 1 else pregnancy_progress, 2
+        )
+    result = {
         "game_sim_id": str(sim_id),
         "game_household_id": str(_value(fields, 4) or ""),
         "first_name": first_name,
@@ -165,10 +176,20 @@ def _parse_sim(raw: bytes) -> dict:
         "age_value": age_value,
         "age_stage": age_labels.get(age_value, "unknown"),
         "is_baby": age_value == 1,
-        "age_progress": _float32(fields, 13),
+        "age_progress": age_progress,
+        "age_progress_percentage": age_progress_percentage,
         "significant_other_game_id": str(_value(fields, 15) or ""),
-        "pregnancy_progress": _float32(fields, 48),
+        "pregnancy_progress": pregnancy_progress,
+        "pregnancy_progress_percentage": pregnancy_progress_percentage,
     }
+    # A serialized pregnancy-progress field is the reliable save-file signal
+    # that this Sim currently has a pregnancy tracker.  When the field is
+    # absent, leave pregnancy state unknown instead of treating the scan as an
+    # authoritative pregnancy ending.
+    if pregnancy_progress is not None:
+        result["is_pregnant"] = True
+        result["pregnancy_scan_supported"] = True
+    return result
 
 
 def _parse_household(raw: bytes) -> dict:
@@ -194,13 +215,14 @@ def _parse_save_slot(raw: bytes) -> dict:
     gameplay = _value(fields, 8)
     if isinstance(gameplay, bytes):
         game_ticks = _value(protobuf_fields(gameplay), 1)
-    day = hour = minute = None
+    day = hour = minute = second = None
     if isinstance(game_ticks, int):
         # EA's DateAndTime clock uses 25 ticks per Sim second.
         sim_seconds = game_ticks // 25
         day = sim_seconds // 86_400
         hour = (sim_seconds % 86_400) // 3_600
         minute = (sim_seconds % 3_600) // 60
+        second = sim_seconds % 60
     return {
         "slot_name": _text(fields, 9),
         "active_household_game_id": str(_value(fields, 11) or ""),
@@ -208,6 +230,7 @@ def _parse_save_slot(raw: bytes) -> dict:
         "game_day": day,
         "game_hour": hour,
         "game_minute": minute,
+        "game_second": second,
     }
 
 
@@ -247,6 +270,11 @@ def inspect_save(path: Path) -> dict:
     outer = protobuf_fields(resource)
     slot_raw = _value(outer, 2, b"")
     slot = _parse_save_slot(slot_raw) if isinstance(slot_raw, bytes) else {}
+    slot_id = target.stem.removeprefix("Slot_")
+    slot["save_slot_id"] = slot_id
+    slot["save_identity"] = hashlib.sha256(
+        f"{slot_id}|{slot.get('slot_name') or ''}".encode("utf-8")
+    ).hexdigest()[:32]
     sims = [_parse_sim(value) for wire, value in outer.get(6, ()) if wire == 2 and isinstance(value, bytes)]
     households = [_parse_household(value) for wire, value in outer.get(5, ()) if wire == 2 and isinstance(value, bytes)]
     sims = [item for item in sims if item]
@@ -274,6 +302,80 @@ def relevant_population(scan: dict) -> tuple[list[dict], list[dict]]:
     return households, sims
 
 
+def compare_scan(session, save, scan: dict) -> dict:
+    """Build a read-only, field-level comparison with the open tracker save."""
+    from sqlalchemy import select
+
+    from .models import Record
+
+    households, sims = relevant_population(scan)
+    tracked = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    )))
+    by_game_id = {
+        str((item.data or {}).get("game_sim_id") or "").strip(): item for item in tracked
+        if str((item.data or {}).get("game_sim_id") or "").strip()
+    }
+    by_name: dict[str, list] = {}
+    for item in tracked:
+        key = " ".join(str(item.label or "").casefold().split())
+        if key:
+            by_name.setdefault(key, []).append(item)
+    household_by_id = {str(item.get("game_household_id") or ""): item for item in households}
+    rows = []
+    present_ids = set()
+    for game_sim in sims:
+        game_id = str(game_sim.get("game_sim_id") or "").strip()
+        if game_id:
+            present_ids.add(game_id)
+        match = by_game_id.get(game_id)
+        match_source = "game identity" if match else ""
+        if not match:
+            candidates = by_name.get(" ".join(str(game_sim.get("name") or "").casefold().split()), [])
+            if len(candidates) == 1:
+                match, match_source = candidates[0], "unique exact name"
+        differences = []
+        home = household_by_id.get(str(game_sim.get("game_household_id") or ""), {})
+        if match:
+            data = match.data or {}
+            checks = (
+                ("first name", data.get("first_name"), game_sim.get("first_name")),
+                ("last name", data.get("last_name"), game_sim.get("last_name")),
+                ("life stage", data.get("game_age_stage"), game_sim.get("age_stage")),
+                ("game household", data.get("game_household_id"), game_sim.get("game_household_id")),
+                ("significant other", data.get("game_significant_other_game_sim_id"), game_sim.get("significant_other_game_id")),
+            )
+            for label, tracker_value, game_value in checks:
+                if game_value not in (None, "") and str(tracker_value or "").casefold() != str(game_value).casefold():
+                    differences.append({"field": label, "tracker": tracker_value, "game": game_value})
+            if game_sim.get("pregnancy_scan_supported") and bool(data.get("game_is_pregnant")) != bool(game_sim.get("is_pregnant")):
+                differences.append({"field":"pregnancy", "tracker":bool(data.get("game_is_pregnant")), "game":bool(game_sim.get("is_pregnant"))})
+        rows.append({
+            **game_sim,
+            "household_name": home.get("name") or "",
+            "tracker_record_id": match.id if match else None,
+            "tracker_record_label": match.label if match else None,
+            "match_source": match_source,
+            "differences": differences,
+            "comparison_status": "changed" if differences else "matched" if match else "new",
+        })
+    missing = [
+        {"tracker_record_id": item.id, "tracker_record_label": item.label,
+         "game_sim_id": str((item.data or {}).get("game_sim_id") or "")}
+        for item in tracked
+        if str((item.data or {}).get("game_sim_id") or "").strip()
+        and str((item.data or {}).get("game_sim_id") or "").strip() not in present_ids
+    ]
+    counts = {
+        "matched": sum(row["comparison_status"] == "matched" for row in rows),
+        "changed": sum(row["comparison_status"] == "changed" for row in rows),
+        "new": sum(row["comparison_status"] == "new" for row in rows),
+        "missing": len(missing),
+    }
+    return {"rows": rows, "missing": missing, "counts": counts,
+            "safe_review_count": counts["changed"] + counts["new"]}
+
+
 def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advance_clock: bool = True) -> dict:
     """Apply a user-approved read-only scan to tracker records.
 
@@ -290,7 +392,7 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
     household_by_id = {str(item["game_household_id"]): item for item in households}
     slot = scan.get("slot") or {}
     game_day = slot.get("game_day")
-    hour, minute = slot.get("game_hour"), slot.get("game_minute")
+    hour, minute, second = slot.get("game_hour"), slot.get("game_minute"), slot.get("game_second")
     advanced = 0
     settings = dict(save.settings or {})
     if advance_clock and game_day is not None:
@@ -306,6 +408,7 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
         settings.update(
             save_scan_last_file=scan.get("file_name"), save_scan_last_game_day=game_day,
             save_scan_last_game_hour=hour, save_scan_last_game_minute=minute,
+            save_scan_last_game_second=second,
             save_scan_last_modified_at=scan.get("modified_at"),
         )
         save.settings = settings
@@ -326,9 +429,14 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
             "household_id": item.get("game_household_id"),
             "household_name": home.get("name") or "",
             "household_funds": home.get("funds"),
+            "household_member_game_ids": list(home.get("member_game_ids") or []),
+            "household_last_played_game_sim_id": home.get("last_played_game_sim_id") or "",
+            "household_is_unplayed": bool(home.get("is_unplayed", False)),
+            "household_is_player": bool(home.get("is_player", False)),
             "detected_game_day": game_day,
             "detected_game_hour": hour,
             "detected_game_minute": minute,
+            "detected_game_second": second,
             "detected_tracker_global_day": save.global_day,
             "telemetry_version": 0,
             "source": "read-only Sims 4 save scan",

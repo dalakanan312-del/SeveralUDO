@@ -2,6 +2,8 @@ import importlib.util
 import sys
 import types
 import unittest
+import tempfile
+import json
 from zipfile import ZipFile
 from pathlib import Path
 
@@ -14,7 +16,7 @@ BUILD_SCRIPT = Path(__file__).parents[1] / "clock_bridge" / "build_clock_sync.ps
 class ClockModSourceTests(unittest.TestCase):
     def load_module(self):
         package_name = "clock_mod_source_test"
-        core = types.SimpleNamespace(VERSION="old")
+        core = types.SimpleNamespace(VERSION="old", _household_snapshot=lambda: ("", []), _send_payload=lambda *args: 200)
 
         def value_or_call(owner, name, default=None):
             try:
@@ -66,11 +68,12 @@ class ClockModSourceTests(unittest.TestCase):
             developmental_milestone_tracker=MilestoneTracker(),
         )
         result = module._extended_snapshot(sim, None)
-        self.assertEqual(result["skills"], [{"name": "Logic", "level": 7}])
+        self.assertEqual(result["skills"], [{"name": "Logic", "level": 7, "tuning_id": "12345"}])
         self.assertEqual(result["milestones"], ["First Steps"])
         self.assertTrue(result["skills_scan_supported"])
         self.assertTrue(result["milestone_scan_supported"])
-        self.assertEqual(result["telemetry_version"], 4)
+        self.assertEqual(result["telemetry_version"], 5)
+        self.assertEqual(result["stable_tuning_ids"]["skills"]["Logic"], "12345")
 
     def test_guarded_v4_snapshot_reports_selected_life_history_modules(self):
         module = self.load_module()
@@ -79,6 +82,18 @@ class ClockModSourceTests(unittest.TestCase):
             pass
 
         class Buff_Malaria:
+            pass
+
+        class adeepindigo_HealthcareRedux_Diseases_FluBuff:
+            guid64 = 88001
+
+        class adeepindigo_HealthcareRedux_Diseases_buff_RecentFlu:
+            pass
+
+        class adeepindigo_HealthcareRedux_Diseases_FluTrait_Diagnosed:
+            guid64 = 88002
+
+        class adeepindigo_HealthcareRedux_Diseases_FluImmuneTrait:
             pass
 
         class Career_Apothecary:
@@ -103,6 +118,8 @@ class ClockModSourceTests(unittest.TestCase):
             get_romance_score=lambda target: 91,
         )
         health_buff = types.SimpleNamespace(buff_type=Buff_Malaria, severity="Severe", remaining_minutes=120)
+        influenza_buff = types.SimpleNamespace(buff_type=adeepindigo_HealthcareRedux_Diseases_FluBuff, severity="Severe", remaining_minutes=240)
+        recent_influenza = types.SimpleNamespace(buff_type=adeepindigo_HealthcareRedux_Diseases_buff_RecentFlu)
         career = types.SimpleNamespace(career_tuning=Career_Apothecary, level=4, performance=77)
         sim = types.SimpleNamespace(
             sim_id=11, first_name="Anne", last_name="Doe", gender="Female", age="Adult",
@@ -113,7 +130,7 @@ class ClockModSourceTests(unittest.TestCase):
             ),
             genealogy=genealogy,
             relationship_tracker=relationship_tracker,
-            buff_component=types.SimpleNamespace(get_all_buffs=lambda: (health_buff,)),
+            buff_component=types.SimpleNamespace(get_all_buffs=lambda: (health_buff, influenza_buff, recent_influenza)),
             age_in_days=103, age_progress_percentage=.75, days_until_age_up=6,
             career_tracker=types.SimpleNamespace(careers={1: career}),
             degree_tracker=types.SimpleNamespace(degrees=(Degree_History,)),
@@ -122,12 +139,18 @@ class ClockModSourceTests(unittest.TestCase):
                 active_aspiration=Aspiration_Successful_Lineage,
                 completed_aspirations=(),
             ),
-            trait_tracker=types.SimpleNamespace(traits=(Trait_Lifestyle_Close_Knit,)),
+            trait_tracker=types.SimpleNamespace(
+                equipped_traits=(Trait_Lifestyle_Close_Knit,),
+                traits=(
+                adeepindigo_HealthcareRedux_Diseases_FluTrait_Diagnosed,
+                adeepindigo_HealthcareRedux_Diseases_FluImmuneTrait,
+                ),
+            ),
             portrait_bytes=b"portrait" * 20,
         )
         result = module._extended_snapshot(sim, None)
-        self.assertEqual(result["telemetry_version"], 4)
-        self.assertEqual(result["clock_sync_version"], "2.1.0")
+        self.assertEqual(result["telemetry_version"], 5)
+        self.assertEqual(result["clock_sync_version"], "2.2.3")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)
@@ -138,13 +161,58 @@ class ClockModSourceTests(unittest.TestCase):
         self.assertEqual(result["occult_progress"]["rank"], "Master")
         self.assertIn("Successful Lineage", result["aspirations"])
         self.assertTrue(result["illness_scan_supported"])
-        self.assertEqual(result["illnesses"][0]["name"], "Malaria")
+        self.assertEqual({item["name"] for item in result["illnesses"]}, {"Malaria", "Influenza"})
+        influenza = next(item for item in result["health_buffs"] if item["name"] == "Influenza")
+        self.assertEqual(influenza["provider"], "Healthcare Redux")
+        self.assertEqual(influenza["source_kind"], "trait+active_buff")
+        self.assertNotIn("Recent Flu", {item["raw_name"] for item in result["health_buffs"]})
+        self.assertTrue(result["healthcare_redux_detected"])
         self.assertEqual(result["game_portrait"]["capture_mode"], "embedded")
         self.assertTrue(all(result["telemetry_capabilities"].get(name) for name in (
             "pregnancy", "genealogy", "relationships", "health", "life_stage",
             "career_education", "occult_progress", "personal_development", "portraits",
         )))
         self.assertTrue(result["clock_sync_diagnostics"]["healthy"])
+
+    def test_protocol_reports_are_checksummed_delta_encoded_and_queued_in_order(self):
+        module = self.load_module()
+
+        class FamilyFunds:
+            def __init__(self, money):
+                self.money = money
+
+        with tempfile.TemporaryDirectory() as folder:
+            module._core._config_path = lambda: str(Path(folder) / "config.json")
+            replacements = []
+            real_replace = module.os.replace
+            module.os.replace = lambda source, destination: (
+                replacements.append((str(source), str(destination))),
+                real_replace(source, destination),
+            )[-1]
+            member = {"game_sim_id":"101", "first_name":"Ada", "skills":[], "household_funds":FamilyFunds(12345)}
+            config = {"save_identity":"slot-test", "receiver_url":"https://example.invalid/api/clock/report", "sync_token":"secret"}
+            households = [{"game_household_id":"h-1", "name":"Test House", "funds":FamilyFunds(12345)}]
+            first = module._protocol_report(10, 8, 15, "Test House", [member], True, households, True, config)
+            second = module._protocol_report(10, 8, 16, "Test House", [member], False, [], False, config)
+            self.assertEqual((first["report_kind"], second["report_kind"]), ("full", "delta"))
+            self.assertEqual(first["household_sims"][0]["household_funds"], 12345)
+            self.assertEqual(first["population_households"][0]["funds"], 12345)
+            self.assertEqual(module._funds_amount(types.SimpleNamespace(funds=FamilyFunds(77))), 77)
+            self.assertEqual(second["household_sims"], [])
+            self.assertEqual(second["report_sequence"], first["report_sequence"] + 1)
+            self.assertEqual(second["previous_report_checksum"], first["report_checksum"])
+            self.assertEqual(first["report_checksum"], module._canonical_checksum(first))
+            payload = json.dumps(second, separators=(",", ":")).encode("utf-8")
+            module._send_payload_v22(config, payload)
+            queued = sorted((Path(folder) / "report_queue").glob("report-*.json"))
+            self.assertEqual(len(queued), 1)
+            envelope = json.loads(queued[0].read_text())
+            self.assertEqual(envelope["report_sequence"], second["report_sequence"])
+            self.assertEqual(envelope["payload"]["report_checksum"], second["report_checksum"])
+            self.assertEqual(json.loads(envelope["payload_json"]), second)
+            self.assertTrue(replacements)
+            self.assertTrue(all(source.lower().endswith(".json") for source, _ in replacements))
+            self.assertFalse(any(source.lower().endswith(".tmp") for source, _ in replacements))
 
     def test_published_archive_keeps_real_compatibility_module(self):
         with ZipFile(ARCHIVE) as archive:

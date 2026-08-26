@@ -13,33 +13,23 @@ def _text(value) -> str:
 
 
 def _items(value) -> list[str]:
-    if value in (None, ""):
-        return []
-    if isinstance(value, dict):
-        value = [{"name": key, "value": item} for key, item in value.items()]
-    elif not isinstance(value, (list, tuple, set)):
-        value = [value]
-    result = []
-    for item in value:
-        if isinstance(item, dict):
-            name = str(item.get("name") or item.get("display_name") or item.get("title") or "").strip()
-            level = item.get("level", item.get("value"))
-            label = f"{name} (level {level})" if name and level not in (None, "") else name
-        else:
-            label = str(item).strip()
-        if label and label not in result:
-            result.append(label)
-    return result
+    return game_metadata.readable_named_labels(value)
 
 
 def _clock_data(snapshot: dict) -> dict:
     hour = snapshot.get("detected_game_hour")
     minute = snapshot.get("detected_game_minute")
+    second = snapshot.get("detected_game_second")
+    exact = None
+    if hour is not None and minute is not None:
+        exact = (f"{int(hour):02d}:{int(minute):02d}:{int(second):02d}"
+                 if second is not None else f"{int(hour):02d}:{int(minute):02d}")
     return {
         "detected_game_day": snapshot.get("detected_game_day"),
         "detected_game_hour": hour,
         "detected_game_minute": minute,
-        "detected_game_time": f"{int(hour):02d}:{int(minute):02d}" if hour is not None and minute is not None else None,
+        "detected_game_second": second,
+        "detected_game_time": exact,
     }
 
 

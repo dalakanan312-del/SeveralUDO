@@ -4,6 +4,7 @@ import os
 import unittest
 import io
 import json
+import struct
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -19,20 +20,20 @@ from PIL import Image
 from sqlalchemy import delete, func, select
 
 from app import accounts, auth, automation, backup_service, exports, insights, legacy_neon, names, notifications, sync, telemetry
-from app.automation import candidate as automation_candidate, reconcile_sim
+from app.automation import candidate as automation_candidate, classify_game_relationship, reconcile_sim, repair_relationship_inbox
 from app.calendar_utils import date_range_label, exact_historical_label
-from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, receive as receive_clock
+from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, report_checksum, receive as receive_clock
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
 from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
-from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, occult_identity, readable_trait_labels, trait_illnesses
+from app.game_metadata import _refpack_decompress, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
-from app.save_scanner import _parse_save_slot, _parse_sim, protobuf_fields
+from app.save_scanner import _parse_save_slot, _parse_sim, compare_scan, protobuf_fields
 from app.session_policy import BROWSER_MODE, PERSISTENT_MODE, REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -330,12 +331,18 @@ class CoreSmokeTests(unittest.TestCase):
             out.append(value);return bytes(out)
         def scalar(field,value): return varint(field<<3)+varint(value)
         def fixed64(field,value): return varint((field<<3)|1)+int(value).to_bytes(8,"little")
+        def fixed32_float(field,value): return varint((field<<3)|5)+struct.pack("<f",value)
         def text(field,value):
             raw=value.encode();return varint((field<<3)|2)+varint(len(raw))+raw
-        sim_raw=fixed64(1,123456)+fixed64(4,999)+text(5,"Anne")+text(6,"Capp")+scalar(7,8192)+scalar(8,16)
+        sim_raw=(fixed64(1,123456)+fixed64(4,999)+text(5,"Anne")+text(6,"Capp")+
+                 scalar(7,8192)+scalar(8,16)+fixed32_float(13,.5)+fixed64(15,654321)+fixed32_float(48,.75))
         sim=_parse_sim(sim_raw)
         self.assertEqual(sim["game_sim_id"],"123456");self.assertEqual(sim["name"],"Anne Capp")
         self.assertEqual(sim["age_stage"],"teen");self.assertEqual(sim["sex"],"Female")
+        self.assertEqual(sim["age_progress_percentage"],50.0)
+        self.assertEqual(sim["significant_other_game_id"],"654321")
+        self.assertTrue(sim["is_pregnant"])
+        self.assertEqual(sim["pregnancy_progress_percentage"],75.0)
         ticks=(61*86400+7*3600+30*60)*25
         gameplay=scalar(1,ticks);slot=text(9,"Elizabethan")+scalar(11,999)+varint((8<<3)|2)+varint(len(gameplay))+gameplay
         parsed=_parse_save_slot(slot)
@@ -398,6 +405,10 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(exact_day, 5)
         self.assertEqual(exact_fields["birth_time"], "08:15")
         self.assertNotIn("birth_year", exact_fields)
+        second_day, second_fields = resolve_birth_input(save, 5, "", 8, 15, 9)
+        self.assertEqual(second_day, 5)
+        self.assertEqual(second_fields["birth_time"], "08:15:09")
+        self.assertEqual(second_fields["birth_game_second"], 9)
 
     def test_newborn_clock_candidate_preserves_detection_time(self):
         game_sim_id = "newborn-" + uuid.uuid4().hex
@@ -409,7 +420,7 @@ class CoreSmokeTests(unittest.TestCase):
                 link = ClockLink(save_id=save.id, token_hash=uuid.uuid4().hex, game_anchor_day=300, tracker_anchor_day=20)
                 session.add(link); session.flush()
                 result = receive_clock(session, link, {
-                    "game_day": 300, "hour": 21, "minute": 37,
+                    "game_day": 300, "hour": 21, "minute": 37, "second": 42,
                     "household_members": [{"game_sim_id": game_sim_id, "first_name": "New", "last_name": "Baby", "is_baby": True}],
                 })
                 self.assertEqual(result["new_candidates"], 1)
@@ -418,6 +429,68 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(candidate.data["payload"]["detected_tracker_global_day"], 20)
                 self.assertEqual(candidate.data["payload"]["detected_game_hour"], 21)
                 self.assertEqual(candidate.data["payload"]["detected_game_minute"], 37)
+                self.assertEqual(candidate.data["payload"]["detected_game_second"], 42)
+                session.rollback()
+
+    def test_clock_protocol_rejects_corruption_and_wrong_save_without_mutation(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Protocol guard test", global_day=20)
+                session.add(save); session.flush()
+                link = ClockLink(save_id=save.id, token_hash=uuid.uuid4().hex)
+                session.add(link); session.flush()
+                first = {
+                    "protocol_version":2, "report_sequence":1, "report_id":"slot-a-1",
+                    "report_kind":"full", "previous_report_checksum":"", "save_identity":"slot-a",
+                    "save_slot_id":"A", "game_day":500, "game_hour":5, "game_minute":6,
+                    "game_second":7, "population_complete":True, "population_sim_ids":[],
+                    "household_sims":[],
+                }
+                first["report_checksum"] = report_checksum(first)
+                accepted = receive_clock(session, link, first)
+                self.assertTrue(accepted["ok"])
+                self.assertEqual(accepted["report_sequence"], 1)
+                self.assertEqual(save.global_day, 20)
+                duplicate = receive_clock(session, link, dict(first))
+                self.assertTrue(duplicate["duplicate"])
+                corrupted = {**first, "report_sequence":2, "game_day":999}
+                self.assertEqual(receive_clock(session, link, corrupted)["reason"], "checksum_mismatch")
+                self.assertEqual(save.global_day, 20)
+                wrong = {
+                    **first, "report_sequence":2, "report_id":"slot-b-2", "save_identity":"slot-b",
+                    "previous_report_checksum":first["report_checksum"],
+                }
+                wrong["report_checksum"] = report_checksum(wrong)
+                rejected = receive_clock(session, link, wrong)
+                self.assertEqual(rejected["reason"], "wrong_game_save")
+                self.assertEqual(link.last_game_day, 500)
+                session.rollback()
+
+    def test_read_only_save_comparison_identifies_changed_new_and_missing_sims(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Scanner comparison", global_day=10)
+                session.add(save); session.flush()
+                linked = Record(save_id=save.id, kind="sim", label="Ada Known", data={
+                    "game_sim_id":"101", "first_name":"Ada", "last_name":"Known",
+                    "game_age_stage":"adult", "game_household_id":"H1",
+                })
+                missing = Record(save_id=save.id, kind="sim", label="Missing Known", data={"game_sim_id":"202"})
+                session.add_all([linked, missing]); session.flush()
+                scan = {
+                    "slot":{"active_household_game_id":"H1"},
+                    "households":[{"game_household_id":"H1", "name":"Known House", "is_player":True}],
+                    "sims":[
+                        {"game_sim_id":"101", "name":"Ada Known", "first_name":"Ada", "last_name":"Known", "age_stage":"elder", "game_household_id":"H1"},
+                        {"game_sim_id":"303", "name":"New Person", "first_name":"New", "last_name":"Person", "age_stage":"adult", "game_household_id":"H1"},
+                    ],
+                }
+                comparison = compare_scan(session, save, scan)
+                self.assertEqual(comparison["counts"], {"matched":0, "changed":1, "new":1, "missing":1})
+                self.assertEqual(comparison["rows"][0]["differences"][0]["field"], "life stage")
+                self.assertEqual(comparison["missing"][0]["tracker_record_label"], "Missing Known")
                 session.rollback()
 
     def test_clock_automatically_creates_household_and_connects_known_members_once(self):
@@ -828,6 +901,9 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertIn("SeveralUDOClockSync/SeveralUDOClockSync.ts4script", names)
                 self.assertIn("SeveralUDOClockSync/SeveralUDOClockRelay.ps1", names)
                 self.assertIn("SeveralUDOClockSync/Start SeveralUDO Clock Relay.bat", names)
+                self.assertIn("SeveralUDOClockSync/Test SeveralUDO Clock Sync.bat", names)
+                self.assertIn("SeveralUDOClockSync/Install or Update SeveralUDO Clock Sync.ps1", names)
+                self.assertIn("SeveralUDOClockSync/Install or Update SeveralUDO Clock Sync.bat", names)
                 self.assertIn("SeveralUDOClockSync/SeveralUDOClockRelay.ps1.backup.txt", names)
                 self.assertIn("SeveralUDOClockSync/Start SeveralUDO Clock Relay.bat.backup.txt", names)
                 self.assertIn("SeveralUDOClockSync/KIT CONTENTS - VERIFY.txt", names)
@@ -860,10 +936,14 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertTrue(private_config["capture_portraits"])
                 self.assertTrue(private_config["receiver_url"].endswith("/api/clock/report"))
                 self.assertGreaterEqual(len(private_config["sync_token"]), 32)
+            ping = client.get("/api/clock/ping", headers={"Authorization": f"Bearer {private_config['sync_token']}"})
+            self.assertEqual(ping.status_code, 200)
+            self.assertTrue(ping.json()["ok"])
+            self.assertEqual(ping.json()["clock_sync_version"], "2.2.3")
             private_report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {private_config['sync_token']}"}, json={"game_day": 60, "hour": 12, "minute": 0, "household_members": []})
             self.assertEqual(private_report.status_code, 200)
             clock_link = client.post("/api/clock/links").json()
-            report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {clock_link['token']}"}, json={"game_day": 60, "hour": 13, "minute": 45, "household_members": [{
+            report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {clock_link['token']}"}, json={"game_day": 60, "hour": 13, "minute": 45, "future_report_context":{"channel":"test"}, "household_members": [{
                 "clock_sync_version":"2.1.0", "game_build":"1.999.1", "installed_packs":["Base Game"],
                 "telemetry_capabilities":{"pregnancy":True,"portraits":False},
                 "clock_sync_diagnostics":{"healthy":True,"errors":[]},
@@ -871,9 +951,15 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertEqual(report.status_code, 200)
             self.assertEqual(report.json()["tracker_global_day"], before)
             self.assertTrue(report.json()["diagnostics_updated"])
+            with SessionLocal() as session:
+                diagnostic=session.scalar(select(Record).where(
+                    Record.save_id==save_id,Record.kind=="clock_diagnostic",Record.deleted.is_(False),
+                ))
+                self.assertEqual(diagnostic.data["unmapped_report_telemetry"]["future_report_context"],{"channel":"test"})
             diagnostics_page = client.get("/p/clock")
             self.assertIn("SELF-DIAGNOSTICS", diagnostics_page.text)
             self.assertIn("Clock Sync 2.1.0", diagnostics_page.text)
+            self.assertIn("future_report_context",diagnostics_page.text)
             report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {clock_link['token']}"}, json={"game_day": 61, "hour": 2, "minute": 5, "household_members": []})
             self.assertEqual(report.json()["tracker_global_day"], before + 1)
             device = client.post("/api/sync/devices", data={"name": "Test desktop"}).json()
@@ -1737,9 +1823,9 @@ class CoreSmokeTests(unittest.TestCase):
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
     def test_healthcare_trait_hashes_detect_disease_but_not_immunization(self):
-        localizations = {1:"Pneumonia",2:"Meningitis Immunization",3:"Has Current Illness",4:"Malaria"}
-        found = trait_illnesses({"traits":["hash: 1","hash: 2","hash: 3","hash: 4","hash: 999"]}, localizations)
-        self.assertEqual({item["name"] for item in found},{"Pneumonia","Malaria"})
+        localizations = {1:"Pneumonia",2:"Meningitis Immunization",3:"Has Current Illness",4:"Malaria",5:"Influenza"}
+        found = trait_illnesses({"traits":["hash: 1","hash: 2","hash: 3","hash: 4","hash: 5","hash: 999"]}, localizations)
+        self.assertEqual({item["name"] for item in found},{"Pneumonia","Malaria","Influenza"})
 
     def test_healthcare_readable_chronic_condition_and_native_illness_payload_are_detected(self):
         localizations = {1:"Healthcare Redux Core Trait",2:"Meningitis Immunization"}
@@ -1756,10 +1842,12 @@ class CoreSmokeTests(unittest.TestCase):
             {"source_key":"hcr:malaria-immunization","name":"Malaria Immunization"},
             {"source_key":"adeepindigo_HealthcareRedux_Diseases_buff_RecentMalaria","name":"Feeling better"},
             {"source_key":"hcr:meningitis","name":"Meningitis"},
+            {"source_key":"adeepindigo_HealthcareRedux_Diseases_FluBuff","name":"adeepindigo HealthcareRedux Diseases FluBuff","provider":"Healthcare Redux"},
+            {"source_key":"adeepindigo_HealthcareRedux_Diseases_FluImmuneTrait","name":"adeepindigo HealthcareRedux Diseases FluImmuneTrait","provider":"Healthcare Redux"},
             {"source_key":"hcr:sleep-disorder-treatment","name":"Sleep Disorder Treatment"},
         ]})
         self.assertTrue(native["illness_scan_supported"])
-        self.assertEqual({item["name"] for item in native["illnesses"]},{"Malaria","Meningitis"})
+        self.assertEqual({item["name"] for item in native["illnesses"]},{"Malaria","Meningitis","Influenza"})
         with mock.patch("app.game_metadata.healthcare_localizations", return_value=localizations):
             healthy = enrich_illness_snapshot({"traits":["hash: 1"]})
         self.assertTrue(healthy["illness_scan_supported"])
@@ -1780,6 +1868,42 @@ class CoreSmokeTests(unittest.TestCase):
                 reconcile_sim(session,save,sim,{"telemetry_version":2,"traits":["hash: 1"]})
                 self.assertEqual(sim.data["game_traits"],["Genius"])
                 session.rollback()
+
+    def test_all_clock_sync_hash_formats_resolve_to_game_names(self):
+        localizations = {1:"Self-Assured", 2:"Skill_Logic", 0xABC:"Milestone_FirstSteps"}
+        self.assertEqual(localization_hash("hash#1"), 1)
+        self.assertEqual(localization_hash("localization key = 0xABC"), 0xABC)
+        self.assertEqual(
+            readable_named_labels(["hash#2 (level 7)"], kind="skill", localizations=localizations),
+            ["Logic (level 7)"],
+        )
+        self.assertEqual(
+            readable_named_labels(["string id: 0xABC"], kind="milestone", localizations=localizations),
+            ["First Steps"],
+        )
+        self.assertEqual(readable_trait_labels(["hash#1"], localizations), ["Self-Assured"])
+
+    def test_clock_sync_details_are_a_safe_online_fallback_for_hashes(self):
+        self.assertEqual(
+            readable_named_labels(
+                ["hash#999"],
+                [{"name":"Skill_HomestyleCooking","tuning_id":1234}],
+                kind="skill",
+                localizations={},
+            ),
+            ["Homestyle Cooking"],
+        )
+        # Details with a different number of rows must never be paired by
+        # position, because that could put another aspiration's name on a Sim.
+        self.assertEqual(
+            readable_named_labels(
+                ["hash#999", "hash#1000"],
+                [{"name":"Aspiration_BestsellingAuthor","tuning_id":1234}],
+                kind="aspiration",
+                localizations={},
+            ),
+            ["Unidentified aspiration (ID 999)", "Unidentified aspiration (ID 1000)"],
+        )
 
     def test_imported_sim_is_linked_by_unique_exact_name(self):
         with TestClient(app):
@@ -1838,6 +1962,95 @@ class CoreSmokeTests(unittest.TestCase):
                 reconcile_sim(session,save,sim,{"telemetry_version":2,"traits":[],"skills":[],"milestones":[]})
                 self.assertEqual(sim.data["game_traits"],[])
                 self.assertEqual(sim.data["game_skills"],[])
+                session.rollback()
+
+    def test_clock_telemetry_retains_complete_current_and_future_fields(self):
+        marker=uuid.uuid4().hex
+        with TestClient(app):
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                sim=Record(save_id=save.id,kind="sim",label="Complete Telemetry",data={
+                    "game_sim_id":"complete-"+marker,"game_was_dead":True,"death_confirmed":True,
+                })
+                partner=Record(save_id=save.id,kind="sim",label="Detected Partner",data={
+                    "game_sim_id":"partner-"+marker,
+                })
+                session.add_all([sim,partner]);session.flush()
+                snapshot={
+                    "telemetry_version":4,
+                    "source":"read-only Sims 4 save scan",
+                    "age_progress":.5,
+                    "pregnancy_progress":.72,
+                    "pregnancy_scan_supported":True,
+                    "significant_other_game_id":"partner-"+marker,
+                    "is_dead":True,
+                    "death_type":"Malaria",
+                    "death_details":{"death_type":"Malaria","is_ghost":True,"place":"Capp Manor"},
+                    "is_ghost":True,
+                    "children":[{"game_sim_id":"child-1","name":"Child One"}],
+                    "child_game_sim_ids":["child-1"],
+                    "genealogy_scan_supported":True,
+                    "future_life_history":{"chapter":7},
+                    "portrait_image_base64":"stored-in-portrait-table-not-json",
+                }
+                made=reconcile_sim(session,save,sim,snapshot)
+                self.assertEqual(sim.data["game_age_progress_percentage"],50.0)
+                self.assertEqual(sim.data["game_pregnancy_progress_percentage"],72.0)
+                self.assertEqual(sim.data["game_significant_other_game_sim_id"],"partner-"+marker)
+                self.assertEqual(sim.data["game_death_details"]["place"],"Capp Manor")
+                self.assertTrue(sim.data["game_is_ghost"])
+                self.assertEqual(sim.data["game_children"][0]["name"],"Child One")
+                self.assertEqual(sim.data["game_telemetry_extra"]["future_life_history"],{"chapter":7})
+                self.assertNotIn("portrait_image_base64",sim.data["game_telemetry_extra"])
+                relationship_candidates=[item for item in made if item.data.get("action")=="relationship_change"]
+                self.assertEqual(len(relationship_candidates),1)
+                self.assertEqual(relationship_candidates[0].data["payload"]["category"],"Romantic")
+                self.assertEqual(reconcile_sim(session,save,sim,snapshot),[])
+                session.rollback()
+
+    def test_tracker_classifies_generic_game_relationships_from_bits_and_scores(self):
+        friendship = classify_game_relationship({"category":"Relationship","friendship_score":72,"romance_score":0})
+        romantic = classify_game_relationship({"category":"Relationship","friendship_score":80,"romance_score":12})
+        family = classify_game_relationship({"category":"Relationship","relationship_bits":["RelationshipBit_Sibling"],"friendship_score":65})
+        genealogy_family = classify_game_relationship({"category":"Relationship","genealogy_family":True,"friendship_score":5})
+        acquaintance = classify_game_relationship({"category":"Relationship","friendship_score":12,"romance_score":0})
+        self.assertEqual(friendship["category"],"Friendship")
+        self.assertEqual(romantic["category"],"Romantic")
+        self.assertEqual(set(romantic["relationship_tags"]),{"Friendship","Romantic"})
+        self.assertEqual(family["category"],"Family")
+        self.assertEqual(set(family["relationship_tags"]),{"Family","Friendship"})
+        self.assertEqual(genealogy_family["category"],"Family")
+        self.assertEqual(genealogy_family["relationship_classification_source"],"genealogy")
+        self.assertEqual(acquaintance["category"],"Acquaintance")
+
+    def test_relationship_inbox_repairs_generic_rows_and_suppresses_acquaintances(self):
+        marker=uuid.uuid4().hex
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Relationship repair "+marker,global_day=10)
+                session.add(save);session.flush()
+                first=Record(save_id=save.id,kind="sim",label="First Friend",data={"game_sim_id":"first-"+marker})
+                second=Record(save_id=save.id,kind="sim",label="Second Friend",data={"game_sim_id":"second-"+marker})
+                session.add_all([first,second]);session.flush()
+                first.data={**first.data,"game_relationships":[{
+                    "other_game_sim_id":"second-"+marker,"category":"Relationship",
+                    "friendship_score":77,"romance_score":0,
+                }]}
+                friend=Record(save_id=save.id,kind="game_candidate",label="Relationship detected",data={
+                    "action":"relationship_change","sim_id":first.id,"status":"pending","source_key":"friend-"+marker,
+                    "payload":{"other_game_sim_id":"second-"+marker,"category":"Relationship"},
+                })
+                acquaintance=Record(save_id=save.id,kind="game_candidate",label="Relationship detected",data={
+                    "action":"relationship_change","sim_id":second.id,"status":"pending","source_key":"acquaintance-"+marker,
+                    "payload":{"other_game_sim_id":"third-"+marker,"category":"Relationship","friendship_score":4,"romance_score":0},
+                })
+                session.add_all([friend,acquaintance]);session.flush()
+                result=repair_relationship_inbox(session,save)
+                self.assertEqual(result,{"classified":1,"dismissed":1})
+                self.assertEqual(friend.data["payload"]["category"],"Friendship")
+                self.assertEqual(friend.data["status"],"pending")
+                self.assertEqual(acquaintance.data["status"],"dismissed")
                 session.rollback()
 
     def test_clock_telemetry_does_not_erase_optional_data_when_scan_is_unavailable(self):

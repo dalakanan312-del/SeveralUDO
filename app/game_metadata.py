@@ -9,14 +9,29 @@ from pathlib import Path
 
 
 STBL_RESOURCE = 0x220557DA
-_HASH_LABEL = re.compile(r"^hash:\s*(\d+)\s*$", re.IGNORECASE)
+_HASH_LABEL = re.compile(
+    r"^\s*(?:(?:hash|localization(?:\s+key)?|string(?:\s+id)?)\s*[:#=]?\s*)"
+    r"(-?(?:0x)?[0-9a-f]+)\s*$",
+    re.IGNORECASE,
+)
+_UNIDENTIFIED_HASH_LABEL = re.compile(
+    r"^\s*(?:unidentified|unknown)\s+(?:custom\s+)?(?:[a-z][a-z\s_-]*?)?\s*"
+    r"\(\s*id\s+(-?(?:0x)?[0-9a-f]+)\s*\)\s*$",
+    re.IGNORECASE,
+)
+_TECHNICAL_NAME_PREFIX = re.compile(
+    r"^(?:trait|buff|skill|statistic|milestone|developmental\s+milestone|aspiration|degree|career|"
+    r"relationship\s*bit|relationshipbit|preference|lifestyle|fear)[\s:_-]+",
+    re.IGNORECASE,
+)
+_LEVEL_SUFFIX = re.compile(r"^(.*?)\s*\(\s*level\s+([^()]+)\s*\)\s*$", re.IGNORECASE)
 _ILLNESS_WORDS = (
     "allergy", "anemia", "anxiety", "appendicitis", "asthma", "bronchitis", "cancer",
     "arthritis", "bipolar disorder", "borderline personality disorder",
     "bloaty head", "bubonic plague", "burning belly", "chicken pox", "cholera",
     "cold", "consumption", "deafness", "diabetes", "diphtheria", "depression",
     "dysentery", "ear infection", "eczema", "epilepsy", "flat head syndrome", "flu",
-    "food poisoning", "gastroenteritis", "heart attack", "hypertension",
+    "food poisoning", "gastroenteritis", "heart attack", "hypertension", "influenza",
     "gas and giggles", "itchy plumbob", "kidney disease", "leprosy", "llama flu",
     "malaria", "measles", "meningitis", "migraine", "mumps",
     "obsessive compulsive disorder", "pneumonia", "postpartum depression",
@@ -33,7 +48,89 @@ _NON_ACTIVE_WORDS = (
     "surgery", "transplant", "chance", "eligib", "broadcaster", "commodity",
     "mixer", "loot", "testset", "module", "remove", "unknown", "undiagnosed",
     "notification", "support group", "supportgroup", "ghost", "survivor",
+    "cancer free", "management", "prescribed", "prescription", "pill taken",
+    "pills taken", "death by", "dying from",
 )
+
+_ILLNESS_ALIASES = (
+    (("urinary tract infection", "urinarytractinfection", "uti buff", "uti trait"), "Urinary Tract Infection"),
+    (("yeast infection", "yeastinfection"), "Yeast Infection"),
+    (("pregnancy induced anemia", "pregnancyinducedanemia", "pregnancy related anemia"), "Pregnancy-Induced Anemia"),
+    (("gestational diabetes", "gestationaldiabetes"), "Gestational Diabetes"),
+    (("postpartum depression", "postpartumdepression"), "Postpartum Depression"),
+    (("postpartum hemorrhage", "postpartum haemorrhage", "postpartumhemorrhage", "postpartumhaemorrhage"), "Postpartum Hemorrhage"),
+    (("seasonal affective disorder", "seasonalaffectivedisorder"), "Seasonal Affective Disorder"),
+    (("borderline personality disorder", "borderlinepersonalitydisorder"), "Borderline Personality Disorder"),
+    (("obsessive compulsive disorder", "obsessivecompulsivedisorder"), "Obsessive Compulsive Disorder"),
+    (("flat head syndrome", "flatheadsyndrome"), "Flat Head Syndrome"),
+    (("gastroenteritis", "stomach flu", "stomachflu"), "Gastroenteritis"),
+    (("ear infection", "earinfection"), "Ear Infection"),
+    (("whooping cough", "whoopingcough", "pertussis"), "Whooping Cough"),
+    (("breast cancer", "breastcancer"), "Breast Cancer"),
+    (("colon cancer", "coloncancer"), "Colon Cancer"),
+    (("prostate cancer", "prostatecancer"), "Prostate Cancer"),
+    (("kidney disease", "kidneydisease"), "Kidney Disease"),
+    (("kidney failure", "kidneyfailure"), "Kidney Failure"),
+    (("heart attack", "heartattack"), "Heart Attack"),
+    (("blood clot", "bloodclot"), "Blood Clot"),
+    (("pulmonary embolism", "pulmonaryembolism"), "Pulmonary Embolism"),
+    (("animal dander allergy", "animaldanderallergy", "pet dander allergy", "petdanderallergy"), "Animal Dander Allergy"),
+    (("bee allergy", "beeallergy"), "Bee Allergy"),
+    (("influenza", "flu buff", "flubuff", "flu trait", "flutrait"), "Influenza"),
+    (("tuberculosis",), "Tuberculosis"),
+    (("meningitis",), "Meningitis"),
+    (("pneumonia",), "Pneumonia"),
+    (("tonsillitis",), "Tonsillitis"),
+    (("bronchitis",), "Bronchitis"),
+    (("sinusitis", "sinus infection"), "Sinusitis"),
+    (("malaria",), "Malaria"),
+    (("common cold", "commoncold", "cold buff", "coldbuff", "cold trait", "coldtrait"), "Cold"),
+    (("appendicitis",), "Appendicitis"),
+    (("diphtheria",), "Diphtheria"),
+    (("dysentery",), "Dysentery"),
+    (("smallpox", "small pox"), "Smallpox"),
+    (("chicken pox", "chickenpox"), "Chicken Pox"),
+    (("scarlet fever", "scarletfever"), "Scarlet Fever"),
+    (("yellow fever", "yellowfever"), "Yellow Fever"),
+    (("typhoid",), "Typhoid"),
+    (("typhus",), "Typhus"),
+    (("cholera",), "Cholera"),
+    (("measles",), "Measles"),
+    (("mumps",), "Mumps"),
+    (("polio",), "Polio"),
+    (("rabies",), "Rabies"),
+    (("tetanus",), "Tetanus"),
+    (("cancer",), "Cancer"),
+    (("severe anemia", "severeanemia", "anemia", "anaemia"), "Anemia"),
+    (("hypertension",), "Hypertension"),
+    (("diabetes",), "Diabetes"),
+    (("asthma",), "Asthma"),
+    (("arthritis",), "Arthritis"),
+    (("eczema",), "Eczema"),
+    (("migraine",), "Migraine"),
+    (("sleep disorder", "sleepdisorder"), "Sleep Disorder"),
+    (("anxiety",), "Anxiety"),
+    (("depression",), "Depression"),
+    (("deafness",), "Deafness"),
+    (("allergy",), "Allergy"),
+    (("sepsis",), "Sepsis"),
+    (("hemorrhage", "haemorrhage"), "Hemorrhage"),
+)
+
+
+def canonical_illness_name(value: str) -> str:
+    """Normalize readable or technical disease markers without importing a mod."""
+    raw = " ".join(str(value or "").replace("_", " ").replace("-", " ").split()).strip()
+    folded = raw.casefold()
+    compact = re.sub(r"[^a-z0-9]+", "", folded)
+    if not raw or any(word.replace(" ", "") in compact for word in _NON_ACTIVE_WORDS):
+        return ""
+    for aliases, canonical in _ILLNESS_ALIASES:
+        for alias in aliases:
+            alias_folded = alias.casefold()
+            if alias_folded in folded or re.sub(r"[^a-z0-9]+", "", alias_folded) in compact:
+                return canonical
+    return ""
 
 
 def _mods_root() -> Path:
@@ -291,37 +388,147 @@ def trait_localizations() -> dict[int, str]:
     return labels
 
 
-def readable_trait_label(value, localizations: dict[int, str] | None = None) -> str:
-    """Turn a Clock Sync localization hash into a readable local trait label."""
+def localization_hash(value) -> int | None:
+    """Return a normalized 32-bit Sims localization key from common displays."""
     if isinstance(value, dict):
-        value = value.get("name") or value.get("display_name") or value.get("title") or value.get("trait") or ""
+        for key in ("localization_key", "localization_hash", "hash", "string_id"):
+            if value.get(key) not in (None, ""):
+                value = value.get(key)
+                break
+        else:
+            value = value.get("name") or value.get("display_name") or value.get("title") or value.get("trait") or ""
+    if isinstance(value, int):
+        return int(value) & 0xFFFFFFFF if value else None
     label = str(value or "").strip()
-    match = _HASH_LABEL.match(label)
+    match = _HASH_LABEL.match(label) or _UNIDENTIFIED_HASH_LABEL.match(label)
     if not match:
-        return label
-    key = int(match.group(1))
-    if not key:
-        return ""
-    name = (localizations if localizations is not None else trait_localizations()).get(key, "").strip()
-    if not name:
-        return f"Unidentified custom trait (ID {key})"
+        return None
+    raw = match.group(1)
+    try:
+        unsigned = raw.casefold().lstrip("-")
+        key = int(raw, 16 if unsigned.startswith("0x") or re.search(r"[a-f]", unsigned) else 10) & 0xFFFFFFFF
+    except ValueError:
+        return None
+    return key or None
+
+
+def _clean_game_name(value: str, kind: str = "") -> str:
+    name = str(value or "").strip()
     choices = re.findall(r"\{(?:T|M|F|U|DAE)\d*\.([^}]+)\}", name)
     if choices:
         name = " / ".join(dict.fromkeys(choices))
-    if re.match(r"(?i)^trait[_-]", name):
-        name = re.sub(r"(?i)^trait[_-]", "", name)
-        name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name).replace("_", " ").replace("-", " ")
-    return " ".join(name.replace("\ufffd", "é").split())
+    name = name.replace("\ufffd", "é")
+    technical = bool(_TECHNICAL_NAME_PREFIX.match(name) or "_" in name or re.search(r"(?<=[a-z0-9])(?=[A-Z])", name))
+    name = _TECHNICAL_NAME_PREFIX.sub("", name)
+    name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name)
+    name = name.replace("_", " ")
+    if technical:
+        name = name.replace("-", " ")
+    name = " ".join(name.split()).strip()
+    if kind:
+        folded = kind.casefold().replace("_", " ")
+        if name.casefold().startswith(folded + " "):
+            name = name[len(folded):].strip()
+    return name
 
 
-def readable_trait_labels(value, localizations: dict[int, str] | None = None) -> list[str]:
-    values = value if isinstance(value, (list, tuple, set)) else (() if value in (None, "") else (value,))
+def _named_values(value) -> list:
+    if value in (None, ""):
+        return []
+    if isinstance(value, dict):
+        return [{"name": key, "value": item} for key, item in value.items()]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _detail_name(value, kind: str = "") -> str:
+    if isinstance(value, dict):
+        value = value.get("name") or value.get("display_name") or value.get("title") or value.get("trait") or value.get("skill") or ""
+    return _clean_game_name(str(value or ""), kind)
+
+
+def localization_aliases(value, details=None, kind: str = "") -> dict[int, str]:
+    """Pair hashes with Clock Sync's stable tuning details when possible."""
+    values = _named_values(value)
+    detail_rows = _named_values(details)
+    by_tuning = {
+        str(row.get("tuning_id")): _detail_name(row, kind)
+        for row in detail_rows if isinstance(row, dict) and row.get("tuning_id") and _detail_name(row, kind)
+    }
+    aliases: dict[int, str] = {}
+    positionally_aligned = bool(values) and len(values) == len(detail_rows)
+    for index, item in enumerate(values):
+        key = localization_hash(item)
+        if not key:
+            continue
+        detail = ""
+        if isinstance(item, dict) and item.get("tuning_id") is not None:
+            detail = by_tuning.get(str(item.get("tuning_id")), "")
+        if not detail and positionally_aligned and index < len(detail_rows):
+            detail = _detail_name(detail_rows[index], kind)
+        if detail and localization_hash(detail) is None:
+            aliases[key] = detail
+    return aliases
+
+
+def readable_named_labels(value, details=None, *, kind: str = "",
+                          localizations: dict[int, str] | None = None,
+                          aliases: dict[int, str] | None = None) -> list[str]:
+    """Render any Clock Sync named collection without leaking hash labels."""
+    values = _named_values(value)
+    detail_rows = _named_values(details)
+    known_aliases = dict(aliases or {})
+    known_aliases.update(localization_aliases(values, detail_rows, kind))
+    needs_catalog = any(localization_hash(item) for item in values)
+    catalog = (trait_localizations() if localizations is None else localizations) if needs_catalog else (localizations or {})
+    by_tuning = {
+        str(row.get("tuning_id")): _detail_name(row, kind)
+        for row in detail_rows if isinstance(row, dict) and row.get("tuning_id") and _detail_name(row, kind)
+    }
     labels: list[str] = []
-    for item in values:
-        label = readable_trait_label(item, localizations)
+    positionally_aligned = bool(values) and len(values) == len(detail_rows)
+    for index, item in enumerate(values):
+        raw = item
+        level = None
+        tuning_id = None
+        if isinstance(item, dict):
+            raw = item.get("name") or item.get("display_name") or item.get("title") or item.get("trait") or item.get("skill") or ""
+            level = item.get("level", item.get("value"))
+            tuning_id = item.get("tuning_id")
+        else:
+            level_match = _LEVEL_SUFFIX.match(str(raw or ""))
+            if level_match:
+                raw, level = level_match.group(1), level_match.group(2)
+        key = localization_hash(raw)
+        if key:
+            label = _clean_game_name(catalog.get(key) or known_aliases.get(key) or "", kind)
+            if not label and tuning_id is not None:
+                label = by_tuning.get(str(tuning_id), "")
+            if not label and positionally_aligned and index < len(detail_rows):
+                label = _detail_name(detail_rows[index], kind)
+            if not label:
+                # Keep the stable identifier in metadata, but never expose a
+                # raw "hash: ..." string as if it were a name.
+                unknown_kind = "custom trait" if kind == "trait" else (kind or "game value")
+                label = f"Unidentified {unknown_kind} (ID {key})"
+        else:
+            label = _clean_game_name(str(raw or ""), kind)
+        if label and level not in (None, ""):
+            label = f"{label} (level {level})"
         if label and label not in labels:
             labels.append(label)
     return labels
+
+
+def readable_trait_label(value, localizations: dict[int, str] | None = None) -> str:
+    """Turn a Clock Sync localization hash into a readable local trait label."""
+    labels = readable_named_labels(value, kind="trait", localizations=localizations)
+    return labels[0] if labels else ""
+
+
+def readable_trait_labels(value, localizations: dict[int, str] | None = None) -> list[str]:
+    return readable_named_labels(value, kind="trait", localizations=localizations)
 
 
 OCCULT_ORDER = (
@@ -420,10 +627,12 @@ def illness_name_from_localized_label(label: str, localizations: dict[int, str] 
     folded = name.casefold()
     if not name or any(word in folded for word in _NON_ACTIVE_WORDS):
         return None
-    if not any(word in folded for word in _ILLNESS_WORDS):
+    canonical = canonical_illness_name(name)
+    if not canonical and not any(word in folded for word in _ILLNESS_WORDS):
         return None
-    stable_key = re.sub(r"[^a-z0-9]+", "-", folded).strip("-")
-    return stable_key, name
+    canonical = canonical or name
+    stable_key = re.sub(r"[^a-z0-9]+", "-", canonical.casefold()).strip("-")
+    return stable_key, canonical
 
 
 def _signature_illness(label, signatures: list[dict] | None) -> tuple[str, str] | None:
@@ -523,6 +732,10 @@ def enrich_illness_snapshot(snapshot: dict, signatures: list[dict] | None = None
         )).casefold()
         if not name or any(word in searchable for word in _NON_ACTIVE_WORDS):
             continue
+        canonical = canonical_illness_name(searchable)
+        if canonical:
+            item = {**item, "raw_name": item.get("raw_name") or name, "name": canonical}
+            name = canonical
         key = str(item.get("source_key") or item.get("name") or "").casefold()
         if key:
             merged[key] = item

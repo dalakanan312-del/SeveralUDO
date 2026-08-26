@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import math
 import re
 from datetime import datetime, timezone
@@ -21,6 +23,104 @@ _STAGE_LABELS = {
     "child":"child", "preteen":"preteen", "teen":"teen", "youngadult":"youngadult",
     "adult":"adult", "elder":"elder",
 }
+
+
+def report_checksum(report: dict) -> str:
+    """Return the protocol checksum used by Clock Sync 2.2 and the receiver."""
+    body = {key: value for key, value in report.items() if key != "report_checksum"}
+    canonical = json.dumps(body, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _protocol_record(session: Session, save: ChronicleSave) -> Record | None:
+    return session.scalar(select(Record).where(
+        Record.save_id == save.id, Record.kind == "clock_protocol_state", Record.deleted.is_(False),
+    ).limit(1))
+
+
+def _protocol_gate(session: Session, save: ChronicleSave, report: dict) -> tuple[Record | None, dict, dict | None]:
+    """Validate identity, checksum and ordering before any chronicle mutation."""
+    try:
+        sequence = int(report.get("report_sequence") or 0)
+    except (TypeError, ValueError):
+        sequence = 0
+    if sequence <= 0:
+        return None, {}, None
+    supplied_checksum = str(report.get("report_checksum") or "").strip().casefold()
+    calculated_checksum = report_checksum(report)
+    if int(report.get("protocol_version") or 0) >= 2 and not supplied_checksum:
+        return None, {}, {
+            "status":"rejected", "ok":False, "permanent_rejection":True,
+            "reason":"checksum_missing",
+            "message":"The ordered Clock Sync report did not include its checksum; no tracker data was changed.",
+            "report_sequence":sequence,
+        }
+    if supplied_checksum and supplied_checksum != calculated_checksum:
+        return None, {}, {
+            "status":"rejected", "ok":False, "permanent_rejection":True,
+            "reason":"checksum_mismatch",
+            "message":"The report checksum did not match its contents; no tracker data was changed.",
+            "report_sequence":sequence,
+        }
+    state = _protocol_record(session, save)
+    data = dict(state.data or {}) if state else {}
+    incoming_identity = str(report.get("save_identity") or "").strip()
+    bound_identity = str(data.get("save_identity") or "").strip()
+    if incoming_identity and bound_identity and incoming_identity != bound_identity:
+        return state, data, {
+            "status":"rejected", "ok":False, "permanent_rejection":True,
+            "reason":"wrong_game_save",
+            "message":"This Clock Sync link is paired with a different Sims 4 save slot. The report was quarantined and the tracker was not changed.",
+            "expected_save_identity":bound_identity, "received_save_identity":incoming_identity,
+            "report_sequence":sequence,
+        }
+    last_sequence = int(data.get("last_report_sequence") or 0)
+    if sequence <= last_sequence:
+        return state, data, {
+            "status":"duplicate", "ok":True, "duplicate":True,
+            "tracker_global_day":save.global_day, "report_sequence":sequence,
+            "last_report_sequence":last_sequence,
+        }
+    expected_previous = str(data.get("last_report_checksum") or "")
+    reported_previous = str(report.get("previous_report_checksum") or "")
+    sequence_gap = ({"from":last_sequence + 1, "to":sequence - 1, "count":sequence - last_sequence - 1}
+                    if last_sequence and sequence > last_sequence + 1 else None)
+    chain_mismatch = bool(last_sequence and expected_previous and reported_previous != expected_previous)
+    return state, data, {
+        "sequence":sequence, "checksum":supplied_checksum or calculated_checksum,
+        "save_identity":incoming_identity or bound_identity,
+        "sequence_gap":sequence_gap, "chain_mismatch":chain_mismatch,
+    }
+
+
+def _commit_protocol_state(session: Session, save: ChronicleSave, state: Record | None,
+                           prior: dict, accepted: dict, report: dict) -> Record:
+    data = {
+        **prior,
+        "protocol_version":int(report.get("protocol_version") or 0),
+        "clock_sync_version":report.get("clock_sync_version") or report.get("mod_version"),
+        "save_identity":accepted.get("save_identity") or None,
+        "save_slot_id":report.get("save_slot_id"),
+        "save_slot_name":report.get("save_slot_name"),
+        "last_report_sequence":accepted["sequence"],
+        "last_report_id":report.get("report_id"),
+        "last_report_checksum":accepted["checksum"],
+        "last_report_kind":report.get("report_kind") or "full",
+        "last_population_complete":bool(report.get("population_complete", False)),
+        "last_sequence_gap":accepted.get("sequence_gap"),
+        "last_chain_mismatch":bool(accepted.get("chain_mismatch")),
+        "last_game_day":report.get("game_day"),
+    }
+    if state:
+        state.data = data
+        state.global_day = save.global_day
+        state.label = "Clock Sync protocol state"
+        state.version += 1
+    else:
+        state = Record(save_id=save.id, kind="clock_protocol_state",
+                       label="Clock Sync protocol state", global_day=save.global_day, data=data)
+        session.add(state)
+    return state
 
 
 def _identity_text(value) -> str:
@@ -184,24 +284,64 @@ def _store_game_portrait(session: Session, save: ChronicleSave, sim: Record, sna
     return True
 
 
+_CONSUMED_REPORT_FIELDS = {
+    "game_day", "hour", "minute", "game_hour", "game_minute",
+    "second", "game_second", "game_ticks",
+    "household_members", "household_sims", "household_name",
+    "clock_sync_version", "game_build", "installed_packs", "detected_optional_mods",
+    "telemetry_capabilities", "clock_sync_diagnostics", "telemetry_version",
+    "mod_version", "protocol_version", "report_sequence", "report_id",
+    "report_kind", "report_checksum", "previous_report_checksum",
+    "save_identity", "save_slot_id", "save_slot_name", "population_scope",
+    "population_complete", "population_sim_ids", "population_households",
+    "removed_game_sim_ids",
+}
+
+
 def _update_clock_diagnostic(session: Session, save: ChronicleSave, members: list[dict],
-                             game_day: int, hour: int, minute: int) -> bool:
+                             game_day: int, hour: int, minute: int,
+                             report: dict | None = None) -> bool:
+    report = report or {}
     source = next((item for item in members if item.get("clock_sync_diagnostics") or item.get("telemetry_capabilities")), None)
-    if not source:
+    if not source and (report.get("clock_sync_diagnostics") or report.get("telemetry_capabilities")):
+        source = report
+    report_extra = {
+        str(key): value for key, value in report.items()
+        if key not in _CONSUMED_REPORT_FIELDS and not str(key).startswith("_")
+    }
+    if not source and not report_extra:
         return False
+    source = source or {}
+    record = session.scalar(select(Record).where(
+        Record.save_id == save.id, Record.kind == "clock_diagnostic", Record.deleted.is_(False),
+    ).limit(1))
+    retained_report_extra = dict((record.data or {}).get("unmapped_report_telemetry") or {}) if record else {}
+    retained_report_extra.update(report_extra)
     payload = {
         "clock_sync_version": source.get("clock_sync_version"),
+        "telemetry_version": source.get("telemetry_version") or report.get("telemetry_version"),
+        "protocol_version": report.get("protocol_version"),
+        "report_sequence": report.get("report_sequence"),
+        "report_checksum": report.get("report_checksum"),
+        "report_kind": report.get("report_kind"),
+        "save_identity": report.get("save_identity"),
+        "save_slot_id": report.get("save_slot_id"),
+        "save_slot_name": report.get("save_slot_name"),
+        "population_scope": report.get("population_scope"),
+        "population_complete": bool(report.get("population_complete", False)),
         "game_build": source.get("game_build"),
         "installed_packs": source.get("installed_packs") or [],
         "detected_optional_mods": source.get("detected_optional_mods") or [],
         "telemetry_capabilities": source.get("telemetry_capabilities") or {},
         "diagnostics": source.get("clock_sync_diagnostics") or {},
         "last_game_day": game_day,
+        "last_game_hour": hour,
+        "last_game_minute": minute,
+        "last_game_second": report.get("second", report.get("game_second")),
         "last_tracker_global_day": save.global_day,
+        "reported_member_count": len(members),
+        "unmapped_report_telemetry": retained_report_extra,
     }
-    record = session.scalar(select(Record).where(
-        Record.save_id == save.id, Record.kind == "clock_diagnostic", Record.deleted.is_(False),
-    ).limit(1))
     if record and record.data == payload:
         return False
     if record:
@@ -284,7 +424,12 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
             "last_detected_global_day": save.global_day,
             "symptoms": item.get("symptoms") or snapshot.get("symptoms") or [],
             "health_buffs": item.get("health_buffs") or snapshot.get("health_buffs") or [],
+            "onset_game_hour": snapshot.get("detected_game_hour"),
+            "onset_game_minute": snapshot.get("detected_game_minute"),
+            "onset_game_second": snapshot.get("detected_game_second"),
         }
+        if data["onset_game_hour"] is not None and data["onset_game_minute"] is not None:
+            data["onset_game_time"] = f"{int(data['onset_game_hour']):02d}:{int(data['onset_game_minute']):02d}:{int(data['onset_game_second'] or 0):02d}"
         record = Record(save_id=save.id, kind="illness", label=f"{sim.label} — {item['name']}", global_day=save.global_day, data=data)
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
         _illness_review_candidate(session, save, sim, record, "illness_detected", {
@@ -292,18 +437,25 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
             "detected_tracker_global_day": save.global_day,
             "detected_game_hour": snapshot.get("detected_game_hour"),
             "detected_game_minute": snapshot.get("detected_game_minute"),
+            "detected_game_second": snapshot.get("detected_game_second"),
         }, candidate_sink)
     for key, record in active_by_key.items():
         if key in incoming:
             continue
         base = record.version; data = dict(record.data or {})
-        data.update({"status": "Recovered", "end_global_day": save.global_day, "outcome": "No longer detected in game"})
+        data.update({"status": "Recovered", "end_global_day": save.global_day, "outcome": "No longer detected in game",
+                     "recovery_game_hour": snapshot.get("detected_game_hour"),
+                     "recovery_game_minute": snapshot.get("detected_game_minute"),
+                     "recovery_game_second": snapshot.get("detected_game_second")})
+        if data["recovery_game_hour"] is not None and data["recovery_game_minute"] is not None:
+            data["recovery_game_time"] = f"{int(data['recovery_game_hour']):02d}:{int(data['recovery_game_minute']):02d}:{int(data['recovery_game_second'] or 0):02d}"
         record.data = data; record.version += 1; journal(session, record, "upsert", base); ended += 1
         _illness_review_candidate(session, save, sim, record, "illness_recovered", {
             **data, "illness_record_id": record.id, "recovery_global_day": save.global_day,
             "detected_tracker_global_day": save.global_day,
             "detected_game_hour": snapshot.get("detected_game_hour"),
             "detected_game_minute": snapshot.get("detected_game_minute"),
+            "detected_game_second": snapshot.get("detected_game_second"),
         }, candidate_sink)
     return created, ended
 
@@ -416,7 +568,7 @@ def connect_sim_to_game_household(
 def sync_game_households(
     session: Session, save: ChronicleSave, members: list[dict],
     tracked_by_game_id: dict[str, Record], *, default_name: str = "",
-    source: str = "Clock Sync",
+    source: str = "Clock Sync", authoritative_population: bool = True,
 ) -> tuple[dict[str, str], int, int, int]:
     """Find or create reported households and connect every already-known member.
 
@@ -491,8 +643,24 @@ def sync_game_households(
         world = next((str(item.get("world_name") or "").strip() for item in reported_members if item.get("world_name")), "")
         lot = next((str(item.get("lot_name") or "").strip() for item in reported_members if item.get("lot_name")), "")
         funds = next((item.get("household_funds") for item in reported_members if item.get("household_funds") is not None), None)
-        game_member_ids = sorted({str(item.get("game_sim_id") or "").strip() for item in reported_members
-                                  if item.get("game_sim_id")})
+        game_member_ids = sorted({
+            str(value or "").strip()
+            for item in reported_members
+            for value in ([item.get("game_sim_id")] + list(item.get("household_member_game_ids") or []))
+            if value
+        })
+        last_played_game_sim_id = next((
+            str(item.get("household_last_played_game_sim_id") or "").strip()
+            for item in reported_members if item.get("household_last_played_game_sim_id")
+        ), "")
+        household_is_player = next((
+            bool(item.get("household_is_player")) for item in reported_members
+            if "household_is_player" in item
+        ), None)
+        household_is_unplayed = next((
+            bool(item.get("household_is_unplayed")) for item in reported_members
+            if "household_is_unplayed" in item
+        ), None)
         data = dict(household.data or {})
         metadata = {
             "game_household_id": game_household_id,
@@ -500,10 +668,21 @@ def sync_game_households(
             "last_game_world": world or data.get("last_game_world"),
             "last_game_lot": lot or data.get("last_game_lot"),
             "last_game_funds": funds if funds is not None else data.get("last_game_funds"),
-            "last_reported_game_member_ids": game_member_ids,
             "last_detected_global_day": save.global_day,
             "active": True,
         }
+        if authoritative_population or not data.get("last_reported_game_member_ids"):
+            metadata["last_reported_game_member_ids"] = game_member_ids
+        else:
+            metadata["last_reported_game_member_ids"] = sorted(set(
+                list(data.get("last_reported_game_member_ids") or []) + game_member_ids
+            ))
+        if last_played_game_sim_id:
+            metadata["last_played_game_sim_id"] = last_played_game_sim_id
+        if household_is_player is not None:
+            metadata["game_is_player_household"] = household_is_player
+        if household_is_unplayed is not None:
+            metadata["game_is_unplayed_household"] = household_is_unplayed
         if head:
             metadata["head_sim_id"] = head.id
         new_data = {**data, **metadata}
@@ -530,11 +709,79 @@ def sync_game_households(
     return matches, created, updated, linked
 
 
+def _reconcile_population_manifest(session: Session, save: ChronicleSave, report: dict,
+                                   tracked: list[Record], candidate_sink: list[Record]) -> int:
+    """Review Sims leaving or returning to a complete played-population report."""
+    if not bool(report.get("population_complete")):
+        return 0
+    manifest = {
+        str(value or "").strip() for value in (report.get("population_sim_ids") or []) if value
+    }
+    if not manifest:
+        manifest = {
+            str(item.get("game_sim_id") or "").strip()
+            for item in (report.get("household_members") or report.get("household_sims") or [])
+            if item.get("game_sim_id")
+        }
+    changed = 0
+    for sim in tracked:
+        data = dict(sim.data or {})
+        game_id = str(data.get("game_sim_id") or "").strip()
+        if not game_id:
+            continue
+        present = game_id in manifest
+        prior = data.get("game_population_present")
+        if prior is present:
+            continue
+        base = sim.version
+        updates = {
+            "game_population_present":present,
+            "game_population_last_checked_global_day":save.global_day,
+            "game_population_scope":report.get("population_scope") or "played-households",
+        }
+        if not present:
+            sequence = int(data.get("game_population_missing_sequence") or 0) + 1
+            updates.update(game_population_missing_sequence=sequence,
+                           game_population_missing_since_global_day=save.global_day)
+        else:
+            sequence = int(data.get("game_population_return_sequence") or 0) + 1
+            updates.update(game_population_return_sequence=sequence,
+                           game_population_returned_global_day=save.global_day)
+        sim.data = {**data, **updates}; sim.version += 1; journal(session, sim, "upsert", base)
+        changed += 1
+        # The first complete manifest establishes a baseline. Only later
+        # transitions need a review item.
+        if prior is None:
+            continue
+        action = "sim_returned_to_population" if present else "sim_missing_from_population"
+        label = (f"Sim returned to the played population: {sim.label}" if present else
+                 f"Sim missing from the played population: {sim.label}")
+        payload = {
+            "game_sim_id":game_id, "sim_name":sim.label,
+            "population_scope":report.get("population_scope") or "played-households",
+            "save_identity":report.get("save_identity"),
+            "detected_game_day":report.get("game_day"),
+            "detected_game_hour":report.get("hour", report.get("game_hour")),
+            "detected_game_minute":report.get("minute", report.get("game_minute")),
+            "detected_game_second":report.get("second", report.get("game_second")),
+            "detected_tracker_global_day":save.global_day,
+        }
+        item = automation.candidate(session, save, action, sim, label, payload, str(sequence))
+        if item:
+            candidate_sink.append(item)
+            notifications.candidate_event(session, save, item)
+    return changed
+
+
 def receive(session: Session, link: ClockLink, report: dict) -> dict:
     save = session.get(ChronicleSave, link.save_id)
+    protocol_state, protocol_prior, protocol_result = _protocol_gate(session, save, report)
+    if protocol_result and "sequence" not in protocol_result:
+        return protocol_result
     game_day = int(report["game_day"])
     hour = max(0, min(23, int(report.get("hour", report.get("game_hour", 0)))))
     minute = max(0, min(59, int(report.get("minute", report.get("game_minute", 0)))))
+    second = max(0, min(59, int(report.get("second", report.get("game_second", 0)))))
     if link.game_anchor_day is None:
         link.game_anchor_day = game_day
         link.tracker_anchor_day = save.global_day
@@ -562,10 +809,14 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     household_matches, households_created, households_updated, household_members_linked = sync_game_households(
         session, save, members, tracked_by_game_id,
         default_name=str(report.get("household_name") or ""),
+        authoritative_population=(not report.get("report_kind") or
+                                  str(report.get("report_kind")).casefold() == "full" or
+                                  bool(report.get("population_complete"))),
     )
     journal_entries.extend(telemetry.capture_household_finances(
         session, save, members, tracked_by_game_id,
-        {"detected_game_day": game_day, "detected_game_hour": hour, "detected_game_minute": minute},
+        {"detected_game_day": game_day, "detected_game_hour": hour, "detected_game_minute": minute,
+         "detected_game_second": second},
     ))
     detected_newborns = [item for item in members if item.get("is_baby") and str(item.get("game_sim_id") or "") not in known_ids]
     newborn_contexts, newborns_by_mother = _newborn_parent_contexts(
@@ -597,7 +848,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
                 refreshed_payload = {
                     **payload, **sim,
                     "detected_game_day": game_day, "detected_game_hour": hour,
-                    "detected_game_minute": minute, "detected_tracker_global_day": save.global_day,
+                    "detected_game_minute": minute, "detected_game_second": second,
+                    "detected_tracker_global_day": save.global_day,
                 }
                 if household_match:
                     refreshed_payload["inferred_household_id"] = household_match
@@ -609,7 +861,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
                     save.revision += 1
                 continue
             detected_payload = {**sim, "detected_game_day": game_day, "detected_game_hour": hour,
-                                "detected_game_minute": minute, "detected_tracker_global_day": save.global_day}
+                                "detected_game_minute": minute, "detected_game_second": second,
+                                "detected_tracker_global_day": save.global_day}
             parent_hints = automation.parent_suggestions(session, save, sim)
             if parent_hints.get("parent_ids"):
                 detected_payload.update(parent_hints)
@@ -637,11 +890,13 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             )
             created, ended = _game_illnesses(session, save, existing, {
                 **sim, "detected_game_hour": hour, "detected_game_minute": minute,
+                "detected_game_second": second,
             }, candidates)
             illnesses_created += created; illnesses_ended += ended
             enriched = {**sim, "household_name": sim.get("household_name") or report.get("household_name", ""),
                         "detected_game_day": game_day, "detected_game_hour": hour,
-                        "detected_game_minute": minute, "detected_tracker_global_day": save.global_day}
+                        "detected_game_minute": minute, "detected_game_second": second,
+                        "detected_tracker_global_day": save.global_day}
             household_match = household_matches.get(str(sim.get("household_id") or ""))
             if household_match:
                 enriched["inferred_tracker_household_id"] = household_match
@@ -667,7 +922,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
                     label=f"Possible health condition for {existing.label}: {label}", global_day=save.global_day,
                     data={"action":"unknown_illness","sim_id":existing.id,"status":"pending","source_key":source_key,
                           "payload":{"sim_id":existing.id,"sim_name":existing.label,"raw_trait":raw,
-                                     "suggested_name":label,"detected_game_hour":hour,"detected_game_minute":minute}})
+                                     "suggested_name":label,"detected_game_hour":hour,"detected_game_minute":minute,
+                                     "detected_game_second":second}})
                 session.add(item);session.flush();candidates.append(item)
                 notifications.candidate_event(session,save,item)
             candidates.extend(changes)
@@ -683,7 +939,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         journal_entries.append(f"{household_members_linked} Sim household assignment{'s' if household_members_linked != 1 else ''} {verb} synchronized.")
     parent_link_updates = automation.resolve_parent_links(session, save)
     generation_updates = sync_generations(session, save)
-    diagnostic_updated = _update_clock_diagnostic(session, save, members, game_day, hour, minute)
+    population_updates = _reconcile_population_manifest(session, save, report, tracked, candidates)
+    diagnostic_updated = _update_clock_diagnostic(session, save, members, game_day, hour, minute, report)
     # Event and lifecycle obligations are true roll records. Reconcile once when
     # the in-game calendar advances instead of producing parallel event-result
     # rows on every clock report.
@@ -694,7 +951,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         notifications.record(session,save,"roll",f"{rolls_created} new roll{'s' if rolls_created != 1 else ''} are ready",
                              "Open Today to complete the newly scheduled obligations.","/p/today",f"clock-rolls:{game_day}")
     journal_record = automation.session_journal(session, save, journal_entries, game_day, hour, minute)
-    save.revision += illnesses_created + illnesses_ended + portrait_updates + len(candidates) + event_results + parent_link_updates + generation_updates + bool(journal_record) + bool(diagnostic_updated)
+    save.revision += illnesses_created + illnesses_ended + portrait_updates + len(candidates) + event_results + parent_link_updates + generation_updates + population_updates + bool(journal_record) + bool(diagnostic_updated)
     if day_advanced and bool((save.settings or {}).get("automatic_storyline")):
         prior_story = session.scalar(select(Record.id).where(
             Record.save_id == save.id, Record.kind == "story_entry", Record.deleted.is_(False),
@@ -704,16 +961,27 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             chapter = storyline.generate_chapter(session, save, tone="intimate", use_ai=False)
             chapter.data = {**chapter.data, "automatic_clock_day": save.global_day}
     sync.sync_clock_state(session,save,link)
+    if protocol_result:
+        _commit_protocol_state(session, save, protocol_state, protocol_prior, protocol_result, report)
     session.flush()
-    return {
+    response = {
         "status": "ok", "ok": True, "tracker_global_day": save.global_day,
-        "game_time": {"day": game_day, "hour": hour, "minute": minute},
+        "game_time": {"day": game_day, "hour": hour, "minute": minute, "second": second},
         "new_candidates": len(candidates),
         "illnesses_created": illnesses_created, "illnesses_ended": illnesses_ended,
         "event_results_created": event_results, "rolls_created": rolls_created,
         "households_created": households_created, "households_updated": households_updated,
         "household_members_linked": household_members_linked,
         "parent_links_updated": parent_link_updates, "generations_updated": generation_updates,
+        "population_updates": population_updates,
         "portraits_updated": portrait_updates, "diagnostics_updated": bool(diagnostic_updated),
         "journal_updated": bool(journal_record),
     }
+    if protocol_result:
+        response.update(
+            report_sequence=protocol_result["sequence"],
+            report_checksum=protocol_result["checksum"],
+            sequence_gap=protocol_result.get("sequence_gap"),
+            chain_mismatch=bool(protocol_result.get("chain_mismatch")),
+        )
+    return response

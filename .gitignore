@@ -11,6 +11,7 @@ exports/
 backups/
 release/
 clock_bridge/config.json
+clock_bridge/install_result.txt
 tools/InnoSetup/
 tools/*.exe
 build/
