@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.5 reliable, queued life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.6 reliable, queued life-history telemetry for The Sims 4."""
 
 import base64
 import hashlib
@@ -12,7 +12,7 @@ import time
 from . import compat_201 as _compat
 
 
-VERSION = "2.2.5"
+VERSION = "2.2.6"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -646,6 +646,18 @@ _INACTIVE_HEALTH_MARKERS = (
     "management", "coretrait", "undetected", "unknown", "undiagnosed",
 )
 
+# Healthcare Redux can leave the progression/stage buff active while its
+# disease-specific buff is unavailable.  That state is medically meaningful
+# but must not be guessed as malaria, meningitis or tuberculosis.  Report a
+# clearly pending diagnosis so the tracker does not silently treat the Sim as
+# healthy.  Exact disease aliases still take precedence below.
+_PENDING_HEALTH_ALIASES = (
+    (("deadlydiseasecommodity", "deadly disease commodity"), "Deadly Disease — diagnosis pending"),
+    (("viraldiseasecommodity", "viral disease commodity"), "Viral Disease — diagnosis pending"),
+    (("bacterialinfectioncommodity", "bacterial infection commodity"), "Bacterial Infection — diagnosis pending"),
+    (("undiagnosedillnessbuff", "undiagnosed illness buff", "corehasillness"), "Illness — diagnosis pending"),
+)
+
 
 def _health_marker_text(value):
     return " ".join((
@@ -657,7 +669,14 @@ def _health_marker_text(value):
 def _health_condition_name(value, provider=""):
     text = _health_marker_text(value)
     compact = re.sub(r"[^a-z0-9]+", "", text)
-    if not compact or any(marker in compact for marker in _INACTIVE_HEALTH_MARKERS):
+    if not compact:
+        return ""
+    for aliases, canonical in _PENDING_HEALTH_ALIASES:
+        for alias in aliases:
+            folded = alias.casefold()
+            if folded in text or re.sub(r"[^a-z0-9]+", "", folded) in compact:
+                return canonical
+    if any(marker in compact for marker in _INACTIVE_HEALTH_MARKERS):
         return ""
     for aliases, canonical in _HEALTH_CONDITION_ALIASES:
         for alias in aliases:
@@ -754,6 +773,11 @@ def _health_details(sim_info):
             seen[key]["source_kind"] = "trait+active_buff"
             if not seen[key].get("tuning_id"):
                 seen[key]["tuning_id"] = row.get("tuning_id")
+    pending_suffix = "— diagnosis pending"
+    if any(not row["name"].endswith(pending_suffix) for row in unique):
+        unique = [row for row in unique if not row["name"].endswith(pending_suffix)]
+    elif any(row["name"].startswith("Deadly Disease") for row in unique):
+        unique = [row for row in unique if not row["name"].startswith("Illness —")]
     return {
         "health_buffs": unique,
         "symptoms": [row["name"] for row in unique],

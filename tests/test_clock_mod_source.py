@@ -150,7 +150,7 @@ class ClockModSourceTests(unittest.TestCase):
         )
         result = module._extended_snapshot(sim, None)
         self.assertEqual(result["telemetry_version"], 5)
-        self.assertEqual(result["clock_sync_version"], "2.2.5")
+        self.assertEqual(result["clock_sync_version"], "2.2.6")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)
@@ -198,6 +198,45 @@ class ClockModSourceTests(unittest.TestCase):
         self.assertEqual(result["health_buffs"][0]["tuning_id"], "10936279956231109735")
         self.assertEqual(result["health_buffs"][0]["source_kind"], "active_buff")
         self.assertNotIn("Malaria Immune Trait", result["symptoms"])
+
+    def test_healthcare_redux_deadly_disease_stage_is_reported_without_guessing(self):
+        module = self.load_module()
+
+        class adeepindigo_HealthcareRedux_Diseases_DeadlyDiseaseCommodity_Stage2Buff:
+            guid64 = 112233
+
+        class adeepindigo_HealthcareRedux_Core_HasIllness:
+            guid64 = 445566
+
+        component = types.SimpleNamespace(
+            get_active_buff_types=lambda: (
+                adeepindigo_HealthcareRedux_Diseases_DeadlyDiseaseCommodity_Stage2Buff,
+                adeepindigo_HealthcareRedux_Core_HasIllness,
+            ),
+        )
+        sim = types.SimpleNamespace(Buffs=component, trait_tracker=types.SimpleNamespace(traits=()))
+        result = module._extended_snapshot(sim, None)
+        self.assertEqual([item["name"] for item in result["illnesses"]], ["Deadly Disease — diagnosis pending"])
+        self.assertEqual(result["symptoms"], ["Deadly Disease — diagnosis pending"])
+
+    def test_exact_healthcare_redux_disease_replaces_pending_stage(self):
+        module = self.load_module()
+
+        class adeepindigo_HealthcareRedux_Diseases_DeadlyDiseaseCommodity_Stage1Buff:
+            pass
+
+        class adeepindigo_HealthcareRedux_Diseases_TuberculosisBuff:
+            guid64 = 17581724841935921134
+
+        component = types.SimpleNamespace(
+            get_active_buff_types=lambda: (
+                adeepindigo_HealthcareRedux_Diseases_DeadlyDiseaseCommodity_Stage1Buff,
+                adeepindigo_HealthcareRedux_Diseases_TuberculosisBuff,
+            ),
+        )
+        sim = types.SimpleNamespace(Buffs=component, trait_tracker=types.SimpleNamespace(traits=()))
+        result = module._extended_snapshot(sim, None)
+        self.assertEqual([item["name"] for item in result["illnesses"]], ["Tuberculosis"])
 
     def test_protocol_reports_are_checksummed_delta_encoded_and_queued_in_order(self):
         module = self.load_module()
