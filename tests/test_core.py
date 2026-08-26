@@ -20,7 +20,7 @@ from PIL import Image
 from sqlalchemy import delete, func, select
 
 from app import accounts, auth, automation, backup_service, exports, insights, legacy_neon, names, notifications, sync, telemetry
-from app.automation import candidate as automation_candidate, classify_game_relationship, reconcile_sim, repair_relationship_inbox
+from app.automation import candidate as automation_candidate, classify_game_relationship, reconcile_sim, repair_relationship_classifications, repair_relationship_inbox
 from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, report_checksum, receive as receive_clock
 from app.config import _automatic_snapshots
@@ -273,7 +273,8 @@ class CoreSmokeTests(unittest.TestCase):
         child=Record(id="child-"+marker,kind="sim",label="Tree Child",data={"sex":"Female","birth_global_day":40,"mother_id":focus.id,"father_id":spouse.id})
         ended=Record(id="ended-"+marker,kind="relationship",label="Old duplicate",data={"partner1_id":focus.id,"partner2_id":spouse.id,"type":"Marriage","status":"Ended","start_global_day":20})
         active=Record(id="active-"+marker,kind="relationship",label="Current marriage",data={"partner1_id":focus.id,"partner2_id":spouse.id,"type":"Marriage","status":"Active","legally_married":True,"start_global_day":25})
-        tree=insights.family_view([mother,father,focus,sibling,spouse,child,ended,active],focus.id,"family",3)
+        mislabeled_family=Record(id="family-"+marker,kind="relationship",label="Sibling relationship",data={"partner1_id":focus.id,"partner2_id":sibling.id,"type":"Love Interest","relationship_tags":["Family"],"status":"Active"})
+        tree=insights.family_view([mother,father,focus,sibling,spouse,child,ended,active,mislabeled_family],focus.id,"family",3)
         self.assertEqual(tree["roles"][mother.id],"Mother")
         self.assertEqual(tree["roles"][father.id],"Father")
         self.assertEqual(tree["roles"][sibling.id],"Brother")
@@ -282,10 +283,12 @@ class CoreSmokeTests(unittest.TestCase):
         partner_edges=[edge for edge in tree["edges"] if edge["type"]=="partner"]
         self.assertEqual(len(partner_edges),1)
         self.assertTrue(partner_edges[0]["active"])
+        self.assertEqual(tree["connection_counts"][focus.id]["partners"],1)
+        self.assertFalse(insights.relationship_is_partner(mislabeled_family))
         focus_generation=next(level for level in tree["levels"] if level["level"]==0)
         ids=[sim.id for sim in focus_generation["members"]]
         self.assertEqual(abs(ids.index(focus.id)-ids.index(spouse.id)),1)
-        direct=insights.family_view([mother,father,focus,sibling,spouse,child,ended,active],focus.id,"direct",3)
+        direct=insights.family_view([mother,father,focus,sibling,spouse,child,ended,active,mislabeled_family],focus.id,"direct",3)
         self.assertEqual({sim.id for level in direct["levels"] for sim in level["members"]},{mother.id,father.id,focus.id,sibling.id,spouse.id,child.id})
         self.assertEqual([level["label"] for level in direct["levels"]],["Parents","Focus & close family","Children"])
 
@@ -384,6 +387,42 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(session.get(Record,first_id).data["last_name"],"Stuart")
 
             self.assertEqual(client.post(f"/sims/{first_id}/spouse",data={"spouse_id":first_id},follow_redirects=False).status_code,400)
+
+    def test_relationship_profile_can_edit_family_without_showing_a_partner(self):
+        marker=uuid.uuid4().hex[:8]
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name=f"Relationship editor {marker}",global_day=14,settings={"relationship_classification_repair_version":2})
+                session.add(save);session.flush()
+                first=Record(save_id=save.id,kind="sim",label=f"First {marker}",data={})
+                second=Record(save_id=save.id,kind="sim",label=f"Second {marker}",data={})
+                session.add_all([first,second]);session.flush()
+                relationship=Record(save_id=save.id,kind="relationship",label=f"First & Second {marker}",data={
+                    "partner1_id":first.id,"partner2_id":second.id,"type":"Love Interest",
+                    "relationship_tags":["Romantic"],"status":"Active",
+                })
+                session.add(relationship);session.commit();save_id,first_id,second_id,relationship_id=save.id,first.id,second.id,relationship.id
+            client.post("/saves/select",data={"save_id":save_id},follow_redirects=False)
+            profile=client.get(f"/relationships/{relationship_id}")
+            self.assertEqual(profile.status_code,200)
+            self.assertIn('id="edit-relationship"',profile.text)
+            self.assertIn('value="Family"',profile.text)
+            edited=client.post(f"/relationships/{relationship_id}",data={
+                "partner1_id":first_id,"partner2_id":second_id,"relationship_type":"Family",
+                "status":"Active","start_global_day":"","marriage_game_hour":"","marriage_game_minute":"",
+                "end_global_day":"","location":"","surname_rule":"keep","children_count":"0","notes":"Siblings",
+            },follow_redirects=False)
+            self.assertEqual(edited.status_code,303)
+            with SessionLocal() as session:
+                updated=session.get(Record,relationship_id)
+                self.assertEqual(updated.data["type"],"Family")
+                self.assertEqual(updated.data["relationship_tags"],["Family"])
+                self.assertFalse(updated.data["legally_married"])
+            sim_profile=client.get(f"/sims/{first_id}")
+            self.assertIn("No partners linked.",sim_profile.text)
+            self.assertIn("Family & social records",sim_profile.text)
+            self.assertIn(f'/relationships/{relationship_id}#edit-relationship',sim_profile.text)
 
     def test_editable_multiple_birth_limits_are_enforced_by_historical_year(self):
         with TestClient(app):
@@ -873,7 +912,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.2.4")
+            self.assertEqual(health.json()["version"], "4.2.5")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -2155,6 +2194,7 @@ class CoreSmokeTests(unittest.TestCase):
         romantic = classify_game_relationship({"category":"Relationship","friendship_score":80,"romance_score":12})
         family = classify_game_relationship({"category":"Relationship","relationship_bits":["RelationshipBit_Sibling"],"friendship_score":65})
         genealogy_family = classify_game_relationship({"category":"Relationship","genealogy_family":True,"friendship_score":5})
+        mislabeled_family = classify_game_relationship({"category":"Love Interest","genealogy_family":True,"romance_score":12,"friendship_score":60})
         acquaintance = classify_game_relationship({"category":"Relationship","friendship_score":12,"romance_score":0})
         self.assertEqual(friendship["category"],"Friendship")
         self.assertEqual(romantic["category"],"Romantic")
@@ -2163,7 +2203,40 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(set(family["relationship_tags"]),{"Family","Friendship"})
         self.assertEqual(genealogy_family["category"],"Family")
         self.assertEqual(genealogy_family["relationship_classification_source"],"genealogy")
+        self.assertEqual(mislabeled_family["category"],"Family")
+        self.assertNotIn("Romantic",mislabeled_family["relationship_tags"])
         self.assertEqual(acquaintance["category"],"Acquaintance")
+
+    def test_relationship_repair_uses_shared_parent_and_preserves_marriages(self):
+        marker=uuid.uuid4().hex
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Family relationship repair "+marker,global_day=10,settings={})
+                session.add(save);session.flush()
+                parent=Record(save_id=save.id,kind="sim",label="Shared Parent",data={})
+                session.add(parent);session.flush()
+                first=Record(save_id=save.id,kind="sim",label="First Sibling",data={"mother_id":parent.id})
+                second=Record(save_id=save.id,kind="sim",label="Second Sibling",data={"mother_id":parent.id})
+                spouse=Record(save_id=save.id,kind="sim",label="Spouse",data={})
+                session.add_all([first,second,spouse]);session.flush()
+                mistaken=Record(save_id=save.id,kind="relationship",label="Mistaken romance",data={
+                    "partner1_id":first.id,"partner2_id":second.id,"type":"Love Interest",
+                    "relationship_tags":["Romantic","Friendship"],"romance_score":50,
+                })
+                marriage=Record(save_id=save.id,kind="relationship",label="Protected marriage",data={
+                    "partner1_id":first.id,"partner2_id":spouse.id,"type":"Marriage",
+                    "status":"Active","legally_married":True,
+                })
+                session.add_all([mistaken,marriage]);session.flush()
+                result=repair_relationship_classifications(session,save)
+                self.assertEqual(result,{"records":1})
+                self.assertEqual(mistaken.data["type"],"Family")
+                self.assertIn("Family",mistaken.data["relationship_tags"])
+                self.assertNotIn("Romantic",mistaken.data["relationship_tags"])
+                self.assertEqual(marriage.data["type"],"Marriage")
+                self.assertEqual(repair_relationship_classifications(session,save),{"records":0})
+                session.rollback()
 
     def test_relationship_inbox_repairs_generic_rows_and_suppresses_acquaintances(self):
         marker=uuid.uuid4().hex

@@ -83,7 +83,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.2.4")
+app = FastAPI(title="Decades Tracker", version="4.2.5")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -378,6 +378,7 @@ templates.env.globals.update(
     detected_labels=detected_labels,
     trait_labels=game_metadata.readable_trait_labels,
     game_labels=game_metadata.readable_named_labels,
+    relationship_is_partner=insights.relationship_is_partner,
 )
 
 
@@ -1015,6 +1016,10 @@ def feature_page(request: Request, page: str):
             if hash_name_repair["sims"] or hash_name_repair["labels"]:
                 session.flush()
                 ctx["hash_name_repair"] = hash_name_repair
+            relationship_classification_repair = automation.repair_relationship_classifications(session, save)
+            if relationship_classification_repair["records"]:
+                session.flush()
+                ctx["relationship_classification_repair"] = relationship_classification_repair
         if save and page == "automation":
             relationship_repair = automation.repair_relationship_inbox(session, save)
             repaired_count = relationship_repair["classified"] + relationship_repair["dismissed"]
@@ -1466,6 +1471,8 @@ def feature_page(request: Request, page: str):
             }
             ctx["journals"] = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "session_journal", Record.deleted.is_(False)).order_by(Record.global_day.desc()).limit(30)))
             ctx["legacy_detections"] = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="detection_candidate",Record.deleted.is_(False)).order_by(Record.created_at.desc()).limit(50)))
+        if page == "relationships" and save:
+            ctx["relationship_notice"] = request.session.pop("relationship_notice", None)
         if save and page in {"sims", "relationships", "households", "pregnancies", "illnesses", "automation", "rolls"}:
             support_rows=support_rows_cache if support_rows_cache is not None else list(session.scalars(select(Record).where(
                 Record.save_id==save.id,Record.kind.in_({"sim","household"}),Record.deleted.is_(False),
@@ -1588,7 +1595,9 @@ def sim_profile(request: Request, sim_id: str):
         for relationship in relationships:
             relationship_data=relationship.data or {}
             other_id=relationship_data.get("partner2_id") if relationship_data.get("partner1_id")==sim.id else relationship_data.get("partner1_id")
-            relationship_rows.append({"record":relationship,"partner":sim_by_id.get(other_id)})
+            relationship_rows.append({"record":relationship,"partner":sim_by_id.get(other_id),"is_partner":insights.relationship_is_partner(relationship)})
+        partner_relationship_rows=[row for row in relationship_rows if row["is_partner"]]
+        other_relationship_rows=[row for row in relationship_rows if not row["is_partner"]]
         birth_day=int_or_none(sim_data.get("birth_global_day",sim.global_day));death_day=int_or_none(sim_data.get("death_global_day"))
         age_end=death_day if death_day is not None and death_day<=save.global_day else save.global_day
         age_days=max(0,age_end-birth_day) if birth_day is not None else None
@@ -1613,7 +1622,7 @@ def sim_profile(request: Request, sim_id: str):
         sim_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==sim.id).order_by(Portrait.created_at)))
         delete_impact=domain.sim_delete_impact(session,sim) if request.query_params.get("delete")=="1" else None
         name_history={"surname_at_birth":domain.surname_at_birth(sim),"married_surname":domain.married_surname(sim)}
-        ctx = context(request, session, sim=sim, name_history=name_history, all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
+        ctx = context(request, session, sim=sim, name_history=name_history, all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, partner_relationship_rows=partner_relationship_rows, other_relationship_rows=other_relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
         return templates.TemplateResponse(request, "sim_profile.html", ctx)
 
 
@@ -1839,7 +1848,8 @@ def add_relationship(request: Request, partner1_id: str = Form(...), partner2_id
         ctx = context(request, session); save = ctx["save"]; first=session.get(Record,partner1_id); second=session.get(Record,partner2_id)
         if not save or not first or not second or first.save_id != save.id or second.save_id != save.id: raise HTTPException(400)
         married=legally_married in {"1","true","on","yes"} or "marriage" in relationship_type.casefold();start=int_or_none(start_global_day)
-        data={"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":relationship_type,"status":status,"start_global_day":start,"end_global_day":int_or_none(end_global_day),"location":location,"legally_married":married,"surname_rule":surname_rule,"children_count":int_or_none(children_count) or 0,"notes":notes}
+        type_folded=relationship_type.strip().casefold();tags=["Family"] if type_folded in {"family","relative","kin"} else ["Friendship"] if type_folded in {"friend","friendship","acquaintance"} else ["Romantic"] if insights.relationship_is_partner({"type":relationship_type,"legally_married":married}) else []
+        data={"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":relationship_type,"status":status,"start_global_day":start,"end_global_day":int_or_none(end_global_day),"location":location,"legally_married":married,"surname_rule":surname_rule,"children_count":int_or_none(children_count) or 0,"notes":notes,"relationship_tags":tags,"relationship_classification_source":"manual"}
         if married:
             data["marriage_global_day"]=start;data.update(marriage_calendar_fields(save,start,marriage_game_hour,marriage_game_minute))
         record=Record(save_id=save.id,kind="relationship",label=f"{first.label} & {second.label}",global_day=data["start_global_day"],data=data);session.add(record);session.flush();name_changes=domain.apply_married_surnames(session,record,first,second,surname_rule);record.label=f"{first.label} & {second.label}";record.data={**record.data,"partner1_name":first.label,"partner2_name":second.label};session.add(Change(save_id=save.id,device_id="local" if settings.local_mode else "web",record_id=record.id,kind=record.kind,operation="upsert",base_version=0,new_version=1,payload=sync.serialize(record)));save.revision+=1+name_changes+domain.sync_generations(session,save);domain.schedule_marriage_rolls(session,save)
@@ -1857,7 +1867,7 @@ def relationship_profile(request: Request, relationship_id: str):
         partner_ids=((relationship.data or {}).get("partner1_id"),(relationship.data or {}).get("partner2_id"))
         partners=[sim_by_id[item_id] for item_id in partner_ids if item_id in sim_by_id]
         relationship_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==relationship.id).order_by(Portrait.created_at)))
-        ctx=context(request,session,relationship=relationship,all_sims=sims,partners=partners,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),relationship_portraits=relationship_portraits,portrait_notice=request.session.pop("portrait_notice",None),title=relationship.label,page="relationships")
+        ctx=context(request,session,relationship=relationship,all_sims=sims,partners=partners,is_partner_relationship=insights.relationship_is_partner(relationship),photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),relationship_portraits=relationship_portraits,portrait_status=portraits.provider_status(),portrait_notice=request.session.pop("portrait_notice",None),relationship_notice=request.session.pop("relationship_notice",None),title=relationship.label,page="relationships")
         return templates.TemplateResponse(request,"relationship_profile.html",ctx)
 
 
@@ -1869,13 +1879,14 @@ def edit_relationship(request: Request, relationship_id: str, partner1_id: str =
         if not relationship or relationship.kind!="relationship": raise HTTPException(404)
         save=owned_save(request,session,relationship.save_id);first=session.get(Record,partner1_id);second=session.get(Record,partner2_id)
         if not first or not second or first.save_id!=save.id or second.save_id!=save.id: raise HTTPException(400)
-        base=relationship.version;data=dict(relationship.data or {});surname_rule=surname_rule or str(data.get("surname_rule") or "automatic");start=int_or_none(start_global_day);married=legally_married in {"1","true","on","yes"} or "marriage" in relationship_type.casefold();data.update({"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":relationship_type,"status":status,"start_global_day":start,"end_global_day":int_or_none(end_global_day),"location":location,"legally_married":married,"surname_rule":surname_rule,"children_count":int_or_none(children_count) or 0,"notes":notes})
+        base=relationship.version;data=dict(relationship.data or {});surname_rule=surname_rule or str(data.get("surname_rule") or "automatic");start=int_or_none(start_global_day);married=legally_married in {"1","true","on","yes"} or "marriage" in relationship_type.casefold();type_folded=relationship_type.strip().casefold();tags=["Family"] if type_folded in {"family","relative","kin"} else ["Friendship"] if type_folded in {"friend","friendship","acquaintance"} else ["Romantic"] if insights.relationship_is_partner({"type":relationship_type,"legally_married":married}) else [];data.update({"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":relationship_type,"status":status,"start_global_day":start,"end_global_day":int_or_none(end_global_day),"location":location,"legally_married":married,"surname_rule":surname_rule,"children_count":int_or_none(children_count) or 0,"notes":notes,"relationship_tags":tags,"relationship_classification_source":"manual"})
         for key in ("marriage_global_day","marriage_game_hour","marriage_game_minute","marriage_time","historical_marriage_date","historical_marriage_date_range","marriage_date_precision"):
             data.pop(key,None)
         if married:
             data["marriage_global_day"]=start;data.update(marriage_calendar_fields(save,start,marriage_game_hour,marriage_game_minute))
         relationship.global_day=data["start_global_day"];relationship.data=data;name_changes=domain.apply_married_surnames(session,relationship,first,second,surname_rule);relationship.label=f"{first.label} & {second.label}";relationship.data={**relationship.data,"partner1_name":first.label,"partner2_name":second.label};relationship.version+=1
         session.add(Change(save_id=save.id,device_id="local" if settings.local_mode else "web",record_id=relationship.id,kind=relationship.kind,operation="upsert",base_version=base,new_version=relationship.version,payload=sync.serialize(relationship)));save.revision+=1+name_changes+domain.sync_generations(session,save);domain.schedule_marriage_rolls(session,save)
+        request.session["relationship_notice"]="Relationship updated. Family and friendship records will no longer appear as romantic partners."
     return RedirectResponse(f"/relationships/{relationship_id}",status_code=303)
 
 
@@ -3048,11 +3059,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.2.4-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.2.5-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.2.4-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.2.5-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

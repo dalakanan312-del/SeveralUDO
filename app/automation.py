@@ -262,34 +262,41 @@ def classify_game_relationship(relationship: dict) -> dict:
     def has_word(*markers: str) -> bool:
         return any(marker in bit_words for marker in markers)
 
-    marriage = contains("married", "marriage", "spouse", "husband", "wife")
-    engagement = contains("fiance", "fiancé", "engaged", "betroth")
-    former = contains("widow", "widower", "divorc", "ex spouse")
-    family = bool(result.get("genealogy_family")) or has_word(
+    reported_marriage = any(marker in folded_category for marker in ("marriage", "married", "spouse", "husband", "wife"))
+    reported_engagement = any(marker in folded_category for marker in ("fianc", "engag", "betroth"))
+    reported_former = any(marker in folded_category for marker in ("widow", "divorc", "former marriage", "ex spouse"))
+    reported_family = any(marker in folded_category for marker in ("family", "relative", "parent", "child", "sibling"))
+    reported_romantic = any(marker in folded_category for marker in ("romantic", "romance", "love interest", "lover", "sweetheart"))
+    reported_friendship = any(marker in folded_category for marker in ("friend", "bestie", "acquaintance"))
+    marriage = reported_marriage or contains("married", "marriage", "spouse", "husband", "wife")
+    engagement = reported_engagement or contains("fiance", "fiancé", "engaged", "betroth")
+    former = reported_former or contains("widow", "widower", "divorc", "ex spouse")
+    family = bool(result.get("genealogy_family")) or reported_family or has_word(
         "family", "relative", "parent", "mother", "father", "child", "son", "daughter",
         "sibling", "brother", "sister", "grandparent", "grandchild", "aunt", "uncle",
         "niece", "nephew", "cousin",
     )
-    romantic = contains("romance", "romantic", "lover", "lovebirds", "sweetheart", "partner")
+    romantic_bit = contains("romance", "romantic", "lover", "lovebirds", "sweetheart", "partner")
     friendship_bit = contains("friend", "besties", "acquaintance")
 
     # Preserve a useful explicit category, but replace the generic Clock Sync
     # fallback with evidence from bits and scores.
     source = "reported category"
-    if folded_category not in _GENERIC_RELATIONSHIP_CATEGORIES:
-        category = raw_category.title()
-    elif former:
-        category, source = ("Widowed" if contains("widow", "widower") else "Divorced"), "relationship bits"
+    if former:
+        category = "Widowed" if contains("widow", "widower") or "widow" in folded_category else "Divorced"
+        source = "reported category" if reported_former else "relationship bits"
     elif marriage:
-        category, source = "Marriage", "relationship bits"
+        category, source = "Marriage", "reported category" if reported_marriage else "relationship bits"
     elif engagement:
-        category, source = "Engagement", "relationship bits"
+        category, source = "Engagement", "reported category" if reported_engagement else "relationship bits"
     elif family:
-        category, source = "Family", "genealogy" if result.get("genealogy_family") else "relationship bits"
-    elif romantic or (romance is not None and abs(romance) >= 1):
-        category, source = "Romantic", "relationship bits" if romantic else "romance score"
-    elif friendship_bit or (friendship is not None and friendship >= 35):
-        category, source = "Friendship", "relationship bits" if friendship_bit else "friendship score"
+        category, source = "Family", "genealogy" if result.get("genealogy_family") else "reported category" if reported_family else "relationship bits"
+    elif reported_romantic or romantic_bit or (romance is not None and abs(romance) >= 1):
+        category, source = "Romantic", "reported category" if reported_romantic else "relationship bits" if romantic_bit else "romance score"
+    elif reported_friendship or friendship_bit or (friendship is not None and friendship >= 35):
+        category, source = "Friendship", "reported category" if reported_friendship else "relationship bits" if friendship_bit else "friendship score"
+    elif folded_category not in _GENERIC_RELATIONSHIP_CATEGORIES:
+        category = raw_category.title()
     elif friendship is not None or romance is not None:
         category, source = "Acquaintance", "relationship scores"
     else:
@@ -298,7 +305,10 @@ def classify_game_relationship(relationship: dict) -> dict:
     tags = []
     if family or category == "Family":
         tags.append("Family")
-    if marriage or engagement or romantic or category in {"Marriage", "Engagement", "Romantic", "Divorced", "Widowed"} or (romance is not None and abs(romance) >= 1):
+    # Genealogy is authoritative for family display. Broad game labels and
+    # romance scores must not turn a factual parent/child/sibling pair into a
+    # partner; explicit marriages and engagements were handled above.
+    if category != "Family" and (marriage or engagement or romantic_bit or category in {"Marriage", "Engagement", "Romantic", "Divorced", "Widowed"} or (romance is not None and abs(romance) >= 1)):
         tags.append("Romantic")
     if friendship_bit or category == "Friendship" or (friendship is not None and friendship >= 35):
         tags.append("Friendship")
@@ -340,8 +350,6 @@ def repair_relationship_inbox(session: Session, save: ChronicleSave) -> dict[str
         if item_data.get("action") not in {"relationship_change", "relationship_end"}:
             continue
         payload = dict(item_data.get("payload") or {})
-        if str(payload.get("category") or "Relationship").casefold() not in _GENERIC_RELATIONSHIP_CATEGORIES:
-            continue
         sim = session.get(Record, item_data.get("sim_id")) if item_data.get("sim_id") else None
         other_game_id = str(payload.get("other_game_sim_id") or "").strip()
         stored = {}
@@ -353,6 +361,8 @@ def repair_relationship_inbox(session: Session, save: ChronicleSave) -> dict[str
         if sim and other_game_id in _family_game_ids(sim.data or {}):
             evidence["genealogy_family"] = True
         classified = classify_game_relationship(evidence)
+        if classified == payload:
+            continue
         base = item.version
         if _relationship_candidate_worthy(classified):
             item_data["payload"] = classified
@@ -371,7 +381,96 @@ def repair_relationship_inbox(session: Session, save: ChronicleSave) -> dict[str
     return result
 
 
-_HASH_NAME_REPAIR_VERSION = 2
+_RELATIONSHIP_CLASSIFICATION_REPAIR_VERSION = 2
+
+
+def repair_relationship_classifications(session: Session, save: ChronicleSave) -> dict[str, int]:
+    """Repair accepted family records that were previously stored as romance.
+
+    The repair uses factual genealogy already present on either Sim. Marriage,
+    engagement and betrothal records are preserved, including uncommon family
+    marriages, while generic and love-interest records for a parent, child or
+    sibling pair become Family. The operation is journaled and runs once per
+    save.
+    """
+    settings = dict(save.settings or {})
+    if int(settings.get("relationship_classification_repair_version") or 0) >= _RELATIONSHIP_CLASSIFICATION_REPAIR_VERSION:
+        return {"records": 0}
+    sims = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    )))
+    by_id = {sim.id: sim for sim in sims}
+    family_pairs: set[frozenset[str]] = set()
+    for sim in sims:
+        data = sim.data or {}
+        for relative_id in (data.get("mother_id"), data.get("father_id")):
+            if relative_id in by_id and relative_id != sim.id:
+                family_pairs.add(frozenset((sim.id, str(relative_id))))
+    # Shared recorded parents are factual sibling evidence even when an older
+    # Clock Sync payload did not include explicit sibling IDs.
+    for index, sim in enumerate(sims):
+        sim_parents = {
+            str(relative_id) for relative_id in ((sim.data or {}).get("mother_id"), (sim.data or {}).get("father_id"))
+            if relative_id in by_id
+        }
+        if not sim_parents:
+            continue
+        for sibling in sims[index + 1:]:
+            sibling_parents = {
+                str(relative_id) for relative_id in ((sibling.data or {}).get("mother_id"), (sibling.data or {}).get("father_id"))
+                if relative_id in by_id
+            }
+            if sim_parents.intersection(sibling_parents):
+                family_pairs.add(frozenset((sim.id, sibling.id)))
+    game_to_tracker = {
+        str((sim.data or {}).get("game_sim_id") or "").strip(): sim.id for sim in sims
+        if str((sim.data or {}).get("game_sim_id") or "").strip()
+    }
+    for sim in sims:
+        game_id = str((sim.data or {}).get("game_sim_id") or "").strip()
+        if not game_id:
+            continue
+        for relative_game_id in _family_game_ids(sim.data or {}):
+            relative_id = game_to_tracker.get(relative_game_id)
+            if relative_id and relative_id != sim.id:
+                family_pairs.add(frozenset((sim.id, relative_id)))
+
+    changed = 0
+    for relationship in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "relationship", Record.deleted.is_(False),
+    )):
+        data = dict(relationship.data or {})
+        pair = frozenset((str(data.get("partner1_id") or ""), str(data.get("partner2_id") or "")))
+        if pair not in family_pairs:
+            continue
+        relationship_type = str(data.get("type") or "Relationship")
+        folded = relationship_type.casefold()
+        protected_partner = bool(data.get("legally_married")) or any(
+            marker in folded for marker in ("marriage", "married", "spouse", "engag", "fianc", "betroth")
+        )
+        if protected_partner or folded == "family":
+            continue
+        tags = [str(tag) for tag in (data.get("relationship_tags") or []) if str(tag).casefold() != "family"]
+        tags = [tag for tag in tags if tag.casefold() != "romantic"]
+        tags.insert(0, "Family")
+        base = relationship.version
+        data.update(
+            type="Family",
+            relationship_tags=list(dict.fromkeys(tags)),
+            relationship_classification_source="genealogy repair",
+            previous_automatic_relationship_type=relationship_type,
+        )
+        relationship.data = data
+        relationship.version += 1
+        journal(session, relationship, "upsert", base)
+        changed += 1
+    settings["relationship_classification_repair_version"] = _RELATIONSHIP_CLASSIFICATION_REPAIR_VERSION
+    save.settings = settings
+    save.revision += changed + 1
+    return {"records": changed}
+
+
+_HASH_NAME_REPAIR_VERSION = 3
 _HASHED_SIM_COLLECTIONS = (
     ("game_traits", "game_trait_details", "trait"),
     ("game_skills", "game_skill_details", "skill"),
@@ -394,6 +493,13 @@ def repair_hashed_sim_metadata(session: Session, save: ChronicleSave) -> dict[st
     sims = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
     )))
+    family_game_pairs = {
+        frozenset((game_id, relative_id))
+        for sim in sims
+        for game_id in (str((sim.data or {}).get("game_sim_id") or "").strip(),)
+        for relative_id in _family_game_ids(sim.data or {})
+        if game_id and relative_id and game_id != relative_id
+    }
     aliases: dict[int, str] = {}
     for sim in sims:
         data = sim.data or {}
@@ -429,7 +535,13 @@ def repair_hashed_sim_metadata(session: Session, save: ChronicleSave) -> dict[st
             if not isinstance(relationship, dict):
                 relationships.append(relationship)
                 continue
-            normalized = classify_game_relationship(relationship)
+            other_game_id = str(relationship.get("other_game_sim_id") or "").strip()
+            game_id = str(data.get("game_sim_id") or "").strip()
+            normalized = classify_game_relationship({
+                **relationship,
+                "genealogy_family": bool(relationship.get("genealogy_family"))
+                or (bool(game_id and other_game_id) and frozenset((game_id, other_game_id)) in family_game_pairs),
+            })
             relationships.append(normalized)
             relationship_changed = relationship_changed or normalized != relationship
         if relationship_changed:

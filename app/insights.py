@@ -62,6 +62,35 @@ def all_records(session: Session, save_id: str, *, include_deleted: bool = False
     return list(session.scalars(query))
 
 
+def relationship_is_partner(value: Record | dict) -> bool:
+    """Return whether a relationship belongs in romantic/partner UI.
+
+    Relationship records also store friendship and broad family connections.
+    Treating every two-Sim record as a couple made parents, children and
+    siblings appear as love interests in profiles and the family tree.
+    """
+    data = (value.data or {}) if isinstance(value, Record) else (value or {})
+    relationship_type = str(data.get("type") or data.get("category") or "").casefold()
+    tags = {str(tag or "").casefold() for tag in (data.get("relationship_tags") or [])}
+    if bool(data.get("legally_married")):
+        return True
+    if any(marker in relationship_type for marker in (
+        "marriage", "married", "spouse", "husband", "wife", "widow", "divorc",
+        "engag", "fianc", "betroth",
+    )):
+        return True
+    if "family" in tags or relationship_type in {"family", "relative", "kin"}:
+        return False
+    if "romantic" in tags:
+        return True
+    if any(marker in relationship_type for marker in (
+        "romantic", "romance", "love interest",
+        "lover", "sweetheart", "partnership", "partner", "couple",
+    )):
+        return True
+    return False
+
+
 def family_view(records: list[Record], focus_id: str | None, mode: str = "family", depth: int = 3) -> dict:
     sims = {item.id: item for item in records if item.kind == "sim" and not item.deleted and bool((item.data or {}).get("include_in_family_tree",True))}
     relationships = [item for item in records if item.kind == "relationship" and not item.deleted]
@@ -81,7 +110,7 @@ def family_view(records: list[Record], focus_id: str | None, mode: str = "family
     relationship_by_pair = {}
     for rel in relationships:
         first, second = (rel.data or {}).get("partner1_id"), (rel.data or {}).get("partner2_id")
-        if first in sims and second in sims:
+        if first in sims and second in sims and relationship_is_partner(rel):
             partners[first].add(second); partners[second].add(first)
             pair = tuple(sorted((first, second)))
             data = rel.data or {}
