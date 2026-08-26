@@ -15,6 +15,7 @@ clock_bridge/config.json
 clock_bridge/install_result.txt
 tools/InnoSetup/
 tools/*.exe
+tools/*.zip
 build/
 dist/
 __pycache__/
