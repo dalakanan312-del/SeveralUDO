@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.2.6` makes the Windows desktop tracker automatically start and supervise the installed Clock Sync relay. The relay follows the app lifecycle, recognizes an already-running instance by heartbeat, and restarts a failed or hung process without losing the ordered offline queue.
+
 `4.2.5` separates family and friendship records from romantic partners throughout Sim profiles and the family tree. Relationships are directly editable, Clock Sync genealogy overrides broad Love Interest labels, and an idempotent repair corrects older parent/child/sibling records without changing marriages or engagements.
 
 `4.2.4` restores lightweight historical-event roll reconciliation on Today. Reached global events now backfill one roll per eligible Sim after imports and same-day clock reconnects without running every scheduler, and editable event start dates are honored even when an older import left the indexed record day stale.

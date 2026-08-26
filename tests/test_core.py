@@ -5,6 +5,7 @@ import unittest
 import io
 import json
 import struct
+import tempfile
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -35,10 +36,28 @@ from app.portraits import normalize_image
 from app.storyline import build as build_storyline
 from app.save_scanner import _parse_save_slot, _parse_sim, compare_scan, protobuf_fields
 from app.session_policy import BROWSER_MODE, PERSISTENT_MODE, REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware
+from desktop_launcher import RelaySupervisor, clock_sync_folder, relay_heartbeat_fresh
 from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_desktop_launcher_finds_and_monitors_clock_relay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder=Path(temporary)/"SeveralUDOClockSync";folder.mkdir()
+            (folder/"SeveralUDOClockRelay.ps1").write_text("# test relay",encoding="utf-8")
+            health=folder/"relay_health.json"
+            health.write_text(json.dumps({"checked_at":datetime.now(timezone.utc).isoformat()}),encoding="utf-8")
+            with mock.patch.dict(os.environ,{"SEVERALUDO_CLOCK_SYNC_DIR":str(folder)}):
+                self.assertEqual(clock_sync_folder(),folder)
+                self.assertTrue(relay_heartbeat_fresh(folder))
+                supervisor=RelaySupervisor()
+                with mock.patch.object(supervisor,"_launch") as launch:
+                    supervisor.ensure_running();launch.assert_not_called()
+                health.write_text(json.dumps({"checked_at":"2000-01-01T00:00:00+00:00"}),encoding="utf-8")
+                self.assertFalse(relay_heartbeat_fresh(folder))
+                with mock.patch.object(supervisor,"_launch") as launch:
+                    supervisor.ensure_running();launch.assert_called_once_with(folder)
+
     def test_bundled_medieval_name_library_is_complete_and_source_grounded(self):
         summary = names.medieval_summary()
         pool = names.medieval_libraries()
@@ -912,7 +931,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.2.5")
+            self.assertEqual(health.json()["version"], "4.2.6")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)

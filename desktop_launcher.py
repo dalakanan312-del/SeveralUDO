@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
 import traceback
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -15,6 +18,7 @@ APP_NAME = "Decades Tracker"
 HOST = "127.0.0.1"
 PORT = 9876
 URL = f"http://{HOST}:{PORT}"
+RELAY_SCRIPT = "SeveralUDOClockRelay.ps1"
 
 
 def resource(relative: str) -> Path:
@@ -47,6 +51,109 @@ def write_startup_error(details: str) -> Path:
     destination = data_root() / "startup-error.log"
     destination.write_text(details, encoding="utf-8")
     return destination
+
+
+def clock_sync_folder() -> Path | None:
+    """Locate the user's installed Clock Sync folder without changing it."""
+    override = str(os.environ.get("SEVERALUDO_CLOCK_SYNC_DIR") or "").strip()
+    roots = [Path(override)] if override else []
+    for variable in ("USERPROFILE", "OneDrive", "OneDriveConsumer"):
+        value = str(os.environ.get(variable) or "").strip()
+        if value:
+            roots.append(Path(value) / "Documents")
+    roots.append(Path.home() / "Documents")
+    seen: set[str] = set()
+    for root in roots:
+        folder = root if root.name == "SeveralUDOClockSync" else root / "Electronic Arts" / "The Sims 4" / "Mods" / "SeveralUDOClockSync"
+        key = str(folder).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        if (folder / RELAY_SCRIPT).is_file():
+            return folder
+    return None
+
+
+def relay_heartbeat_fresh(folder: Path, maximum_age: float = 12.0) -> bool:
+    """Use the relay's heartbeat to recognize an already-running instance."""
+    try:
+        payload = json.loads((folder / "relay_health.json").read_text(encoding="utf-8-sig"))
+        checked = str(payload.get("checked_at") or "").replace("Z", "+00:00")
+        moment = datetime.fromisoformat(checked)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - moment.astimezone(timezone.utc)).total_seconds()) <= maximum_age
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+class RelaySupervisor:
+    """Keep the installed relay alive while the native tracker is open."""
+
+    def __init__(self, check_seconds: float = 3.0) -> None:
+        self.check_seconds = check_seconds
+        self.process: subprocess.Popen | None = None
+        self.thread: threading.Thread | None = None
+        self.stop_event = threading.Event()
+        self.launched_at = 0.0
+
+    def _launch(self, folder: Path) -> None:
+        system_root = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+        powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        executable = str(powershell if powershell.is_file() else "powershell.exe")
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        self.process = subprocess.Popen(
+            [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(folder / RELAY_SCRIPT)],
+            cwd=str(folder), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+        self.launched_at = time.monotonic()
+
+    def _stop_owned_process(self) -> None:
+        if self.process is None or self.process.poll() is not None:
+            self.process = None
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        self.process = None
+
+    def ensure_running(self) -> None:
+        folder = clock_sync_folder()
+        if folder is None:
+            return
+        fresh = relay_heartbeat_fresh(folder)
+        if self.process is not None and self.process.poll() is None:
+            if fresh or time.monotonic() - self.launched_at <= 15:
+                return
+            self._stop_owned_process()
+        else:
+            self.process = None
+        if not fresh:
+            self._launch(folder)
+
+    def _monitor(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                self.ensure_running()
+            except OSError:
+                pass
+            self.stop_event.wait(self.check_seconds)
+
+    def start(self) -> None:
+        if self.thread is not None and self.thread.is_alive():
+            return
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._monitor, name="DecadesTrackerRelay", daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self._stop_owned_process()
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=5)
 
 
 class LocalTracker:
@@ -171,10 +278,13 @@ def main() -> None:
     os.environ.setdefault("DATABASE_URL", "sqlite:///" + db_path.as_posix())
     os.environ.setdefault("PUBLIC_URL", URL)
     tracker = LocalTracker()
+    relay = RelaySupervisor()
     tracker.start()
+    relay.start()
     try:
         open_native_window(tracker)
     finally:
+        relay.stop()
         tracker.stop()
 
 
