@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.2.7` makes automatic illness tracking conservative and episode-aware. A single empty, failed, or uncertain health scan can no longer mark a Sim recovered; recovery requires clean absences on two different tracker days. Buffs and traits naming the same disease share one episode, brief false-recovery bounces are repaired, and internal symptom-suppression buffs are ignored.
+
 `4.2.6` makes the Windows desktop tracker automatically start and supervise the installed Clock Sync relay. The relay follows the app lifecycle, recognizes an already-running instance by heartbeat, and restarts a failed or hung process without losing the ordered offline queue.
 
 `4.2.5` separates family and friendship records from romantic partners throughout Sim profiles and the family tree. Relationships are directly editable, Clock Sync genealogy overrides broad Love Interest labels, and an idempotent repair corrects older parent/child/sibling records without changing marriages or engagements.

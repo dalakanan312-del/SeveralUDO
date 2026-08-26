@@ -83,7 +83,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.2.6")
+app = FastAPI(title="Decades Tracker", version="4.2.7")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -2123,6 +2123,9 @@ async def accept_automation(request: Request, candidate_id: str):
                                          "recovery_game_hour":int_or_none(value("recovery_game_hour",payload.get("detected_game_hour"))),
                                          "recovery_game_minute":int_or_none(value("recovery_game_minute",payload.get("detected_game_minute"))),
                                          "recovery_game_second":int_or_none(value("recovery_game_second",payload.get("detected_game_second"))) or 0})
+                    if status.casefold() not in domain.CLOSED_ILLNESSES:
+                        illness_data.update({"missing_scan_global_days":[], "recovery_pending":False,
+                                             "auto_recovery_confirmed":False})
                 illness.label=f"{sim.label} — {illness_name}";illness.data=illness_data;illness.version+=1
                 domain.journal(session,illness,"upsert",base);resolved_record=illness;save.revision+=1
         elif action in {"new_sim","new_baby"}:
@@ -3059,11 +3062,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.2.6-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.2.7-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.2.6-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.2.7-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

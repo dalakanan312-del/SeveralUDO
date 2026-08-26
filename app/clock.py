@@ -16,6 +16,8 @@ from . import automation, game_metadata, telemetry, sync, notifications, portrai
 
 
 CLOSED_PREGNANCIES = {"delivered", "miscarriage", "stillbirth", "cancelled", "canceled", "ended", "closed"}
+ILLNESS_RECOVERY_CONFIRMATION_DAYS = 2
+ILLNESS_BOUNCE_WINDOW_DAYS = 2
 
 _GAME_STAGE_ORDER = ("newborn", "infant", "toddler", "child", "teen", "youngadult", "adult", "elder")
 _STAGE_LABELS = {
@@ -364,7 +366,10 @@ def _illness_review_candidate(session: Session, save: ChronicleSave, sim: Record
     label = (f"Illness detected: {sim.label} — {payload.get('illness_name') or illness.label}"
              if action == "illness_detected" else
              f"Recovery detected: {sim.label} — {payload.get('illness_name') or illness.label}")
-    item = automation.candidate(session, save, action, sim, label, payload, illness.id)
+    identity = illness.id
+    if action == "illness_recovered":
+        identity = f"{illness.id}:{payload.get('recovery_detection_sequence') or payload.get('recovery_global_day')}"
+    item = automation.candidate(session, save, action, sim, label, payload, identity)
     if item:
         if candidate_sink is not None:
             candidate_sink.append(item)
@@ -372,91 +377,294 @@ def _illness_review_candidate(session: Session, save: ChronicleSave, sim: Record
     return item
 
 
+def _illness_identity(value: str) -> str:
+    """Use a disease name, rather than a transient buff ID, as episode identity."""
+    text = " ".join(str(value or "").replace("_", " ").replace("-", " ").split()).strip()
+    canonical = game_metadata.canonical_illness_name(text) or text
+    return re.sub(r"[^a-z0-9]+", "-", canonical.casefold()).strip("-")
+
+
+def _record_illness_identity(record: Record) -> str:
+    data = record.data or {}
+    return _illness_identity(str(data.get("illness_name") or record.label))
+
+
+def _game_managed_illness(record: Record) -> bool:
+    data = record.data or {}
+    return (
+        str(data.get("source") or "").casefold() == "game"
+        or bool(data.get("automatic_detection"))
+        or bool(data.get("game_source_keys"))
+    )
+
+
+def _illness_keeper(record: Record) -> tuple[int, int, int, str]:
+    """Prefer reviewed/manual detail, then the richest and oldest episode."""
+    data = record.data or {}
+    useful = ("treatment", "notes", "severity", "contagious", "raw_trait", "symptoms", "health_buffs")
+    richness = sum(data.get(key) not in (None, "", [], {}) for key in useful)
+    try:
+        onset = int(data.get("onset_global_day") or record.global_day or 0)
+    except (TypeError, ValueError):
+        onset = 0
+    return (0 if _game_managed_illness(record) else 1, richness, -onset, record.id)
+
+
+def _retire_illness_duplicate(session: Session, save: ChronicleSave, duplicate: Record, keeper: Record) -> None:
+    """Archive one redundant episode and make its pending reviews harmless."""
+    if duplicate.id == keeper.id or duplicate.deleted:
+        return
+    reviews = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "game_candidate", Record.deleted.is_(False),
+        Record.data["payload"]["illness_record_id"].as_string() == duplicate.id,
+    )))
+    for review in reviews:
+        review_data = dict(review.data or {})
+        payload = dict(review_data.get("payload") or {})
+        if (str(review_data.get("action") or "") == "illness_recovered"
+                and str(review_data.get("status") or "pending").casefold() == "pending"):
+            review_data.update(status="superseded", superseded_by=keeper.id)
+        else:
+            payload["illness_record_id"] = keeper.id
+            review_data["payload"] = payload
+        base = review.version
+        review.data = review_data
+        review.version += 1
+        journal(session, review, "upsert", base)
+    base = duplicate.version
+    duplicate.deleted = True
+    duplicate.data = {
+        **(duplicate.data or {}), "duplicate_repair": True, "duplicate_of": keeper.id,
+        "retired_reason": "Duplicate automatic illness detection", "retired_global_day": save.global_day,
+    }
+    duplicate.version += 1
+    journal(session, duplicate, "delete", base)
+    save.revision += 1 + len(reviews)
+
+
+def _supersede_pending_recovery(session: Session, save: ChronicleSave, illness: Record) -> None:
+    reviews = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "game_candidate", Record.deleted.is_(False),
+        Record.data["action"].as_string() == "illness_recovered",
+        Record.data["status"].as_string() == "pending",
+        Record.data["payload"]["illness_record_id"].as_string() == illness.id,
+    )))
+    for review in reviews:
+        base = review.version
+        review.data = {**(review.data or {}), "status": "superseded", "superseded_reason": "Illness detected again"}
+        review.version += 1
+        journal(session, review, "upsert", base)
+    save.revision += len(reviews)
+
+
 def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot: dict,
                     candidate_sink: list[Record] | None = None) -> tuple[int, int]:
-    """Reconcile guarded game detections without trusting optional-mod availability."""
+    """Reconcile guarded game detections without trusting one empty scan.
+
+    Multiple buffs/traits naming the same disease are one episode. Recovery is
+    confirmed only after authoritative absences on two distinct tracker days;
+    transient mod scans and unknown health markers never close an episode.
+    """
     if not snapshot.get("illness_scan_supported", False):
         return 0, 0
-    incoming = {}
+    incoming: dict[str, dict] = {}
     for item in snapshot.get("illnesses") or []:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "").strip()
         key = str(item.get("source_key") or name).strip().casefold()
-        if name and key:
-            incoming[key] = {**item, "name": name, "source_key": key}
+        searchable = " ".join((name, key, str(item.get("provider") or "")))
+        if not name or not key or game_metadata.inactive_health_marker(searchable):
+            continue
+        canonical = game_metadata.canonical_illness_name(searchable)
+        if canonical:
+            name = canonical
+        identity = _illness_identity(name)
+        if not identity:
+            continue
+        prior = incoming.get(identity)
+        source_keys = list(dict.fromkeys((prior or {}).get("source_keys", []) + [key]))
+        symptoms = list(dict.fromkeys(
+            str(value) for value in ((prior or {}).get("symptoms") or []) + (item.get("symptoms") or []) if value
+        ))
+        health_buffs = list((prior or {}).get("health_buffs") or [])
+        for buff in item.get("health_buffs") or []:
+            if buff not in health_buffs:
+                health_buffs.append(buff)
+        incoming[identity] = {
+            **(prior or {}), **item, "name": name, "source_key": source_keys[0],
+            "source_keys": source_keys, "symptoms": symptoms, "health_buffs": health_buffs,
+        }
     tracked = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "illness", Record.deleted.is_(False),
         Record.data["sim_id"].as_string() == sim.id,
     )))
-    active_by_key = {
-        str(item.data.get("source_key") or "").casefold(): item for item in tracked
-        if item.data.get("source") == "game" and str(item.data.get("status") or "active").casefold() not in CLOSED_ILLNESSES
-    }
+    active_by_identity: dict[str, list[Record]] = {}
+    for record in tracked:
+        if str((record.data or {}).get("status") or "active").casefold() in CLOSED_ILLNESSES:
+            continue
+        active_by_identity.setdefault(_record_illness_identity(record), []).append(record)
     created = ended = 0
-    for key, item in incoming.items():
-        if key in active_by_key:
-            record = active_by_key[key]
-            old = dict(record.data or {})
-            updates = {
-                "illness_name": item["name"],
-                "severity": item.get("severity") or old.get("severity") or "Unrated",
-                "contagious": bool(item.get("contagious", old.get("contagious", False))),
-                "provider": item.get("provider") or old.get("provider") or "game",
-                "last_detected_global_day": save.global_day,
-                "symptoms": item.get("symptoms") or snapshot.get("symptoms") or old.get("symptoms") or [],
-                "health_buffs": item.get("health_buffs") or snapshot.get("health_buffs") or old.get("health_buffs") or [],
-            }
-            if any(old.get(field) != value for field, value in updates.items()):
+    for identity, item in incoming.items():
+        matches = [record for record in active_by_identity.get(identity, []) if not record.deleted]
+        record = max(matches, key=_illness_keeper) if matches else None
+        if record and len(matches) > 1 and any(_game_managed_illness(match) for match in matches):
+            for duplicate in matches:
+                if duplicate.id != record.id:
+                    _retire_illness_duplicate(session, save, duplicate, record)
+        if record:
+            # Repair the common false-recovery bounce left by older receivers.
+            for duplicate in tracked:
+                duplicate_data = duplicate.data or {}
+                if duplicate.deleted or duplicate.id == record.id or _record_illness_identity(duplicate) != identity:
+                    continue
+                if str(duplicate_data.get("outcome") or "").casefold() != "no longer detected in game":
+                    continue
+                try:
+                    end_day = int(duplicate_data.get("end_global_day") or -999999)
+                except (TypeError, ValueError):
+                    continue
+                if end_day >= save.global_day - ILLNESS_BOUNCE_WINDOW_DAYS:
+                    old = dict(record.data or {})
+                    starts = [value for value in (old.get("onset_global_day"), duplicate_data.get("onset_global_day")) if value not in (None, "")]
+                    if starts:
+                        record.global_day = min(int(value) for value in starts)
+                        record.data = {**old, "onset_global_day": record.global_day}
+                    _retire_illness_duplicate(session, save, duplicate, record)
+        if not record:
+            bounced = []
+            for prior_record in tracked:
+                prior_data = prior_record.data or {}
+                if prior_record.deleted or _record_illness_identity(prior_record) != identity:
+                    continue
+                if str(prior_data.get("outcome") or "").casefold() != "no longer detected in game":
+                    continue
+                try:
+                    end_day = int(prior_data.get("end_global_day") or -999999)
+                except (TypeError, ValueError):
+                    continue
+                if end_day >= save.global_day - ILLNESS_BOUNCE_WINDOW_DAYS:
+                    bounced.append(prior_record)
+            if bounced:
+                record = max(bounced, key=lambda value: int((value.data or {}).get("end_global_day") or 0))
+                old = dict(record.data or {})
                 base = record.version
-                record.label = f"{sim.label} — {item['name']}"
-                record.data = {**old, **updates}
+                record.data = {**old, "status": "Active", "end_global_day": None, "outcome": "",
+                               "reopened_after_false_recovery": True}
                 record.version += 1
                 journal(session, record, "upsert", base)
                 save.revision += 1
-            continue
-        data = {
-            "sim_id": sim.id, "sim_name": sim.label, "illness_name": item["name"],
-            "onset_global_day": save.global_day, "end_global_day": None, "status": "Active",
-            "severity": item.get("severity") or "Unrated", "contagious": bool(item.get("contagious", False)),
-            "treatment": "", "outcome": "", "notes": "Detected automatically in The Sims 4.",
-            "source": "game", "source_key": key, "provider": item.get("provider") or "game",
+                _supersede_pending_recovery(session, save, record)
+            else:
+                data = {
+                    "sim_id": sim.id, "sim_name": sim.label, "illness_name": item["name"],
+                    "onset_global_day": save.global_day, "end_global_day": None, "status": "Active",
+                    "severity": item.get("severity") or "Unrated", "contagious": bool(item.get("contagious", False)),
+                    "treatment": "", "outcome": "", "notes": "Detected automatically in The Sims 4.",
+                    "source": "game", "source_key": item["source_key"], "provider": item.get("provider") or "game",
+                    "automatic_detection": True, "game_source_keys": item["source_keys"],
+                    "last_detected_global_day": save.global_day,
+                    "symptoms": item.get("symptoms") or snapshot.get("symptoms") or [],
+                    "health_buffs": item.get("health_buffs") or snapshot.get("health_buffs") or [],
+                    "onset_game_hour": snapshot.get("detected_game_hour"),
+                    "onset_game_minute": snapshot.get("detected_game_minute"),
+                    "onset_game_second": snapshot.get("detected_game_second"),
+                }
+                if data["onset_game_hour"] is not None and data["onset_game_minute"] is not None:
+                    data["onset_game_time"] = f"{int(data['onset_game_hour']):02d}:{int(data['onset_game_minute']):02d}:{int(data['onset_game_second'] or 0):02d}"
+                record = Record(save_id=save.id, kind="illness", label=f"{sim.label} — {item['name']}", global_day=save.global_day, data=data)
+                session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
+                _illness_review_candidate(session, save, sim, record, "illness_detected", {
+                    **data, "illness_record_id": record.id,
+                    "detected_tracker_global_day": save.global_day,
+                    "detected_game_hour": snapshot.get("detected_game_hour"),
+                    "detected_game_minute": snapshot.get("detected_game_minute"),
+                    "detected_game_second": snapshot.get("detected_game_second"),
+                }, candidate_sink)
+        old = dict(record.data or {})
+        game_source_keys = list(dict.fromkeys(
+            list(old.get("game_source_keys") or []) + list(item.get("source_keys") or [])
+        ))
+        updates = {
+            "illness_name": item["name"], "status": "Active", "end_global_day": None,
+            "severity": item.get("severity") or old.get("severity") or "Unrated",
+            "contagious": bool(item.get("contagious", old.get("contagious", False))),
+            "provider": item.get("provider") or old.get("provider") or "game",
+            "automatic_detection": True, "game_source_keys": game_source_keys,
             "last_detected_global_day": save.global_day,
-            "symptoms": item.get("symptoms") or snapshot.get("symptoms") or [],
-            "health_buffs": item.get("health_buffs") or snapshot.get("health_buffs") or [],
-            "onset_game_hour": snapshot.get("detected_game_hour"),
-            "onset_game_minute": snapshot.get("detected_game_minute"),
-            "onset_game_second": snapshot.get("detected_game_second"),
+            "missing_scan_global_days": [], "recovery_pending": False,
+            "symptoms": item.get("symptoms") or snapshot.get("symptoms") or old.get("symptoms") or [],
+            "health_buffs": item.get("health_buffs") or snapshot.get("health_buffs") or old.get("health_buffs") or [],
         }
-        if data["onset_game_hour"] is not None and data["onset_game_minute"] is not None:
-            data["onset_game_time"] = f"{int(data['onset_game_hour']):02d}:{int(data['onset_game_minute']):02d}:{int(data['onset_game_second'] or 0):02d}"
-        record = Record(save_id=save.id, kind="illness", label=f"{sim.label} — {item['name']}", global_day=save.global_day, data=data)
-        session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
-        _illness_review_candidate(session, save, sim, record, "illness_detected", {
-            **data, "illness_record_id": record.id,
-            "detected_tracker_global_day": save.global_day,
-            "detected_game_hour": snapshot.get("detected_game_hour"),
-            "detected_game_minute": snapshot.get("detected_game_minute"),
-            "detected_game_second": snapshot.get("detected_game_second"),
-        }, candidate_sink)
-    for key, record in active_by_key.items():
-        if key in incoming:
+        if str(old.get("outcome") or "").casefold() == "no longer detected in game":
+            updates["outcome"] = ""
+        if any(old.get(field) != value for field, value in updates.items()):
+            base = record.version
+            record.label = f"{sim.label} — {item['name']}"
+            record.data = {**old, **updates}
+            record.version += 1
+            journal(session, record, "upsert", base)
+            save.revision += 1
+
+    diagnostic_errors = (snapshot.get("clock_sync_diagnostics") or {}).get("errors") or []
+    health_failed = any(
+        isinstance(error, dict) and str(error.get("feature") or "").casefold() == "health"
+        for error in diagnostic_errors
+    )
+    absence_authoritative = (
+        not health_failed
+        and snapshot.get("health_scan_supported", True) is not False
+        and not bool(snapshot.get("unknown_health_traits"))
+    )
+    if not absence_authoritative:
+        return created, 0
+
+    for identity, records in active_by_identity.items():
+        if identity in incoming:
             continue
-        base = record.version; data = dict(record.data or {})
-        data.update({"status": "Recovered", "end_global_day": save.global_day, "outcome": "No longer detected in game",
-                     "recovery_game_hour": snapshot.get("detected_game_hour"),
-                     "recovery_game_minute": snapshot.get("detected_game_minute"),
-                     "recovery_game_second": snapshot.get("detected_game_second")})
-        if data["recovery_game_hour"] is not None and data["recovery_game_minute"] is not None:
-            data["recovery_game_time"] = f"{int(data['recovery_game_hour']):02d}:{int(data['recovery_game_minute']):02d}:{int(data['recovery_game_second'] or 0):02d}"
-        record.data = data; record.version += 1; journal(session, record, "upsert", base); ended += 1
-        _illness_review_candidate(session, save, sim, record, "illness_recovered", {
-            **data, "illness_record_id": record.id, "recovery_global_day": save.global_day,
-            "detected_tracker_global_day": save.global_day,
-            "detected_game_hour": snapshot.get("detected_game_hour"),
-            "detected_game_minute": snapshot.get("detected_game_minute"),
-            "detected_game_second": snapshot.get("detected_game_second"),
-        }, candidate_sink)
+        for record in records:
+            if record.deleted or not _game_managed_illness(record):
+                continue
+            data = dict(record.data or {})
+            if str(data.get("status") or "active").casefold() == "chronic":
+                continue
+            missing_days = []
+            for value in data.get("missing_scan_global_days") or []:
+                try:
+                    day = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if day not in missing_days:
+                    missing_days.append(day)
+            if save.global_day not in missing_days:
+                missing_days.append(save.global_day)
+            elif bool(data.get("recovery_pending")):
+                continue
+            missing_days = missing_days[-ILLNESS_RECOVERY_CONFIRMATION_DAYS:]
+            base = record.version
+            data.update({"missing_scan_global_days": missing_days, "recovery_pending": True,
+                         "last_missing_scan_global_day": save.global_day})
+            if len(missing_days) < ILLNESS_RECOVERY_CONFIRMATION_DAYS:
+                record.data = data; record.version += 1; journal(session, record, "upsert", base)
+                save.revision += 1
+                continue
+            data.update({"status": "Recovered", "end_global_day": save.global_day,
+                         "outcome": "No longer detected in game", "recovery_pending": False,
+                         "auto_recovery_confirmed": True,
+                         "recovery_detection_sequence": int(data.get("recovery_detection_sequence") or 0) + 1,
+                         "recovery_game_hour": snapshot.get("detected_game_hour"),
+                         "recovery_game_minute": snapshot.get("detected_game_minute"),
+                         "recovery_game_second": snapshot.get("detected_game_second")})
+            if data["recovery_game_hour"] is not None and data["recovery_game_minute"] is not None:
+                data["recovery_game_time"] = f"{int(data['recovery_game_hour']):02d}:{int(data['recovery_game_minute']):02d}:{int(data['recovery_game_second'] or 0):02d}"
+            record.data = data; record.version += 1; journal(session, record, "upsert", base); ended += 1
+            _illness_review_candidate(session, save, sim, record, "illness_recovered", {
+                **data, "illness_record_id": record.id, "recovery_global_day": save.global_day,
+                "detected_tracker_global_day": save.global_day,
+                "detected_game_hour": snapshot.get("detected_game_hour"),
+                "detected_game_minute": snapshot.get("detected_game_minute"),
+                "detected_game_second": snapshot.get("detected_game_second"),
+            }, candidate_sink)
     return created, ended
 
 

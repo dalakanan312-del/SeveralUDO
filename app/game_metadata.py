@@ -51,7 +51,7 @@ _NON_ACTIVE_WORDS = (
     "mixer", "loot", "testset", "module", "remove", "unknown", "undiagnosed",
     "notification", "support group", "supportgroup", "ghost", "survivor",
     "cancer free", "management", "prescribed", "prescription", "pill taken",
-    "pills taken", "death by", "dying from",
+    "pills taken", "death by", "dying from", "suppression", "suppressor",
 )
 
 _ILLNESS_ALIASES = (
@@ -114,7 +114,7 @@ _ILLNESS_ALIASES = (
     (("anxiety",), "Anxiety"),
     (("depression",), "Depression"),
     (("deafness",), "Deafness"),
-    (("allergy",), "Allergy"),
+    (("general allergies", "allergies", "allergy"), "Allergy"),
     (("sepsis",), "Sepsis"),
     (("hemorrhage", "haemorrhage"), "Hemorrhage"),
 )
@@ -133,6 +133,18 @@ def canonical_illness_name(value: str) -> str:
             if alias_folded in folded or re.sub(r"[^a-z0-9]+", "", alias_folded) in compact:
                 return canonical
     return ""
+
+
+def inactive_health_marker(value: str) -> bool:
+    """Return whether telemetry describes treatment/state machinery, not disease.
+
+    Optional health mods expose many internal buffs beside actual conditions.
+    Keeping this check public lets both metadata enrichment and the receiver apply
+    the same conservative filter even to older Clock Sync payloads.
+    """
+    raw = " ".join(str(value or "").replace("_", " ").replace("-", " ").split()).casefold()
+    compact = re.sub(r"[^a-z0-9]+", "", raw)
+    return bool(raw and any(word.replace(" ", "") in compact for word in _NON_ACTIVE_WORDS))
 
 
 def _mods_root() -> Path:
@@ -764,7 +776,7 @@ def enrich_illness_snapshot(snapshot: dict, signatures: list[dict] | None = None
         searchable = " ".join((
             name, str(item.get("source_key") or ""), str(item.get("provider") or ""),
         )).casefold()
-        if not name or any(word in searchable for word in _NON_ACTIVE_WORDS):
+        if not name or inactive_health_marker(searchable):
             continue
         canonical = canonical_illness_name(searchable)
         if canonical:

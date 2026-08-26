@@ -931,7 +931,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.2.6")
+            self.assertEqual(health.json()["version"], "4.2.7")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1965,7 +1965,62 @@ class CoreSmokeTests(unittest.TestCase):
                 detected = {"illness_scan_supported": True, "illnesses": [{"source_key": "base:flu", "name": "Llama Flu", "provider": "buff"}]}
                 self.assertEqual(_game_illnesses(session, save, sim, detected), (1, 0))
                 self.assertEqual(_game_illnesses(session, save, sim, detected), (0, 0))
+                self.assertEqual(_game_illnesses(session, save, sim, {"illness_scan_supported": True, "illnesses": []}), (0, 0))
+                self.assertEqual(_game_illnesses(session, save, sim, {"illness_scan_supported": True, "illnesses": []}), (0, 0))
+                save.global_day += 1
                 self.assertEqual(_game_illnesses(session, save, sim, {"illness_scan_supported": True, "illnesses": []}), (0, 1))
+                session.rollback()
+
+    def test_game_illnesses_deduplicate_sources_and_ignore_uncertain_recovery(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                sim = Record(save_id=save.id,kind="sim",label="Conservative Health Test",data={"game_sim_id":"health-conservative"})
+                reviewed = Record(save_id=save.id,kind="illness",label="Conservative Health Test — General Allergies",global_day=save.global_day-2,
+                                  data={"sim_id":"", "sim_name":"Conservative Health Test","illness_name":"General Allergies","status":"Active",
+                                        "onset_global_day":save.global_day-2,"source":"Reviewed Clock Sync trait","notes":"Keep this detail"})
+                session.add_all([sim,reviewed]);session.flush();reviewed.data={**reviewed.data,"sim_id":sim.id}
+                detected={"illness_scan_supported":True,"illnesses":[
+                    {"source_key":"buff:allergy","name":"Allergy","provider":"The Sims 4"},
+                    {"source_key":"healthcare-redux-trait:allergy","name":"General Allergies","provider":"Healthcare Redux trait"},
+                ]}
+                self.assertEqual(_game_illnesses(session,save,sim,detected),(0,0))
+                active=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="illness",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))
+                self.assertEqual(len(active),1)
+                self.assertEqual(active[0].data["illness_name"],"Allergy")
+                self.assertEqual(set(active[0].data["game_source_keys"]),{"buff:allergy","healthcare-redux-trait:allergy"})
+                self.assertEqual(active[0].data["notes"],"Keep this detail")
+                save.global_day += 1
+                uncertain={"illness_scan_supported":True,"illnesses":[],"unknown_health_traits":[{"raw":"hash: 999"}]}
+                self.assertEqual(_game_illnesses(session,save,sim,uncertain),(0,0))
+                self.assertEqual(active[0].data["status"],"Active")
+                failed={"illness_scan_supported":True,"illnesses":[],"clock_sync_diagnostics":{"errors":[{"feature":"health","error":"Transient"}]}}
+                self.assertEqual(_game_illnesses(session,save,sim,failed),(0,0))
+                self.assertEqual(active[0].data["status"],"Active")
+                session.rollback()
+
+    def test_game_illness_reopens_and_repairs_false_recovery_bounce(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()));save.global_day=40
+                sim=Record(save_id=save.id,kind="sim",label="Bounce Health Test",data={"game_sim_id":"health-bounce"})
+                prior=Record(save_id=save.id,kind="illness",label="Bounce Health Test — Tuberculosis",global_day=35,data={"sim_id":"","sim_name":"Bounce Health Test","illness_name":"Tuberculosis","status":"Recovered","source":"game","automatic_detection":True,"source_key":"buff:tuberculosis","onset_global_day":35,"end_global_day":39,"outcome":"No longer detected in game"})
+                session.add_all([sim,prior]);session.flush();prior.data={**prior.data,"sim_id":sim.id}
+                snapshot={"illness_scan_supported":True,"illnesses":[{"source_key":"trait:tuberculosis","name":"Tuberculosis"}]}
+                self.assertEqual(_game_illnesses(session,save,sim,snapshot),(0,0))
+                self.assertEqual(prior.data["status"],"Active");self.assertIsNone(prior.data["end_global_day"])
+                self.assertTrue(prior.data["reopened_after_false_recovery"])
+                self.assertEqual(len(list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="illness",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))),1)
+                duplicate=Record(save_id=save.id,kind="illness",label="Bounce Health Test — Tuberculosis",global_day=40,data={"sim_id":sim.id,"sim_name":"Bounce Health Test","illness_name":"Tuberculosis","status":"Active","source":"game","automatic_detection":True,"source_key":"buff:tuberculosis","onset_global_day":40})
+                session.add(duplicate);session.flush()
+                detection_review=Record(save_id=save.id,kind="game_candidate",label="Duplicate illness",global_day=40,data={"action":"illness_detected","status":"pending","source_key":"duplicate-detection","payload":{"illness_record_id":duplicate.id}})
+                recovery_review=Record(save_id=save.id,kind="game_candidate",label="Duplicate recovery",global_day=40,data={"action":"illness_recovered","status":"pending","source_key":"duplicate-recovery","payload":{"illness_record_id":duplicate.id}})
+                session.add_all([detection_review,recovery_review]);session.flush()
+                self.assertEqual(_game_illnesses(session,save,sim,snapshot),(0,0))
+                remaining=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="illness",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))
+                self.assertEqual(len(remaining),1)
+                self.assertEqual(detection_review.data["payload"]["illness_record_id"],prior.id)
+                self.assertEqual(recovery_review.data["status"],"superseded")
                 session.rollback()
 
     def test_detected_illness_and_recovery_appear_once_in_automation_inbox(self):
@@ -1996,6 +2051,8 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(illness.data["illness_name"],f"Reviewed Flu {marker}");self.assertEqual(illness.data["onset_global_day"],30)
                 self.assertEqual(illness.data["severity"],"Moderate");self.assertTrue(illness.data["contagious"])
                 save=session.get(ChronicleSave,save_id);sim=session.get(Record,sim_id)
+                self.assertEqual(_game_illnesses(session,save,sim,{"illness_scan_supported":True,"illnesses":[]}),(0,0))
+                save.global_day+=1
                 self.assertEqual(_game_illnesses(session,save,sim,{"illness_scan_supported":True,"illnesses":[]}),(0,1))
                 recovery=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="game_candidate",Record.data["action"].as_string()=="illness_recovered"))
                 session.commit();recovery_id=recovery.id
@@ -2032,6 +2089,7 @@ class CoreSmokeTests(unittest.TestCase):
             {"source_key":"adeepindigo_HealthcareRedux_Diseases_FluBuff","name":"adeepindigo HealthcareRedux Diseases FluBuff","provider":"Healthcare Redux"},
             {"source_key":"adeepindigo_HealthcareRedux_Diseases_FluImmuneTrait","name":"adeepindigo HealthcareRedux Diseases FluImmuneTrait","provider":"Healthcare Redux"},
             {"source_key":"hcr:sleep-disorder-treatment","name":"Sleep Disorder Treatment"},
+            {"source_key":"buff:sickness-system-sleep-symptom-suppression","name":"Sickness System Sleep Symptom Suppression"},
         ]})
         self.assertTrue(native["illness_scan_supported"])
         self.assertEqual({item["name"] for item in native["illnesses"]},{"Malaria","Meningitis","Influenza"})
