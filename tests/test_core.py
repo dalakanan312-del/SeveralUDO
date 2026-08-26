@@ -1013,7 +1013,7 @@ class CoreSmokeTests(unittest.TestCase):
             ping = client.get("/api/clock/ping", headers={"Authorization": f"Bearer {private_config['sync_token']}"})
             self.assertEqual(ping.status_code, 200)
             self.assertTrue(ping.json()["ok"])
-            self.assertEqual(ping.json()["clock_sync_version"], "2.2.4")
+            self.assertEqual(ping.json()["clock_sync_version"], "2.2.5")
             private_report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {private_config['sync_token']}"}, json={"game_day": 60, "hour": 12, "minute": 0, "household_members": []})
             self.assertEqual(private_report.status_code, 200)
             clock_link = client.post("/api/clock/links").json()

@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.4 reliable, queued life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.5 reliable, queued life-history telemetry for The Sims 4."""
 
 import base64
 import hashlib
@@ -12,7 +12,7 @@ import time
 from . import compat_201 as _compat
 
 
-VERSION = "2.2.4"
+VERSION = "2.2.5"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -675,8 +675,47 @@ def _health_condition_name(value, provider=""):
 
 
 def _health_details(sim_info):
-    component = getattr(sim_info, "buff_component", None)
-    buffs = _read(component, ("get_all_buffs", "buffs", "active_buffs")) if component is not None else ()
+    # BuffComponent belongs to SimInfo as ``Buffs`` on current game builds,
+    # while older builds and test doubles expose ``buff_component``.  Some
+    # releases also keep the component only on the instantiated Sim.  Read all
+    # three forms so hidden Healthcare Redux disease buffs are not missed.
+    components = []
+    sim_instance = _safe_call(sim_info, "get_sim_instance")
+    for owner in (sim_info, sim_instance):
+        if owner is None:
+            continue
+        for name in ("buff_component", "Buffs"):
+            component = getattr(owner, name, None)
+            try:
+                component = component() if callable(component) and not isinstance(component, type) else component
+            except Exception:
+                component = None
+            if component is not None and component not in components:
+                components.append(component)
+
+    buffs = []
+    buff_keys = set()
+
+    def add_buffs(values):
+        for buff in _as_values(values):
+            if buff is None:
+                continue
+            tuning = getattr(buff, "buff_type", None) or getattr(buff, "tuning", None) or buff
+            key = _tuning_id(tuning) or str(id(tuning))
+            if key not in buff_keys:
+                buff_keys.add(key)
+                buffs.append(buff)
+
+    for component in components:
+        # get_active_buff_types is the supported current-game API. The other
+        # collections retain compatibility with older patches and mod wrappers.
+        add_buffs(_safe_call(component, "get_active_buff_types"))
+        add_buffs(_read(component, ("get_all_buffs", "buffs", "active_buffs")))
+        add_buffs(_read(component, ("_active_buffs",), mapping_keys=False))
+        try:
+            add_buffs(component)
+        except Exception:
+            pass
     trait_tracker = getattr(sim_info, "trait_tracker", None)
     traits = []
     trait_keys = set()
@@ -718,9 +757,9 @@ def _health_details(sim_info):
     return {
         "health_buffs": unique,
         "symptoms": [row["name"] for row in unique],
-        "health_scan_supported": component is not None or trait_tracker is not None,
+        "health_scan_supported": bool(components) or trait_tracker is not None,
         "healthcare_redux_detected": any(row.get("provider") == "Healthcare Redux" for row in unique),
-    }, component is not None or trait_tracker is not None
+    }, bool(components) or trait_tracker is not None
 
 
 def _tuning_provider(value):

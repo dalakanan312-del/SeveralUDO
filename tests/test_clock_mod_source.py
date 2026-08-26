@@ -150,7 +150,7 @@ class ClockModSourceTests(unittest.TestCase):
         )
         result = module._extended_snapshot(sim, None)
         self.assertEqual(result["telemetry_version"], 5)
-        self.assertEqual(result["clock_sync_version"], "2.2.4")
+        self.assertEqual(result["clock_sync_version"], "2.2.5")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)
@@ -173,6 +173,31 @@ class ClockModSourceTests(unittest.TestCase):
             "career_education", "occult_progress", "personal_development", "portraits",
         )))
         self.assertTrue(result["clock_sync_diagnostics"]["healthy"])
+
+    def test_current_game_buffs_property_reports_hidden_healthcare_redux_disease(self):
+        module = self.load_module()
+
+        class adeepindigo_HealthcareRedux_Diseases_MalariaBuff:
+            guid64 = 10936279956231109735
+
+        class adeepindigo_HealthcareRedux_Diseases_MalariaImmuneTrait:
+            guid64 = 4030309405
+
+        component = types.SimpleNamespace(
+            get_active_buff_types=lambda: (adeepindigo_HealthcareRedux_Diseases_MalariaBuff,),
+            _active_buffs={},
+        )
+        sim = types.SimpleNamespace(
+            Buffs=component,
+            trait_tracker=types.SimpleNamespace(
+                traits=(adeepindigo_HealthcareRedux_Diseases_MalariaImmuneTrait,),
+            ),
+        )
+        result = module._extended_snapshot(sim, None)
+        self.assertEqual([item["name"] for item in result["illnesses"]], ["Malaria"])
+        self.assertEqual(result["health_buffs"][0]["tuning_id"], "10936279956231109735")
+        self.assertEqual(result["health_buffs"][0]["source_kind"], "active_buff")
+        self.assertNotIn("Malaria Immune Trait", result["symptoms"])
 
     def test_protocol_reports_are_checksummed_delta_encoded_and_queued_in_order(self):
         module = self.load_module()
