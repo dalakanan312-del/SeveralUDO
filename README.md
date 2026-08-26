@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.2.7` makes automatic illness tracking conservative and episode-aware. A single empty, failed, or uncertain health scan can no longer mark a Sim recovered; recovery requires clean absences on two different tracker days. Buffs and traits naming the same disease share one episode, brief false-recovery bounces are repaired, and internal symptom-suppression buffs are ignored.
+`4.2.8` repairs vampire-hunt rolls. Duplicate built-in occult rules are safely consolidated before scheduling, annual household hunts and full-moon checks use stable identities instead of rule-row IDs, and follow-up results now display their named outcomes such as “Not accused” and “Survives.” A triggered hunt schedules one vampire accusation and one eligible-human false-accusation check; only a failed lethal follow-up schedules death.
 
 `4.2.6` makes the Windows desktop tracker automatically start and supervise the installed Clock Sync relay. The relay follows the app lifecycle, recognizes an already-running instance by heartbeat, and restarts a failed or hung process without losing the ordered offline queue.
 

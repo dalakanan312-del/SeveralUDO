@@ -931,7 +931,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.2.7")
+            self.assertEqual(health.json()["version"], "4.2.8")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -2425,6 +2425,62 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(keys.count("werewolf_discovery"),1)
                 self.assertNotIn("mermaid_sailor",keys);self.assertNotIn("mermaid_dehydration",keys)
                 self.assertEqual(schedule_occult_rolls(session,save,sims),0)
+                session.rollback()
+
+    def test_vampire_hunt_scheduler_repairs_duplicate_rules_and_keeps_one_household_roll(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Duplicate vampire rules",global_day=65,start_year=1500,days_per_year=4,settings={"automatic_occult_rolls":True,"occult_rolls_enabled_from_global_day":65})
+                session.add(save);session.flush()
+                home=Record(save_id=save.id,kind="household",label="Vampire House",data={})
+                session.add(home);session.flush()
+                vampire=Record(save_id=save.id,kind="sim",label="Only Vampire",global_day=1,data={"birth_global_day":1,"species_occult":"Vampire","current_household_id":home.id})
+                session.add(vampire);session.flush();seed_occult_rules(session,save)
+                original=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="occult_rule",Record.data["rule_key"].as_string()=="vampire_hunt",Record.deleted.is_(False)))
+                duplicate=Record(save_id=save.id,kind="occult_rule",label=original.label,data={**original.data,"default_id":""})
+                session.add(duplicate);session.flush()
+
+                self.assertEqual(schedule_occult_rolls(session,save,[vampire]),1)
+                hunts=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),
+                    Record.data["occult_rule_key"].as_string()=="vampire_hunt",
+                )))
+                active_rules=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="occult_rule",Record.deleted.is_(False),
+                    Record.data["rule_key"].as_string()=="vampire_hunt",
+                )))
+                self.assertEqual(len(hunts),1)
+                self.assertEqual(len(active_rules),1)
+                self.assertTrue(duplicate.deleted)
+                self.assertEqual(schedule_occult_rolls(session,save,[vampire]),0)
+                session.rollback()
+
+    def test_vampire_hunt_chain_uses_named_outcomes_and_kills_only_after_death_roll(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Vampire hunt chain",global_day=65,start_year=1500,days_per_year=4,settings={"automatic_occult_rolls":True,"automatic_death_causes":True})
+                session.add(save);session.flush()
+                home=Record(save_id=save.id,kind="household",label="Hunt House",data={});session.add(home);session.flush()
+                vampire=Record(save_id=save.id,kind="sim",label="Hunted Vampire",global_day=1,data={"birth_global_day":1,"species_occult":"Vampire","current_household_id":home.id})
+                human=Record(save_id=save.id,kind="sim",label="Human Neighbor",global_day=1,data={"birth_global_day":1,"species_occult":"Human","current_household_id":home.id})
+                session.add_all([vampire,human]);session.flush();seed_occult_rules(session,save);schedule_occult_rolls(session,save,[vampire,human])
+                hunt=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["occult_rule_key"].as_string()=="vampire_hunt"))
+
+                self.assertEqual(complete_roll(session,save,hunt,1)["automatic_followups"],2)
+                accusation=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==hunt.id,Record.data["occult_rule_key"].as_string()=="vampire_accused"))
+                false_accusation=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==hunt.id,Record.data["occult_rule_key"].as_string()=="vampire_false_accusation"))
+                self.assertEqual(complete_roll(session,save,false_accusation,1)["outcome"],"No false accusation")
+                accusation_result=complete_roll(session,save,accusation,9)
+                self.assertEqual(accusation_result["outcome"],"Accused")
+                self.assertEqual(accusation_result["automatic_followups"],1)
+                death_roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==accusation.id,Record.data["occult_rule_key"].as_string()=="vampire_accused_death"))
+                self.assertEqual(death_roll.data["sim_id"],vampire.id)
+                death_result=complete_roll(session,save,death_roll,3)
+                self.assertEqual(death_result["outcome"],"Accused Sim dies")
+                self.assertTrue(death_result["death_changed"])
+                self.assertIsNotNone(vampire.data.get("death_global_day"))
                 session.rollback()
 
     def test_werewolf_discovery_and_hunt_followups_schedule_automatically(self):

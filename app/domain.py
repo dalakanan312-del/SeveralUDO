@@ -672,8 +672,9 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
 
 def seed_occult_rules(session: Session, save: ChronicleSave) -> int:
     """Install the supplied occult rules without enabling automatic scheduling."""
+    repaired = repair_duplicate_occult_rules(session, save)
     existing = {
-        str((item.data or {}).get("default_id") or "")
+        _occult_rule_identity(item.data)
         for item in session.scalars(select(Record).where(
             Record.save_id == save.id, Record.kind == "occult_rule", Record.deleted.is_(False)
         ))
@@ -683,12 +684,64 @@ def seed_occult_rules(session: Session, save: ChronicleSave) -> int:
         data = {key:value for key,value in definition.items() if key != "label"}
         default_id = f"{data['rule_key']}:{data.get('start_year',-9999)}:{data.get('end_year',9999)}"
         data["default_id"] = default_id
-        if default_id in existing:
+        identity = _occult_rule_identity(data)
+        if identity in existing:
             continue
         record = Record(save_id=save.id, kind="occult_rule", label=definition["label"], data=data)
         session.add(record); session.flush(); journal(session, record, "upsert", 0)
-        existing.add(default_id); created += 1
-    return created
+        existing.add(identity); created += 1
+    return repaired + created
+
+
+def _occult_rule_identity(data: dict | None) -> tuple[str, int, int] | None:
+    """Return the unique era-specific identity of an occult rule definition."""
+    values = data or {}
+    key = str(values.get("rule_key") or values.get("key") or "").strip()
+    if not key:
+        return None
+    try:
+        return key, int(values.get("start_year", -9999)), int(values.get("end_year", 9999))
+    except (TypeError, ValueError):
+        return None
+
+
+def repair_duplicate_occult_rules(session: Session, save: ChronicleSave) -> int:
+    """Archive repeated era rules while preserving the oldest, editable copy.
+
+    Early 4.x saves could receive a second built-in set because the original
+    rows predated ``default_id``. Keeping both rows caused household and moon
+    schedulers to create the same obligation twice. Completed rolls are never
+    changed by this repair.
+    """
+    grouped: dict[tuple[str, int, int], list[Record]] = defaultdict(list)
+    for rule in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "occult_rule", Record.deleted.is_(False)
+    )):
+        identity = _occult_rule_identity(rule.data)
+        if identity is not None:
+            grouped[identity].append(rule)
+
+    changed = 0
+    for (key, start, end), matches in grouped.items():
+        if len(matches) < 2:
+            continue
+        matches.sort(key=lambda item: (str(item.created_at or ""), item.id))
+        keeper = matches[0]
+        default_id = f"{key}:{start}:{end}"
+        if str((keeper.data or {}).get("default_id") or "") != default_id:
+            base = keeper.version
+            keeper.data = {**(keeper.data or {}), "default_id": default_id}
+            keeper.version += 1; journal(session, keeper, "upsert", base); changed += 1
+        for duplicate in matches[1:]:
+            base = duplicate.version
+            duplicate.deleted = True
+            duplicate.data = {
+                **(duplicate.data or {}),
+                "archived_reason": "Duplicate occult rule definition",
+                "canonical_occult_rule_id": keeper.id,
+            }
+            duplicate.version += 1; journal(session, duplicate, "delete", base); changed += 1
+    return changed
 
 
 def multiple_birth_limit(session: Session, save: ChronicleSave, global_day: int | None) -> dict | None:
@@ -812,13 +865,17 @@ def _result_numbers(text: str) -> str:
 def _mapped_roll_outcome(actual: int, result_rules: str) -> str:
     """Return the prose attached to a matching numeric result or range."""
     normalized = str(result_rules or "").replace("–", "-").replace("—", "-")
+    fallback = ""
     for clause in (part.strip() for part in re.split(r"[;\n]+", normalized) if part.strip()):
         if ":" not in clause:
             continue
         left, outcome = clause.split(":", 1)
+        if re.search(r"\b(?:all\s+others?|otherwise|else|any\s+other\s+results?)\b", left, re.I):
+            fallback = outcome.strip()
+            continue
         if failed(actual, left):
             return outcome.strip()
-    return ""
+    return fallback
 
 
 def _lethal_outcome(text: str) -> bool:
@@ -1594,6 +1651,9 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
     settings = save.settings or {}
     if not bool(settings.get("automatic_occult_rolls", False)):
         return 0
+    # Repair duplicate built-in rows from early 4.x saves before they fan out
+    # into duplicate annual hunts or full-moon obligations.
+    save.revision += repair_duplicate_occult_rules(session, save)
     enabled_from = max(1, int(settings.get("occult_rolls_enabled_from_global_day") or save.global_day))
     sims = sims if sims is not None else list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False)
@@ -1633,6 +1693,20 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
          _occult_year(save, int(item.global_day or save.global_day)))
         for item in existing_occult_rolls
     }
+    sims_by_id = {sim.id: sim for sim in sims}
+    household_identities = set()
+    moon_identities = set()
+    for item in existing_occult_rolls:
+        item_data = item.data or {}
+        key = str(item_data.get("occult_rule_key") or "")
+        sim_id = str(item_data.get("sim_id") or "")
+        household_id = str(item_data.get("occult_household_id") or "")
+        if not household_id and sim_id in sims_by_id:
+            household_id = str((sims_by_id[sim_id].data or {}).get("current_household_id") or f"unhoused-{sim_id}")
+        if household_id:
+            household_identities.add((key, household_id, _occult_year(save, int(item.global_day or save.global_day))))
+        if ":moon:" in str(item_data.get("source") or ""):
+            moon_identities.add((key, sim_id, int(item.global_day or save.global_day)))
     annual_rules = [rule for rule in rules if (rule.data or {}).get("cadence") == "annual"
                     and _occult_rule_matches(rule, current_year)]
     for rule in annual_rules:
@@ -1645,12 +1719,18 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
                 groups.setdefault(key, []).append(sim)
             for group, members in groups.items():
                 representative = sorted(members, key=lambda item:item.label.casefold())[0]
+                identity = (str((rule.data or {}).get("rule_key") or ""), group, current_year)
+                if identity in household_identities:
+                    continue
                 source = f"occult:{rule.id}:household:{group}:{current_year}"
-                created += int(_add_occult_roll(
+                added = _add_occult_roll(
                     session, save, rule, representative, due, source,
                     label=f"{rule.label} — {(representative.data or {}).get('game_household_name') or representative.label}",
                     overrides={"occult_household_id":group, "eligible_occult_sim_ids":[item.id for item in members]},
-                ))
+                )
+                created += int(added)
+                if added:
+                    household_identities.add(identity)
         else:
             for sim in targets:
                 identity = (str((rule.data or {}).get("rule_key") or ""), sim.id, current_year)
@@ -1676,8 +1756,14 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
             if (rule.data or {}).get("cadence") != "full_moon" or not _occult_rule_matches(rule, moon_year):
                 continue
             for sim in eligible(rule):
+                identity = (str((rule.data or {}).get("rule_key") or ""), sim.id, moon_day)
+                if identity in moon_identities:
+                    continue
                 source = f"occult:{rule.id}:{sim.id}:moon:{moon_day}"
-                created += int(_add_occult_roll(session, save, rule, sim, moon_day, source))
+                added = _add_occult_roll(session, save, rule, sim, moon_day, source)
+                created += int(added)
+                if added:
+                    moon_identities.add(identity)
         moon_day += interval
 
     # Reconcile completed rule outcomes from before the shared follow-up engine
