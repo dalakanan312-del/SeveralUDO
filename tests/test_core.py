@@ -26,7 +26,7 @@ from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_bi
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
@@ -873,7 +873,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.2.3")
+            self.assertEqual(health.json()["version"], "4.2.4")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1639,6 +1639,61 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "Failed")
                 self.assertEqual(sim.data["cause_of_death"], "Killed during Test Battle")
                 self.assertGreaterEqual(sim.data["death_global_day"], save.global_day)
+                session.rollback()
+
+    def test_global_event_backfill_needs_no_location_and_uses_editable_start_day(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(
+                    workspace_id=template.workspace_id,
+                    name="Global event backfill test",
+                    global_day=12,
+                    start_year=1300,
+                    days_per_year=4,
+                )
+                session.add(save)
+                session.flush()
+                sims = [
+                    Record(save_id=save.id, kind="sim", label="No Location One", global_day=1, data={"birth_global_day": 1}),
+                    Record(save_id=save.id, kind="sim", label="No Location Two", global_day=1, data={"birth_global_day": 1}),
+                ]
+                dead_sim = Record(
+                    save_id=save.id,
+                    kind="sim",
+                    label="No Longer Living",
+                    global_day=1,
+                    data={"birth_global_day": 1, "death_global_day": 11},
+                )
+                event = Record(
+                    save_id=save.id,
+                    kind="event",
+                    label="Worldwide Test Event",
+                    # Reproduces an older import whose indexed day was not updated
+                    # when its editable historical date was corrected.
+                    global_day=80,
+                    data={
+                        "start_global_day": 9,
+                        "end_global_day": 12,
+                        "scope": "Global",
+                        "location": "Global / See Notes",
+                        "roll_required": True,
+                        "active": True,
+                        "notes": "Roll a d6; 1 means death.",
+                    },
+                )
+                session.add_all([*sims, dead_sim, event])
+                session.flush()
+
+                self.assertEqual(schedule_event_rolls(session, save), 2)
+                rolls = list(session.scalars(select(Record).where(
+                    Record.save_id == save.id,
+                    Record.kind == "roll",
+                    Record.data["event_id"].as_string() == event.id,
+                )))
+                self.assertEqual({roll.data["sim_id"] for roll in rolls}, {sim.id for sim in sims})
+                self.assertTrue(all(roll.global_day == 9 for roll in rolls))
+                self.assertEqual(schedule_event_rolls(session, save), 0)
                 session.rollback()
 
     def test_pan_european_famine_matches_england_and_deduplicates_imports(self):

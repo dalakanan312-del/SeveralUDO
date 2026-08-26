@@ -1975,6 +1975,106 @@ def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, r
     return created
 
 
+def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Record] | None = None) -> int:
+    """Backfill reached historical-event rolls without running every scheduler.
+
+    Today uses this focused pass after imports and same-day clock reconnects.  It
+    deliberately reads the editable start day from event data instead of trusting
+    the indexed record day, because older imports can leave those two values out
+    of sync.
+    """
+    if sims is None:
+        sims = list(session.scalars(select(Record).where(
+            Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+        )))
+    event_candidates = []
+    for event in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "event", Record.deleted.is_(False),
+    )):
+        data = event.data or {}
+        try:
+            due = int(data.get("start_global_day", event.global_day))
+        except (TypeError, ValueError):
+            continue
+        if (
+            1 <= due <= save.global_day
+            and not event_is_ignored(event)
+            and data.get("active", True)
+            and data.get("roll_required")
+        ):
+            event_candidates.append(event)
+
+    event_groups: dict[tuple[str, int, int, str], list[Record]] = {}
+    for event in event_candidates:
+        event_groups.setdefault(_event_occurrence_key(event), []).append(event)
+    events = [
+        next((item for item in group if (item.data or {}).get("catalog_id")), group[0])
+        for group in event_groups.values()
+    ]
+    event_rules = _event_rule_map(session, save)
+    households = {
+        record.id: record for record in session.scalars(select(Record).where(
+            Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
+        ))
+    }
+    household_locations = {
+        _normalized_location(value)
+        for household in households.values()
+        for value in (
+            (household.data or {}).get("country"),
+            (household.data or {}).get("location"),
+            (household.data or {}).get("world"),
+        )
+        if _normalized_location(value)
+    }
+    fallback_location = next(iter(household_locations)) if len(household_locations) == 1 else ""
+    existing_event_sources = set(session.scalars(select(Record.data["source"].as_string()).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["source"].as_string().like("event:%"),
+    )))
+    created = 0
+    for event in events:
+        due = int((event.data or {}).get("start_global_day", event.global_day))
+        rule_data = event_rules.get(event_key(event), {})
+        spec = event_roll_configuration(event, rule_data)
+        equivalent_event_ids = {
+            equivalent.id for equivalent in event_groups[_event_occurrence_key(event)]
+        }
+        for sim in sims:
+            source = f"event:{event.id}:{sim.id}"
+            death = (sim.data or {}).get("death_global_day")
+            household = households.get(str((sim.data or {}).get("current_household_id") or ""))
+            event_text = f"{event.label} {(event.data or {}).get('scope','')} {(event.data or {}).get('notes','')}".casefold()
+            servo_exempt = "Servo" in occult_rules.sim_occult_types(sim.data) and any(
+                word in event_text for word in ("disease", "illness", "plague", "epidemic", "pandemic", "famine", "starvation", "drown")
+            )
+            equivalent_source_exists = any(
+                f"event:{event_id}:{sim.id}" in existing_event_sources
+                for event_id in equivalent_event_ids
+            )
+            if (
+                bool((sim.data or {}).get("game_was_dead"))
+                or (death is not None and int(death) <= save.global_day)
+                or equivalent_source_exists
+                or servo_exempt
+                or not _event_applies(event, sim, due, rule_data, household, save, fallback_location)
+            ):
+                continue
+            roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {sim.label}", global_day=due, data={
+                "event_id": event.id, "source_id": event.id, "sim_id": sim.id, "sim_name": sim.label,
+                "roll_type": f"Event — {event.label}", "die": spec["die"], "bad_results": spec["bad_results"],
+                "result_rules": spec["result_rules"], "failure_outcome": spec["failure_outcome"],
+                "failure_is_lethal": spec["failure_is_lethal"], "nonlethal": not spec["failure_is_lethal"],
+                "event_rule_id": spec["event_rule_id"], "source": source, "due_global_day": due, "completed": False,
+            })
+            session.add(roll)
+            session.flush()
+            journal(session, roll, "upsert", 0)
+            existing_event_sources.add(source)
+            created += 1
+    return created
+
+
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     rules = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False))))
     sims = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False))))
@@ -2059,73 +2159,7 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     marriage_created, marriage_retired = _schedule_marriage_rolls(session, save, sims)
     created += marriage_created
     created += schedule_occult_rolls(session, save, sims)
-    # Reconcile every historical event reached so far. This also backfills a Sim
-    # added after an event date, while the stable source key prevents duplicates.
-    event_candidates = list(session.scalars(select(Record).where(
-        Record.save_id == save.id, Record.kind == "event", Record.deleted.is_(False),
-        Record.global_day.is_not(None), Record.global_day <= save.global_day,
-    )))
-    event_candidates = [
-        event for event in event_candidates
-        if not event_is_ignored(event) and event.data.get("active", True) and event.data.get("roll_required")
-    ]
-    event_groups: dict[tuple[str, int, int, str], list[Record]] = {}
-    for event in event_candidates:
-        event_groups.setdefault(_event_occurrence_key(event), []).append(event)
-    events = []
-    for group in event_groups.values():
-        events.append(next((item for item in group if (item.data or {}).get("catalog_id")), group[0]))
-    event_rules = _event_rule_map(session, save)
-    households = {
-        record.id: record for record in session.scalars(select(Record).where(
-            Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
-        ))
-    }
-    household_locations = {
-        _normalized_location(value)
-        for household in households.values()
-        for value in (
-            (household.data or {}).get("country"),
-            (household.data or {}).get("location"),
-            (household.data or {}).get("world"),
-        )
-        if _normalized_location(value)
-    }
-    fallback_location = next(iter(household_locations)) if len(household_locations) == 1 else ""
-    existing_event_sources = set(session.scalars(select(Record.data["source"].as_string()).where(
-        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
-        Record.data["source"].as_string().like("event:%"),
-    )))
-    for event in events:
-        due = int(event.data.get("start_global_day", event.global_day))
-        if due < 1:
-            continue
-        rule_data = event_rules.get(event_key(event), {})
-        spec = event_roll_configuration(event, rule_data)
-        equivalent_event_ids = {
-            equivalent.id for equivalent in event_groups[_event_occurrence_key(event)]
-        }
-        for sim in sims:
-            source = f"event:{event.id}:{sim.id}"
-            death = sim.data.get("death_global_day")
-            household = households.get(str((sim.data or {}).get("current_household_id") or ""))
-            event_text=f"{event.label} {(event.data or {}).get('scope','')} {(event.data or {}).get('notes','')}".casefold()
-            servo_exempt="Servo" in occult_rules.sim_occult_types(sim.data) and any(word in event_text for word in ("disease","illness","plague","epidemic","pandemic","famine","starvation","drown"))
-            equivalent_source_exists = any(
-                f"event:{event_id}:{sim.id}" in existing_event_sources
-                for event_id in equivalent_event_ids
-            )
-            if bool((sim.data or {}).get("game_was_dead")) or (death is not None and int(death) <= save.global_day) or equivalent_source_exists or servo_exempt or not _event_applies(event, sim, due, rule_data, household, save, fallback_location):
-                continue
-            roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {sim.label}", global_day=due, data={
-                "event_id": event.id, "source_id": event.id, "sim_id": sim.id, "sim_name": sim.label,
-                "roll_type": f"Event — {event.label}", "die": spec["die"], "bad_results": spec["bad_results"],
-                "result_rules": spec["result_rules"], "failure_outcome": spec["failure_outcome"],
-                "failure_is_lethal": spec["failure_is_lethal"], "nonlethal": not spec["failure_is_lethal"],
-                "event_rule_id": spec["event_rule_id"], "source": source, "due_global_day": due, "completed": False,
-            })
-            session.add(roll); session.flush(); journal(session, roll, "upsert", 0)
-            existing_event_sources.add(source); created += 1
+    created += schedule_event_rolls(session, save, sims)
     save.revision += created + marriage_retired
     return created
 

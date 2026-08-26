@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.2.4` restores lightweight historical-event roll reconciliation on Today. Reached global events now backfill one roll per eligible Sim after imports and same-day clock reconnects without running every scheduler, and editable event start dates are honored even when an older import left the indexed record day stale.
+
 `4.2.3` adds complete compatibility with existing Neon saves. A legacy workspace code can now discover and safely copy every owned 3.x save into the 4.x model, including all 31 legacy table types, portraits, event rules, illnesses, resolved automation history, and prior clock alignment. The bridge is read-only against legacy schemas, preserves IDs and relationships, normalizes historical events without duplication, and can be rerun to fill only missing records. It builds on the reversible event hiding and historical event filters in 4.2.2:
 
 - Google OpenID Connect is the normal hosted sign-in; a recovery key is created only as an emergency fallback.
