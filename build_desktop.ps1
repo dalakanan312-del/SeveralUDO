@@ -3,7 +3,9 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Python = Join-Path $Root ".test_runtime\python.exe"
 Set-Location -LiteralPath $Root
 & $Python -m PyInstaller --noconfirm --clean --windowed --name "Decades Tracker" `
+  --noupx `
   --icon "assets\decades-app-icon.ico" `
+  --version-file "assets\decades-version-info.txt" `
   --add-data "app\templates;app\templates" `
   --add-data "app\static;app\static" `
   --add-data "app\medieval_names.json;app" `

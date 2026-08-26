@@ -100,6 +100,19 @@ class CoreSmokeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"DECADES_AUTOMATIC_SNAPSHOTS": "false"}):
             self.assertFalse(_automatic_snapshots("sqlite:///./data/test.db"))
 
+    def test_windows_release_avoids_upx_and_publishes_identity_and_checksum(self):
+        build_script = Path("build_desktop.ps1").read_text(encoding="utf-8")
+        spec = Path("Decades Tracker.spec").read_text(encoding="utf-8")
+        installer_script = Path("build_installer.ps1").read_text(encoding="utf-8")
+        version_info = Path("assets/decades-version-info.txt").read_text(encoding="utf-8")
+        self.assertIn("--noupx", build_script)
+        self.assertIn("--version-file", build_script)
+        self.assertNotIn("upx=True", spec)
+        self.assertIn("version='assets/decades-version-info.txt'", spec)
+        self.assertIn("SeveralUDO", version_info)
+        self.assertIn("Get-FileHash", installer_script)
+        self.assertIn(".sha256", installer_script)
+
     def test_stay_signed_in_cookie_policy_is_per_login(self):
         test_app = FastAPI()
         test_app.add_middleware(
