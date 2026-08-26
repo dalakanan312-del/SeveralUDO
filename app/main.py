@@ -66,13 +66,31 @@ KIND_BY_PAGE = {
     "challenge": "campaign", "plants": "plant", "rules": "era_rule",
 }
 
+class CachedStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response=await super().get_response(path,scope)
+        response.headers["Cache-Control"]="public, max-age=604800, immutable"
+        return response
+
+
+def static_version() -> str:
+    digest=hashlib.sha256()
+    static_root=ROOT / "app" / "static"
+    for path in sorted(static_root.glob("*")):
+        if not path.is_file(): continue
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
 app = FastAPI(title="Decades Tracker", version="4.2.3")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
-app.mount("/static", StaticFiles(directory=ROOT / "app" / "static"), name="static")
+app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=ROOT / "app" / "templates")
 _SAVE_SCAN_CACHE: dict[str, dict] = {}
 _TODAY_SCHEDULE_CHECKED: dict[str, tuple[int, int]] = {}
+_STATIC_VERSION=static_version()
 
 
 def historical_year(save: ChronicleSave, global_day: int | None) -> str:
@@ -426,7 +444,8 @@ def context(request: Request, session, **extra):
             "save_settings": dict(active.settings or {}) if active else {},
             "features": FEATURES, "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "last_roll": last_roll,
             "occult_notice": request.session.pop("occult_notice", None),
-            "app_version": app.version, "notification_cursor": datetime.now(timezone.utc).isoformat(), **extra}
+            "app_version": app.version, "static_version":_STATIC_VERSION,
+            "notification_cursor": datetime.now(timezone.utc).isoformat(), **extra}
 
 
 def owned_save(request: Request, session, save_id: str) -> ChronicleSave:
@@ -1003,27 +1022,40 @@ def feature_page(request: Request, page: str):
                 save.revision += repaired_count
                 session.flush()
                 ctx["relationship_inbox_repair"] = relationship_repair
-        if save:
+        if save and page != "automation":
             ctx["automation_pending"] = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending")) or 0
         kind = KIND_BY_PAGE.get(page)
         records = []
+        support_rows_cache = None
         if save and kind:
             list_page=max(1,int_or_none(request.query_params.get("list_page")) or 1);list_size=48;list_q=request.query_params.get("q","").strip();list_status=request.query_params.get("record_status","all")
-            conditions=[Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(False)]
-            if list_q: conditions.append(Record.label.ilike(f"%{list_q}%"))
-            if page=="automation": conditions.append(Record.data["status"].as_string()=="pending")
-            if page=="rolls" and list_status in {"pending","completed"}: conditions.append(Record.data["completed"].as_boolean().is_(list_status=="completed"))
-            if page=="rolls":
-                hidden_event_ids=hidden_event_ids_for(session,save.id)
-                if hidden_event_ids:
-                    event_reference=Record.data["event_id"].as_string()
-                    conditions.append(or_(event_reference.is_(None),event_reference.notin_(hidden_event_ids)))
-            record_count=session.scalar(select(func.count()).select_from(Record).where(*conditions)) or 0;list_pages=max(1,(record_count+list_size-1)//list_size);list_page=min(list_page,list_pages)
-            if page=="sims": ordering=(Record.data["sim_number"].as_string().desc().nullslast(),Record.label)
-            elif page=="automation": ordering=(Record.created_at.asc(),)
-            else: ordering=(Record.global_day.desc().nullslast(),Record.label)
-            records=list(session.scalars(select(Record).where(*conditions).order_by(*ordering).offset((list_page-1)*list_size).limit(list_size)))
+            if page=="sims":
+                # The create/edit controls need every active Sim and household
+                # anyway. Reuse that one result for the list and archive tray.
+                support_rows_cache=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind.in_({"sim","household"}),
+                )))
+                listed=[item for item in support_rows_cache if item.kind=="sim" and not item.deleted]
+                if list_q: listed=[item for item in listed if list_q.casefold() in item.label.casefold()]
+                listed.sort(key=lambda item:(insights.sim_number(item),item.label.casefold()),reverse=True)
+                record_count=len(listed);list_pages=max(1,(record_count+list_size-1)//list_size);list_page=min(list_page,list_pages)
+                records=listed[(list_page-1)*list_size:list_page*list_size]
+            else:
+                conditions=[Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(False)]
+                if list_q: conditions.append(Record.label.ilike(f"%{list_q}%"))
+                if page=="automation": conditions.append(Record.data["status"].as_string()=="pending")
+                if page=="rolls" and list_status in {"pending","completed"}: conditions.append(Record.data["completed"].as_boolean().is_(list_status=="completed"))
+                if page=="rolls":
+                    hidden_event_ids=hidden_event_ids_for(session,save.id)
+                    if hidden_event_ids:
+                        event_reference=Record.data["event_id"].as_string()
+                        conditions.append(or_(event_reference.is_(None),event_reference.notin_(hidden_event_ids)))
+                record_count=session.scalar(select(func.count()).select_from(Record).where(*conditions)) or 0;list_pages=max(1,(record_count+list_size-1)//list_size);list_page=min(list_page,list_pages)
+                if page=="automation": ordering=(Record.created_at.asc(),)
+                else: ordering=(Record.global_day.desc().nullslast(),Record.label)
+                records=list(session.scalars(select(Record).where(*conditions).order_by(*ordering).offset((list_page-1)*list_size).limit(list_size)))
             ctx.update(list_page=list_page,list_pages=list_pages,list_count=record_count,list_q=list_q,list_status=list_status)
+            if page=="automation": ctx["automation_pending"]=record_count
         view_records = None
         view_kinds = {
             "family-tree":{"sim","relationship","household"},
@@ -1201,16 +1233,34 @@ def feature_page(request: Request, page: str):
             def scoped(day):
                 if day is None: return False
                 return int(day) == g if due_scope == "today" else int(day) < g if due_scope == "overdue" else int(day) <= g
-            all_sims = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False)).order_by(Record.label)))
-            all_households = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="household",Record.deleted.is_(False)).order_by(Record.label)))
-            all_rolls = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False)).order_by(Record.global_day,Record.label)))
-            occult_history = list(session.scalars(select(Record).where(
-                Record.save_id==save.id, Record.kind=="game_history", Record.deleted.is_(False),
-                Record.data["category"].as_string()=="occult",
-            ).order_by(Record.global_day.desc(),Record.updated_at.desc())))
-            raw_rule_definitions=list(session.scalars(select(Record).where(
-                Record.save_id==save.id,Record.deleted.is_(False),Record.kind.like(r"%\_rule",escape="\\"),
+            # Neon latency is paid per round trip. Load the Today workspace in
+            # one query and partition it in memory instead of issuing a query
+            # for each card family. This returns the same records while making
+            # button-driven rerenders substantially faster.
+            today_kinds={"sim","household","roll","pregnancy","event","illness"}
+            today_rows=list(session.scalars(select(Record).where(
+                Record.save_id==save.id,
+                Record.deleted.is_(False),
+                or_(
+                    Record.kind.in_(today_kinds),
+                    Record.kind.like(r"%\_rule",escape="\\"),
+                    (Record.kind=="game_history") & (Record.data["category"].as_string()=="occult"),
+                ),
             )))
+            rows_by_kind={kind:[] for kind in today_kinds}
+            raw_rule_definitions=[];occult_history=[]
+            for row in today_rows:
+                if row.kind in rows_by_kind: rows_by_kind[row.kind].append(row)
+                elif row.kind=="game_history": occult_history.append(row)
+                elif row.kind.endswith("_rule"): raw_rule_definitions.append(row)
+            by_day_label=lambda item: (int_or_none(item.global_day) if int_or_none(item.global_day) is not None else 10**9,item.label.casefold())
+            all_sims=sorted(rows_by_kind["sim"],key=lambda item:item.label.casefold())
+            all_households=sorted(rows_by_kind["household"],key=lambda item:item.label.casefold())
+            all_rolls=sorted(rows_by_kind["roll"],key=by_day_label)
+            all_pregnancies=sorted(rows_by_kind["pregnancy"],key=by_day_label)
+            all_events=sorted(rows_by_kind["event"],key=by_day_label)
+            all_illnesses=sorted(rows_by_kind["illness"],key=by_day_label)
+            occult_history.sort(key=lambda item:(int_or_none(item.global_day) or -10**9,item.updated_at),reverse=True)
             current_rule_year=save.start_year+(g-1)//max(1,save.days_per_year)
             rule_definitions=[]
             for rule in raw_rule_definitions:
@@ -1220,12 +1270,9 @@ def feature_page(request: Request, page: str):
                 if start is not None and current_rule_year<start or end is not None and current_rule_year>end: continue
                 rule_definitions.append(rule)
             rule_definitions.sort(key=lambda rule:(str((rule.data or {}).get("occult") or (rule.data or {}).get("rule_family") or rule.kind),rule.label.casefold()))
-            all_pregnancies = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="pregnancy",Record.deleted.is_(False)).order_by(Record.global_day,Record.label)))
-            all_events = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="event",Record.deleted.is_(False)).order_by(Record.global_day,Record.label)))
             hidden_event_ids={event.id for event in all_events if domain.event_is_ignored(event)}
             all_events=[event for event in all_events if event.id not in hidden_event_ids]
             if hidden_event_ids: all_rolls=[roll for roll in all_rolls if str((roll.data or {}).get("event_id") or "") not in hidden_event_ids]
-            all_illnesses = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="illness",Record.deleted.is_(False)).order_by(Record.global_day,Record.label)))
             dead_sim_ids={sim.id for sim in all_sims if bool((sim.data or {}).get("game_was_dead")) or (int_or_none(sim.data.get("death_global_day")) is not None and int(sim.data.get("death_global_day"))<=g)}
             living_sims=[sim for sim in all_sims if sim.id not in dead_sim_ids]
             def roll_identity(roll):
@@ -1320,9 +1367,14 @@ def feature_page(request: Request, page: str):
             due_deaths = [s for s in all_sims if scoped(s.data.get("death_global_day")) and not bool(s.data.get("death_confirmed"))]
             today_deaths = [s for s in all_sims if int_or_none(s.data.get("death_global_day"))==g and not bool(s.data.get("death_confirmed"))]
             upcoming_deaths = sorted([s for s in all_sims if (int_or_none(s.data.get("death_global_day")) or -10**9)>g],key=lambda s:int(s.data.get("death_global_day")))[:10]
-            upcoming_rolls = [r for r in pending_rolls if r.global_day is not None and g < int(r.global_day) <= g + preview_days][:20]
-            event_context = {r.id:[e.label for e in all_events if int(e.data.get("start_global_day",e.global_day) or -10**9)<=int(r.global_day or g)<=int(e.data.get("end_global_day",e.global_day) or 10**9) and bool(e.data.get("active",True))][:5] for r in due_rolls+upcoming_rolls}
             page_size=50; roll_page=max(1,int_or_none(params.get("roll_page")) or 1); roll_pages=max(1,(len(due_rolls)+page_size-1)//page_size); roll_page=min(roll_page,roll_pages); due_rolls=due_rolls[(roll_page-1)*page_size:roll_page*page_size]
+            upcoming_rolls = [r for r in pending_rolls if r.global_day is not None and g < int(r.global_day) <= g + preview_days][:20]
+            event_windows=[(
+                int_or_none((event.data or {}).get("start_global_day",event.global_day)) or -10**9,
+                int_or_none((event.data or {}).get("end_global_day",event.global_day)) or 10**9,
+                event.label,
+            ) for event in all_events if bool((event.data or {}).get("active",True))]
+            event_context={roll.id:[label for start,end,label in event_windows if start<=int(roll.global_day or g)<=end][:5] for roll in due_rolls+upcoming_rolls}
             raw_settings=dict(save.settings or {}); legacy=raw_settings.get("legacy_settings") or {}; id_map=raw_settings.get("legacy_id_map") or {}
             current_heir=raw_settings.get("current_heir_id") or id_map.get(legacy.get("current_heir_id"),legacy.get("current_heir_id"))
             main_household=raw_settings.get("main_household_id") or id_map.get(legacy.get("main_household_id"),legacy.get("main_household_id"))
@@ -1381,7 +1433,7 @@ def feature_page(request: Request, page: str):
                 chapter_page_items=story_data["chapters"][chapter_start:chapter_start + chapter_size],
             )
             ctx["story"] = story_data
-            ctx["all_sims"] = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False)).order_by(Record.label)))
+            ctx["all_sims"] = sorted(story_data.get("all_sims") or [],key=lambda item:item.label.casefold())
             ctx["storyline_notice"] = request.session.pop("storyline_notice", None)
         if page == "saves" and save:
             backup_rows = list(session.scalars(select(BackupSnapshot).where(
@@ -1414,13 +1466,21 @@ def feature_page(request: Request, page: str):
             ctx["journals"] = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "session_journal", Record.deleted.is_(False)).order_by(Record.global_day.desc()).limit(30)))
             ctx["legacy_detections"] = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="detection_candidate",Record.deleted.is_(False)).order_by(Record.created_at.desc()).limit(50)))
         if save and page in {"sims", "relationships", "households", "pregnancies", "illnesses", "automation", "rolls"}:
-            ctx["all_sims"] = sorted(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False))), key=insights.sim_number, reverse=True)
-            ctx["all_households"] = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False)).order_by(Record.label)))
+            support_rows=support_rows_cache if support_rows_cache is not None else list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind.in_({"sim","household"}),Record.deleted.is_(False),
+            )))
+            ctx["all_sims"] = sorted((item for item in support_rows if item.kind=="sim" and not item.deleted), key=insights.sim_number, reverse=True)
+            ctx["all_households"] = sorted((item for item in support_rows if item.kind=="household" and not item.deleted),key=lambda item:item.label.casefold())
             ctx["photo_record_ids"] = set(session.scalars(select(Portrait.record_id).where(Portrait.save_id == save.id)))
-            ctx["archived_count"] = session.scalar(select(func.count()).select_from(Record).where(Record.save_id == save.id, Record.kind == kind, Record.deleted.is_(True))) if kind else 0
-            ctx["archived_records"] = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == kind, Record.deleted.is_(True)).order_by(Record.label).limit(100))) if kind else []
+            archived_probe=sorted((item for item in support_rows if item.kind==kind and item.deleted),key=lambda item:item.label.casefold())[:101] if support_rows_cache is not None else list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(True),
+            ).order_by(Record.label).limit(101))) if kind else []
+            ctx["archived_records"]=archived_probe[:100]
+            ctx["archived_count"]=(len(archived_probe) if len(archived_probe)<=100 else session.scalar(
+                select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(True))
+            )) if kind else 0
             if page=="sims":
-                ctx["name_cultures"]=sorted(names.libraries(session,save.id))
+                ctx["name_cultures"]=names.library_names(session,save.id,include_recorded=bool(ctx["all_sims"]))
         ctx.update(records=records, kind=kind, portrait_status=portraits.provider_status())
         dedicated = {
             "today":"today.html", "sims":"sims.html", "relationships":"relationships.html", "households":"households.html",

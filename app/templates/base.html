@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}Decades Tracker{% endblock %}</title>
-<link rel="stylesheet" href="/static/app.css">
-<link rel="stylesheet" href="/static/rolls.css">
-<link rel="stylesheet" href="/static/today.css">
-<link rel="stylesheet" href="/static/v4.css">
-<link rel="stylesheet" href="/static/occult-controls.css">
-<link rel="stylesheet" href="/static/storyline.css">
-<link rel="stylesheet" href="/static/ui-refresh.css">
-<link rel="stylesheet" href="/static/auth.css">
-<link rel="stylesheet" href="/static/tutorial.css">
-<link rel="stylesheet" href="/static/mobile.css">
-  <script src="/static/htmx.min.js" defer></script>
+<link rel="stylesheet" href="/static/app.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/rolls.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/today.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/v4.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/occult-controls.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/storyline.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/ui-refresh.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/auth.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/tutorial.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/mobile.css?v={{static_version}}">
+  <script src="/static/htmx.min.js?v={{static_version}}" defer></script>
 </head>
 <body data-page="{{page or 'home'}}" {% if user and save %}data-notification-feed="/api/notifications" data-notification-cursor="{{notification_cursor}}" data-save-id="{{save.id}}"{% endif %}>
 {% if user %}
@@ -38,6 +38,6 @@
 </aside>
 {% endif %}
 <main class="app-main page-{{page or 'home'}} {% if not user %}centered{% endif %}" {% if page in ['today','rolls','automation'] %}hx-boost="true" hx-target="this" hx-select="main" hx-swap="outerHTML show:top" hx-push-url="true"{% endif %}>{% if occult_notice %}<div class="notice occult-global-notice" role="status">{{occult_notice}}</div>{% endif %}{% block body %}{% endblock %}{% block scripts %}{% endblock %}</main>
-<script src="/static/app.js"></script>
-<script src="/static/today.js"></script>
+<script src="/static/app.js?v={{static_version}}"></script>
+<script src="/static/today.js?v={{static_version}}"></script>
 </body></html>

@@ -257,7 +257,7 @@ def build(session: Session, save: ChronicleSave) -> dict:
         "chapters": chapters, "recent": recent, "recent_game_history": game_history[:16],
         "personal_threads": personal_threads[:8],
         "occult_outcomes":occult_outcomes,
-        "authored_entries":authored, "opening":opening,
+        "authored_entries":authored, "opening":opening, "all_sims":sims,
         "arcs":arcs[:12],
     }
 

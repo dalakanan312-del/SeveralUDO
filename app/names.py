@@ -110,6 +110,25 @@ def libraries(session, save_id: str) -> dict:
     return pool
 
 
+def library_names(session, save_id: str, *, include_recorded: bool = True) -> list[str]:
+    """Return dropdown labels without copying the 49k-name bundled library."""
+    cultures = {
+        f"{MEDIEVAL_PREFIX}{culture}"
+        for culture, groups in ((_medieval_payload().get("cultures") or {}).items())
+        if isinstance(groups, dict)
+    }
+    custom = session.scalars(select(Record.data["culture"].as_string()).where(
+        Record.save_id == save_id,
+        Record.kind == "name_entry",
+        Record.deleted.is_(False),
+    ).distinct())
+    for value in custom:
+        cultures.add(str(value or "Uncategorized").strip() or "Uncategorized")
+    if include_recorded:
+        cultures.add("Names already recorded in this save")
+    return sorted(cultures, key=str.casefold)
+
+
 def coverage(pool: dict) -> list[dict]:
     result=[]
     for culture, by_sex in sorted(pool.items()):

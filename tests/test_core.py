@@ -66,6 +66,31 @@ class CoreSmokeTests(unittest.TestCase):
         allowed = set(pool["Medieval — Turkish"]["Male"]["first"]) | set(pool["Medieval — Turkish"]["Female"]["first"])
         self.assertTrue(all(item["first_name"] in allowed and not item["last_name"] for item in any_gender))
 
+    def test_name_culture_dropdown_does_not_require_copying_the_full_library(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                session.add(Record(
+                    save_id=save.id,
+                    kind="name_entry",
+                    label="Test name",
+                    data={"culture": "Test culture", "sex": "Any", "name_kind": "first"},
+                ))
+                session.flush()
+                cultures = names.library_names(session, save.id)
+                self.assertIn("Medieval — English", cultures)
+                self.assertIn("Test culture", cultures)
+                self.assertIn("Names already recorded in this save", cultures)
+                session.rollback()
+
+    def test_static_assets_are_fingerprinted_and_browser_cacheable(self):
+        with TestClient(app) as client:
+            page = client.get("/")
+            asset = client.get("/static/app.css")
+            self.assertEqual(page.status_code, 200)
+            self.assertRegex(page.text, r'/static/app\.css\?v=[0-9a-f]{12}')
+            self.assertEqual(asset.headers.get("cache-control"), "public, max-age=604800, immutable")
+
     def test_automatic_snapshots_default_to_local_and_can_be_overridden(self):
         with mock.patch.dict(os.environ, {"DECADES_AUTOMATIC_SNAPSHOTS": ""}):
             self.assertTrue(_automatic_snapshots("sqlite:///./data/test.db"))

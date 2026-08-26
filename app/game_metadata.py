@@ -454,6 +454,7 @@ def _clean_game_name(value: str, kind: str = "") -> str:
     if technical:
         name = name.replace("-", " ")
     name = " ".join(name.split()).strip()
+    name = re.sub(r"\bWoo\s+Hoo\b", "WooHoo", name, flags=re.IGNORECASE)
     if kind:
         folded = kind.casefold().replace("_", " ")
         if name.casefold().startswith(folded + " "):
@@ -530,6 +531,10 @@ def readable_named_labels(value, details=None, *, kind: str = "",
             if level_match:
                 raw, level = level_match.group(1), level_match.group(2)
         key = localization_hash(raw)
+        if key is None and (_HASH_LABEL.match(str(raw or "")) or _UNIDENTIFIED_HASH_LABEL.match(str(raw or ""))):
+            # Zero is a missing/empty localization sentinel, not a real game
+            # name, so do not expose it on Sim profiles.
+            continue
         if key:
             label = _clean_game_name(catalog.get(key) or known_aliases.get(key) or "", kind)
             if not label and tuning_id is not None:

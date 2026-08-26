@@ -138,7 +138,10 @@ class Record(Base):
     updated_by_device: Mapped[str] = mapped_column(String(32), default="server")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
-    __table_args__ = (Index("ix_records_save_kind_day", "save_id", "kind", "global_day"),)
+    __table_args__ = (
+        Index("ix_records_save_kind_day", "save_id", "kind", "global_day"),
+        Index("ix_records_save_kind_deleted_day", "save_id", "kind", "deleted", "global_day"),
+    )
 
 
 class Change(Base):
