@@ -150,7 +150,7 @@ class ClockModSourceTests(unittest.TestCase):
         )
         result = module._extended_snapshot(sim, None)
         self.assertEqual(result["telemetry_version"], 5)
-        self.assertEqual(result["clock_sync_version"], "2.2.3")
+        self.assertEqual(result["clock_sync_version"], "2.2.4")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)
@@ -213,6 +213,28 @@ class ClockModSourceTests(unittest.TestCase):
             self.assertTrue(replacements)
             self.assertTrue(all(source.lower().endswith(".json") for source, _ in replacements))
             self.assertFalse(any(source.lower().endswith(".tmp") for source, _ in replacements))
+
+    def test_redirected_documents_config_and_manual_report_are_supported(self):
+        module = self.load_module()
+        with tempfile.TemporaryDirectory() as folder:
+            installed = Path(folder) / "OneDrive" / "Documents" / "Electronic Arts" / "The Sims 4" / "Mods" / "SeveralUDOClockSync"
+            installed.mkdir(parents=True)
+            config = installed / "config.json"
+            config.write_text('{"enabled":true}', encoding="utf-8")
+            module.__file__ = str(installed / "SeveralUDOClockSync.ts4script" / "severaludo_clock_sync" / "__init__.pyc")
+            self.assertEqual(Path(module._config_path_v224()), config)
+        provided = {"save_identity": "slot-manual"}
+        captured = {}
+        module._core._absolute_game_day = lambda: 17
+        module._core._game_clock = lambda: (15, 4)
+        module._played_population_snapshot = lambda: ("Hawthorn", [], True, [])
+        module._protocol_report = lambda *args: captured.setdefault("report", {
+            "game_day": args[0], "config": args[-1],
+        })
+        result = module._report_payload_v22(provided)
+        self.assertEqual(result[:5], (17, 15, 4, "Hawthorn", []))
+        self.assertIs(captured["report"]["config"], provided)
+        self.assertEqual(json.loads(result[-1]), {"game_day": 17, "config": provided})
 
     def test_published_archive_keeps_real_compatibility_module(self):
         with ZipFile(ARCHIVE) as archive:

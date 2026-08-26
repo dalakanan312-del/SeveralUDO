@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.3 reliable, queued life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.4 reliable, queued life-history telemetry for The Sims 4."""
 
 import base64
 import hashlib
@@ -12,13 +12,57 @@ import time
 from . import compat_201 as _compat
 
 
-VERSION = "2.2.3"
+VERSION = "2.2.4"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
 _previous_extended_snapshot = _compat._extended_snapshot
 _previous_household_snapshot = getattr(_core, "_household_snapshot", lambda: ("", []))
 _previous_send_payload = getattr(_core, "_send_payload", None)
+_previous_config_path = getattr(_core, "_config_path", lambda: "")
+
+
+def _config_path_v224():
+    """Locate config beside the installed mod, including redirected Documents."""
+    candidates = []
+    module_file = str(globals().get("__file__", "") or "")
+    marker = ".ts4script"
+    marker_at = module_file.lower().find(marker)
+    if marker_at >= 0:
+        archive = module_file[:marker_at + len(marker)]
+        candidates.append(os.path.join(os.path.dirname(archive), "config.json"))
+
+    # Windows may redirect Documents into OneDrive. The game process keeps the
+    # real known-folder path in the registry even when USERPROFILE\Documents is
+    # no longer the active Sims user-data directory.
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            documents = os.path.expandvars(winreg.QueryValueEx(key, "Personal")[0])
+            candidates.append(os.path.join(
+                documents, "Electronic Arts", "The Sims 4", "Mods",
+                "SeveralUDOClockSync", "config.json",
+            ))
+    except Exception:
+        pass
+
+    for variable in ("OneDriveConsumer", "OneDriveCommercial", "OneDrive"):
+        root = os.environ.get(variable)
+        if root:
+            candidates.append(os.path.join(
+                root, "Documents", "Electronic Arts", "The Sims 4", "Mods",
+                "SeveralUDOClockSync", "config.json",
+            ))
+    fallback = _previous_config_path()
+    if fallback:
+        candidates.append(fallback)
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return candidates[0] if candidates else fallback
 
 
 def _tuning_id(value):
@@ -1294,10 +1338,10 @@ def _send_payload_v22(config, payload):
     return 202
 
 
-def _report_payload_v22():
+def _report_payload_v22(config=None):
     game_day = _core._absolute_game_day()
     game_hour, game_minute = _core._game_clock()
-    config = _core._load_config() or {}
+    config = config or _core._load_config() or {}
     household_name, members, complete, household_rows = _played_population_snapshot()
     report = _protocol_report(game_day, game_hour, game_minute, household_name, members,
                               complete, household_rows, True, config)
@@ -1372,6 +1416,7 @@ def _poll_clock_v22(_alarm_handle=None):
 # The 2.0.1 compatibility layer's population reader resolves this function
 # from its own module globals, so patch both references.
 _compat._extended_snapshot = _extended_snapshot
+_core._config_path = _config_path_v224
 _core._extended_snapshot = _extended_snapshot
 _core._send_payload = _send_payload_v22
 _core._report_payload = _report_payload_v22
