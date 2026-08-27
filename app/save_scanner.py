@@ -376,10 +376,13 @@ def compare_scan(session, save, scan: dict) -> dict:
         if key:
             by_name.setdefault(key, []).append(item)
     household_by_id = {str(item.get("game_household_id") or ""): item for item in households}
-    stored_portraits = {
-        (item.record_id, item.stage): item
-        for item in session.scalars(select(Portrait).where(Portrait.save_id == save.id))
-    }
+    stored_portraits = {}
+    for item in session.scalars(select(Portrait).where(Portrait.save_id == save.id)):
+        key = (item.record_id, "".join(character for character in str(item.stage).casefold() if character.isalpha()))
+        current = stored_portraits.get(key)
+        if not current or (current.source in {"clock-sync-game", "save-file-game"}
+                           and item.source not in {"clock-sync-game", "save-file-game"}):
+            stored_portraits[key] = item
     rows = []
     present_ids = set()
     for game_sim in sims:
@@ -456,6 +459,74 @@ def compare_scan(session, save, scan: dict) -> dict:
     }
     return {"rows": rows, "missing": missing, "counts": counts,
             "safe_review_count": counts["changed"] + counts["new"]}
+
+
+def import_portraits(session, save, scan: dict, target_record_id: str | None = None) -> dict:
+    """Import only embedded Sim thumbnails from a read-only save scan.
+
+    This deliberately leaves the tracker clock and every non-portrait Sim field
+    untouched. Stable game IDs are preferred; a unique exact display name is a
+    safe fallback for older imported Sims that have not been linked yet.
+    """
+    from sqlalchemy import func, select
+
+    from . import clock
+    from .models import Portrait, Record
+
+    automatic_sources = {"clock-sync-game", "save-file-game"}
+    tracked = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    )))
+    target = next((item for item in tracked if item.id == target_record_id), None) if target_record_id else None
+    if target_record_id and not target:
+        return {"identity_matches":0, "available":0, "matched":0, "updated":0,
+                "protected":0, "unchanged":0, "unmatched":0}
+
+    by_game_id = {
+        str((item.data or {}).get("game_sim_id") or "").strip(): item for item in tracked
+        if str((item.data or {}).get("game_sim_id") or "").strip()
+    }
+    by_name: dict[str, list] = {}
+    for item in tracked:
+        key = " ".join(str(item.label or "").casefold().split())
+        if key:
+            by_name.setdefault(key, []).append(item)
+
+    result = {"identity_matches":0, "available":0, "matched":0, "updated":0,
+              "protected":0, "unchanged":0, "unmatched":0}
+    seen_records: set[str] = set()
+    for snapshot in scan.get("sims") or ():
+        game_id = str(snapshot.get("game_sim_id") or "").strip()
+        match = by_game_id.get(game_id)
+        if not match:
+            candidates = by_name.get(" ".join(str(snapshot.get("name") or "").casefold().split()), [])
+            if len(candidates) == 1:
+                match = candidates[0]
+        if target and (not match or match.id != target.id):
+            continue
+        if match and match.id not in seen_records:
+            result["identity_matches"] += 1
+            seen_records.add(match.id)
+        if not snapshot.get("portrait_image_base64"):
+            continue
+        result["available"] += 1
+        if not match:
+            result["unmatched"] += 1
+            continue
+        result["matched"] += 1
+        stage = clock._stage_key(snapshot.get("age_stage")) or "default"
+        existing = list(session.scalars(select(Portrait).where(
+            Portrait.record_id == match.id,
+            func.lower(func.replace(Portrait.stage, " ", "")) == stage.casefold(),
+        )))
+        if any(item.source not in automatic_sources for item in existing):
+            result["protected"] += 1
+            continue
+        if clock._store_game_portrait(session, save, match, snapshot):
+            result["updated"] += 1
+        else:
+            result["unchanged"] += 1
+    return result
 
 
 def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advance_clock: bool = True) -> dict:

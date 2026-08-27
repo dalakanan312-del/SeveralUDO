@@ -83,7 +83,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.3.0")
+app = FastAPI(title="Decades Tracker", version="4.3.1")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -3001,6 +3001,83 @@ async def apply_game_save_scan(request: Request):
     return RedirectResponse("/p/automation", status_code=303)
 
 
+@app.post("/api/game-save/portraits")
+async def import_game_save_portraits(request: Request):
+    """Import every safely matched embedded portrait without changing Sim data."""
+    if not settings.local_mode:
+        raise HTTPException(400, "Direct save scanning is available in the desktop edition.")
+    form = await request.form()
+    available = {item.path.name: item.path for item in save_scanner.discover_saves()}
+    file_name = str(form.get("file_name") or "")
+    if not file_name and available:
+        file_name = next(iter(available))
+    if file_name not in available:
+        raise HTTPException(400, "Choose one of the detected primary Sims 4 saves.")
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save:
+            raise HTTPException(400, "Open a tracker save first.")
+        try:
+            scan = save_scanner.inspect_save(available[file_name])
+        except save_scanner.SaveScanError as exc:
+            request.session["game_save_notice"] = str(exc)
+        else:
+            result = save_scanner.import_portraits(session, save, scan)
+            request.session["game_save_notice"] = (
+                f"Portrait scan finished: {result['updated']} portrait(s) added or refreshed, "
+                f"{result['unchanged']} already current, {result['protected']} manual upload(s) preserved, "
+                f"and {result['unmatched']} embedded portrait(s) could not be matched. "
+                "No clock or Sim details were changed."
+            )
+    return RedirectResponse("/p/clock#save-scan", status_code=303)
+
+
+@app.post("/sims/{sim_id}/scan-portrait")
+def scan_sim_portrait(request: Request, sim_id: str):
+    """Find one Sim's portrait in the Clock-Sync-linked or newest save file."""
+    if not settings.local_mode:
+        raise HTTPException(400, "Direct save scanning is available in the desktop edition.")
+    files = save_scanner.discover_saves()
+    with db() as session:
+        sim = session.get(Record, sim_id)
+        if not sim or sim.kind != "sim" or sim.deleted:
+            raise HTTPException(404)
+        save = owned_save(request, session, sim.save_id)
+        if not files:
+            request.session["portrait_notice"] = "No primary Sims 4 save files were found. Save the game, then try again."
+            return RedirectResponse(f"/sims/{sim.id}#portraits", status_code=303)
+        protocol=session.scalar(select(Record).where(
+            Record.save_id==save.id,Record.kind=="clock_protocol_state",Record.deleted.is_(False),
+        ).limit(1))
+        bound_slot=str((protocol.data or {}).get("save_slot_id") or "") if protocol else ""
+        def slot_key(value) -> str:
+            return str(value or "").casefold().removesuffix(".save").removeprefix("slot_")
+        selected_file=next((item for item in files if bound_slot and slot_key(item.path.name)==slot_key(bound_slot)),files[0])
+        try:
+            scan = save_scanner.inspect_save(selected_file.path)
+        except save_scanner.SaveScanError as exc:
+            request.session["portrait_notice"] = str(exc)
+        else:
+            result = save_scanner.import_portraits(session, save, scan, target_record_id=sim.id)
+            if result["updated"]:
+                request.session["portrait_notice"] = f"Imported {sim.label}’s current life-stage portrait from {selected_file.path.name}."
+            elif result["protected"]:
+                request.session["portrait_notice"] = "A manual portrait already fills this life stage, so it was preserved."
+            elif result["unchanged"]:
+                request.session["portrait_notice"] = "The portrait in the newest game save is already current."
+            elif result["identity_matches"]:
+                request.session["portrait_notice"] = (
+                    "This Sim was found, but the newest save does not contain an embedded portrait. "
+                    "Load or edit the Sim in game, save again, then retry."
+                )
+            else:
+                request.session["portrait_notice"] = (
+                    "This tracker Sim could not be matched in the newest game save. "
+                    "Run Clock Sync with that Sim loaded, or make sure the tracker name matches the game name."
+                )
+    return RedirectResponse(f"/sims/{sim_id}#portraits", status_code=303)
+
+
 @app.get("/downloads/clock-sync")
 def download_clock_sync(request: Request):
     with db() as session:
@@ -3064,11 +3141,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.3.0-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.3.1-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.3.0-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.3.1-Setup.exe"',"Cache-Control":"no-store",
     })
 
 
@@ -3110,15 +3187,23 @@ def portrait(request: Request, record_id: str, stage: str):
         save=owned_save(request, session, record.save_id)
         if stage == "current" and record.kind == "sim":
             raw=str((record.data or {}).get("game_age_stage") or "").replace("Age.","").replace("_","").replace(" ","").casefold()
-            stage_map={"baby":"Newborn","newborn":"Newborn","infant":"Infant","toddler":"Toddler","child":"Child","preteen":"Preteen","teen":"Teen","youngadult":"Young Adult","adult":"Adult","elder":"Elder"}
+            stage_map={"baby":"newborn","newborn":"newborn","infant":"infant","toddler":"toddler","child":"child","preteen":"preteen","teen":"teen","youngadult":"youngadult","adult":"adult","elder":"elder"}
             stage=stage_map.get(raw,insights.life_stage(record,save.global_day))
-        item = session.scalar(select(Portrait).where(Portrait.record_id == record_id, Portrait.stage == stage))
-        if not item and stage != "default":
-            item = session.scalar(select(Portrait).where(Portrait.record_id == record_id, Portrait.stage == "default"))
+        stage_key="".join(character for character in str(stage).casefold() if character.isalpha()) or "default"
+        stage_items=list(session.scalars(select(Portrait).where(
+            Portrait.record_id == record_id, func.lower(func.replace(Portrait.stage," ","")) == stage_key,
+        )))
+        item=next((value for value in stage_items if value.source not in {"clock-sync-game","save-file-game"}),stage_items[0] if stage_items else None)
+        if not item and stage_key != "default":
+            item = session.scalar(select(Portrait).where(Portrait.record_id == record_id, func.lower(Portrait.stage) == "default").limit(1))
         if not item:
             item = session.scalar(select(Portrait).where(Portrait.record_id == record_id).order_by(Portrait.created_at.desc()).limit(1))
         if not item: raise HTTPException(404)
-        return Response(item.image, media_type=item.mime_type, headers={"Cache-Control": "public,max-age=86400"})
+        etag=f'"portrait-{hashlib.sha256(item.image).hexdigest()[:20]}"'
+        headers={"Cache-Control":"private,max-age=0,must-revalidate","ETag":etag}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304,headers=headers)
+        return Response(item.image, media_type=item.mime_type, headers=headers)
 
 
 @app.post("/portraits/{record_id}")
@@ -3129,10 +3214,15 @@ async def upload_portrait(request: Request, record_id: str, stage: str = Form("d
         record = session.get(Record, record_id)
         if not record: raise HTTPException(404)
         owned_save(request, session, record.save_id)
-        item = session.scalar(select(Portrait).where(Portrait.record_id == record_id, Portrait.stage == stage))
+        stage_key="".join(character for character in str(stage).casefold() if character.isalpha()) or "default"
+        stage_items=list(session.scalars(select(Portrait).where(
+            Portrait.record_id==record_id,
+            func.lower(func.replace(Portrait.stage," ",""))==stage_key,
+        )))
+        item=next((value for value in stage_items if value.source not in {"clock-sync-game","save-file-game"}),stage_items[0] if stage_items else None)
         if item: item.image, item.mime_type, item.source = normalized, mime, "upload"
         else: item=Portrait(save_id=record.save_id, record_id=record_id, stage=stage, image=normalized, mime_type=mime);session.add(item)
-        session.flush();sync.sync_portrait(session,session.get(ChronicleSave,record.save_id),item,record_id,stage)
+        session.flush();sync.sync_portrait(session,session.get(ChronicleSave,record.save_id),item,record_id,item.stage)
     return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
 
 

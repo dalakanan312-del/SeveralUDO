@@ -149,6 +149,11 @@
     <label>Detected save<select name="file_name">{% for item in game_save_files %}<option value="{{item.path.name}}">{{item.path.name}} · {{item.modified_at.strftime('%b %d, %Y %I:%M %p')}} · {{(item.size/1048576)|round(1)}} MB</option>{% endfor %}</select></label>
     <button class="primary">Preview newest saved data</button>
   </form>
+  <form action="/api/game-save/portraits" method="post" class="portrait-scan-form">
+    <label>Portrait source save<select name="file_name">{% for item in game_save_files %}<option value="{{item.path.name}}">{{item.path.name}} · {{item.modified_at.strftime('%b %d, %Y %I:%M %p')}}</option>{% endfor %}</select></label>
+    <button>Scan this save for all Sim portraits</button>
+    <small>This imports only safely matched embedded thumbnails. It does not advance the clock or change Sim details, and manual uploads are preserved.</small>
+  </form>
   {% else %}<div class="empty">No primary saves were found in Documents → Electronic Arts → The Sims 4 → saves.</div>{% endif %}
   {% if game_save_scan %}
   {% set slot=game_save_scan.slot %}

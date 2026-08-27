@@ -7,7 +7,7 @@ import math
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import ChronicleSave, ClockLink, Portrait, Record
@@ -270,7 +270,15 @@ def _store_game_portrait(session: Session, save: ChronicleSave, sim: Record, sna
     except Exception:
         return False
     stage = _stage_key(snapshot.get("age_stage")) or "default"
-    item = session.scalar(select(Portrait).where(Portrait.record_id == sim.id, Portrait.stage == stage))
+    stage_items = list(session.scalars(select(Portrait).where(
+        Portrait.record_id == sim.id,
+        func.lower(func.replace(Portrait.stage, " ", "")) == stage.casefold(),
+    )))
+    # Older manual uploads used title-cased stage names while automatic game
+    # thumbnails used lowercase names. Treat both spellings as the same slot,
+    # and always prefer the player's portrait when both are present.
+    item = next((value for value in stage_items if value.source not in {"clock-sync-game", "save-file-game"}),
+                stage_items[0] if stage_items else None)
     # Automatic detection may refresh its own thumbnails, but it must never
     # replace a portrait the player uploaded, generated, restored or synced.
     automatic_sources = {"clock-sync-game", "save-file-game"}

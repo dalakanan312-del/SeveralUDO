@@ -34,7 +34,7 @@ from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_reco
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Portrait, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
-from app.save_scanner import SIM_PORTRAIT_RESOURCE, _embedded_sim_portraits, _parse_save_slot, _parse_sim, compare_scan, protobuf_fields
+from app.save_scanner import SIM_PORTRAIT_RESOURCE, _embedded_sim_portraits, _parse_save_slot, _parse_sim, compare_scan, import_portraits, protobuf_fields
 from app.session_policy import BROWSER_MODE, PERSISTENT_MODE, REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware
 from desktop_launcher import RelaySupervisor, clock_sync_folder, relay_heartbeat_fresh
 from starlette.middleware.sessions import SessionMiddleware
@@ -513,6 +513,49 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(teen.source,"save-file-game")
                 session.rollback()
 
+    def test_automatic_portrait_matches_title_cased_manual_stage(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                sim=Record(save_id=save.id,kind="sim",label="Stage Name Guard",data={"game_age_stage":"Age.YOUNGADULT"})
+                session.add(sim);session.flush()
+                manual_raw=io.BytesIO();Image.new("RGB",(24,24),(30,40,50)).save(manual_raw,format="PNG")
+                manual_image,manual_mime=normalize_image(manual_raw.getvalue(),max_pixels=512)
+                session.add(Portrait(save_id=save.id,record_id=sim.id,stage="Young Adult",image=manual_image,mime_type=manual_mime,source="upload"))
+                session.flush()
+                detected_raw=io.BytesIO();Image.new("RGB",(24,24),(210,190,170)).save(detected_raw,format="JPEG")
+                encoded=__import__("base64").b64encode(detected_raw.getvalue()).decode()
+                self.assertFalse(_store_game_portrait(session,save,sim,{"age_stage":"youngadult","portrait_image_base64":encoded,"portrait_source":"save-file-game"}))
+                self.assertEqual(session.scalar(select(func.count()).select_from(Portrait).where(Portrait.record_id==sim.id)),1)
+                session.rollback()
+
+    def test_portrait_only_scan_imports_matches_and_preserves_manual_uploads(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Portrait-only scan",global_day=42)
+                session.add(save);session.flush()
+                first=Record(save_id=save.id,kind="sim",label="Exact Identity",data={"game_sim_id":"portrait-101","game_age_stage":"adult","notes":"keep me"})
+                second=Record(save_id=save.id,kind="sim",label="Unique Name",data={"game_age_stage":"Age.YOUNGADULT"})
+                session.add_all([first,second]);session.flush()
+                manual_raw=io.BytesIO();Image.new("RGB",(24,24),(1,2,3)).save(manual_raw,format="PNG")
+                manual_image,manual_mime=normalize_image(manual_raw.getvalue(),max_pixels=512)
+                session.add(Portrait(save_id=save.id,record_id=second.id,stage="Young Adult",image=manual_image,mime_type=manual_mime,source="upload"));session.flush()
+                detected_raw=io.BytesIO();Image.new("RGB",(32,32),(80,90,100)).save(detected_raw,format="JPEG")
+                encoded=__import__("base64").b64encode(detected_raw.getvalue()).decode()
+                scan={"sims":[
+                    {"game_sim_id":"portrait-101","name":"Different Display Name","age_stage":"adult","portrait_image_base64":encoded,"portrait_source":"save-file-game"},
+                    {"game_sim_id":"","name":"Unique Name","age_stage":"youngadult","portrait_image_base64":encoded,"portrait_source":"save-file-game"},
+                    {"game_sim_id":"unmatched","name":"Not Tracked","age_stage":"teen","portrait_image_base64":encoded,"portrait_source":"save-file-game"},
+                ]}
+                result=import_portraits(session,save,scan)
+                self.assertEqual(result,{"identity_matches":2,"available":3,"matched":2,"updated":1,"protected":1,"unchanged":0,"unmatched":1})
+                automatic=session.scalar(select(Portrait).where(Portrait.record_id==first.id))
+                self.assertEqual((automatic.stage,automatic.source),("adult","save-file-game"))
+                self.assertEqual(first.data["notes"],"keep me")
+                self.assertEqual(session.scalar(select(func.count()).select_from(Portrait).where(Portrait.record_id==second.id)),1)
+                session.rollback()
+
     def test_imported_event_rules_supply_die_outcome_and_lethality(self):
         with TestClient(app):
             with SessionLocal() as session:
@@ -963,7 +1006,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.3.0")
+            self.assertEqual(health.json()["version"], "4.3.1")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
