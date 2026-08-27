@@ -145,6 +145,40 @@ def capture_sim_changes(session: Session, save: ChronicleSave, sim: Record, snap
                       details={"pregnancy_stage": snapshot.get("pregnancy_stage")})
         entries.append(label)
 
+    if "responsible_pregnancy_states" in snapshot:
+        old_states = {
+            str(row.get("key") or ""): row
+            for row in game_metadata.responsible_pregnancy_states(
+                previous.get("game_responsible_pregnancy_states")
+            )
+            if row.get("key")
+        }
+        new_states = {
+            str(row.get("key") or ""): row
+            for row in game_metadata.responsible_pregnancy_states(
+                snapshot.get("responsible_pregnancy_states")
+            )
+            if row.get("key")
+        }
+        for key in sorted(new_states.keys() - old_states.keys()):
+            state = new_states[key]
+            label = f"{sim.label}'s Responsible Pregnancy status reported {state['name']}."
+            history_event(
+                session, save, category="responsible_pregnancy", label=label,
+                snapshot=snapshot, sim=sim,
+                details={"action": "detected", "state": state, "provider": state.get("provider")},
+            )
+            entries.append(label)
+        for key in sorted(old_states.keys() - new_states.keys()):
+            state = old_states[key]
+            label = f"{sim.label}'s Responsible Pregnancy status no longer reports {state['name']}."
+            history_event(
+                session, save, category="responsible_pregnancy", label=label,
+                snapshot=snapshot, sim=sim,
+                details={"action": "cleared", "state": state, "provider": state.get("provider")},
+            )
+            entries.append(label)
+
     old_milestones = set(_items(previous.get("game_milestones")))
     new_milestones = _items(snapshot.get("milestones"))
     for milestone in (item for item in new_milestones if "game_milestones" in previous and item not in old_milestones):
@@ -161,6 +195,60 @@ def capture_sim_changes(session: Session, save: ChronicleSave, sim: Record, snap
                       details={"skill": skill})
         entries.append(label)
     return entries
+
+
+def capture_responsible_pregnancy(session: Session, save: ChronicleSave, sim: Record,
+                                  snapshot: dict) -> list[str]:
+    """Attach current optional-mod states to the relevant pregnancy record.
+
+    This is passive telemetry, not an automation-inbox action. Repeated reports
+    with the same states do not rewrite the record or create duplicate history.
+    Newborn complications follow the newborn's ``pregnancy_id``; prenatal
+    states follow the mother's current open pregnancy.
+    """
+    if "responsible_pregnancy_states" not in snapshot:
+        return []
+    states = game_metadata.responsible_pregnancy_states(snapshot.get("responsible_pregnancy_states"))
+    pregnancy = None
+    pregnancy_id = str((sim.data or {}).get("pregnancy_id") or "")
+    if pregnancy_id:
+        candidate = session.get(Record, pregnancy_id)
+        if candidate and candidate.save_id == save.id and candidate.kind == "pregnancy" and not candidate.deleted:
+            pregnancy = candidate
+    if pregnancy is None:
+        pregnancy = next((record for record in session.scalars(select(Record).where(
+            Record.save_id == save.id, Record.kind == "pregnancy", Record.deleted.is_(False),
+            Record.data["mother_id"].as_string() == sim.id,
+        ).order_by(Record.global_day.desc()))
+            if str((record.data or {}).get("status") or "active").casefold() not in CLOSED_PREGNANCIES), None)
+    if pregnancy is None:
+        return []
+    data = dict(pregnancy.data or {})
+    previous = game_metadata.responsible_pregnancy_states(data.get("responsible_pregnancy_states"))
+    if previous == states:
+        return []
+    clock = _clock_data(snapshot)
+    history = list(data.get("responsible_pregnancy_history") or [])
+    history.append({
+        "global_day": save.global_day,
+        "sim_id": sim.id,
+        "sim_name": sim.label,
+        "states": states,
+        **clock,
+    })
+    base = pregnancy.version
+    pregnancy.data = {
+        **data,
+        "responsible_pregnancy_states": states,
+        "responsible_pregnancy_history": history[-50:],
+        "responsible_pregnancy_last_global_day": save.global_day,
+        "responsible_pregnancy_source": "Clock Sync",
+        **clock,
+    }
+    pregnancy.version += 1
+    journal(session, pregnancy, "upsert", base)
+    save.revision += 1
+    return []
 
 
 def _progress_number(value) -> float | None:

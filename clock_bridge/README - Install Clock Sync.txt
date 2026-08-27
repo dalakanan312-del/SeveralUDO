@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.2.6
+SEVERALUDO CLOCK SYNC 2.2.7
 Complete Windows installation guide
 ===================================
 
@@ -43,6 +43,7 @@ CLOCK SYNC 2.2 DETAIL
 - Relationships can include game relationship bits plus available friendship and romance scores. Family-changing transitions remain reviewable.
 - Death reports include the game cause and available place details. A previously dead Sim reported alive creates a resurrection review instead of silently changing history.
 - Health telemetry promotes recognized illness and symptom buffs into reviewable illness episodes. Missing optional health mods remain safe.
+- Kemzima Responsible Pregnancy v5.9 telemetry reports selected active exposures, pregnancy risks, maternal conditions and newborn complications in a separate profile section. It is optional and never imported by Clock Sync.
 - Life-stage progress, career and school details, degrees, occult ranks and powers, aspirations, lifestyles, fears, character values and preferences appear on Sim profiles when the game exposes them.
 - The Game Clock page shows a self-diagnostic capability report for your game build, installed packs and supported telemetry.
 - Portrait capture is best effort because some Sims 4 builds expose only a resource reference. Set "capture_portraits" to false in config.json to disable it.
@@ -86,3 +87,9 @@ OPTIONAL HEALTHCARE REDUX SUPPORT
 - When Healthcare Redux is installed, Clock Sync reads active disease buffs and diagnosed traits through the normal Sims trackers. Supported names include Influenza, Cold, Ear Infection, Gastroenteritis, Bronchitis, Sinusitis, Pneumonia, Malaria, Meningitis, Tonsillitis, Tuberculosis, urinary tract and yeast infections, plus supported chronic conditions.
 - Immunity, vaccination, recent-illness, medication, treatment, removal, broadcaster and testing markers are ignored so they do not create false illness episodes.
 - When Healthcare Redux is absent, these optional checks return no matches and all other Clock Sync features continue normally.
+
+OPTIONAL KEMZIMA RESPONSIBLE PREGNANCY SUPPORT
+- Kemzima Responsible Pregnancy is never required and Clock Sync does not import or alter it.
+- Selected active states include alcohol, drug, caffeine, smoke and environmental exposures; nutrition, insomnia, overexertion, sciatica and toxoplasmosis; plus low birth weight, colic, congenital toxoplasmosis and other supported newborn states.
+- These appear on Sim and pregnancy profiles and enter the chronicle once when they change. They are not mislabeled as ordinary illnesses and repeated reports do not create repeated inbox work.
+- When the mod is absent, the compatibility scan returns no states and all other Clock Sync features continue normally.

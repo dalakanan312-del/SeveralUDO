@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.2.9` adds read-only Sim portrait detection to the desktop save scanner. Embedded individual thumbnails are matched by the save's exact Sim ID, previewed before reconciliation, and stored in the matching life-stage photo. Manual uploads are never overwritten. Saves do not always contain a generated thumbnail for every Sim, so the existing manual-photo fallback remains available.
+`4.3.0` adds optional Kemzima Responsible Pregnancy compatibility. Clock Sync 2.2.7 detects selected active pregnancy exposures, risks, maternal conditions, and newborn complications without treating them as ordinary illnesses. Current states appear on Sim and pregnancy profiles, state changes enter the chronicle once, and repeated reports do not create duplicate inbox work. Players without the mod continue to use the tracker normally.
 
 `4.2.6` makes the Windows desktop tracker automatically start and supervise the installed Clock Sync relay. The relay follows the app lifecycle, recognizes an already-running instance by heartbeat, and restarts a failed or hung process without losing the ordered offline queue.
 

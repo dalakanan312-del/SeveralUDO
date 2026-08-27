@@ -31,7 +31,7 @@ function Write-RelayHealth {
     $queued = @(Get-ChildItem -LiteralPath $queuePath -Filter "report-*.json" -File -ErrorAction SilentlyContinue).Count
     $quarantined = @(Get-ChildItem -LiteralPath $quarantinePath -Filter "*.json" -File -ErrorAction SilentlyContinue).Count
     $value = @{
-        relay_version = "2.2.6"
+        relay_version = "2.2.7"
         state = $State
         message = $Message
         queue_depth = $queued

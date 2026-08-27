@@ -14,7 +14,7 @@ $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $resolvedStaging = [System.IO.Path]::GetFullPath($staging)
 
 if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "The Sims Python 3.7 compiler was not found." }
-if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Clock Sync 2.2.6 source was not found." }
+if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Clock Sync 2.2.7 source was not found." }
 if (-not (Test-Path -LiteralPath $output -PathType Leaf)) { throw "The previous Clock Sync archive was not found." }
 if (-not $resolvedStaging.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe Clock Sync staging path." }
 
@@ -68,11 +68,11 @@ if ($LASTEXITCODE -ne 0) { throw "Clock Sync compatibility validation failed." }
 
 $compiled = Join-Path $module.FullName "__init__.pyc"
 & $compiler -c "import py_compile; py_compile.compile(r'$source', cfile=r'$compiled', doraise=True)"
-if ($LASTEXITCODE -ne 0) { throw "Clock Sync 2.2.6 compilation failed." }
+if ($LASTEXITCODE -ne 0) { throw "Clock Sync 2.2.7 compilation failed." }
 
 $validateWrapper = "import marshal,sys; f=open(sys.argv[1],'rb'); f.read(16); c=marshal.load(f); assert 'compat_201' in c.co_names, 'wrapper does not import compatibility module'"
 & $compiler -c $validateWrapper $compiled
-if ($LASTEXITCODE -ne 0) { throw "Clock Sync 2.2.6 wrapper validation failed." }
+if ($LASTEXITCODE -ne 0) { throw "Clock Sync 2.2.7 wrapper validation failed." }
 
 $temporaryZip = [System.IO.Path]::ChangeExtension($output, ".zip")
 if (Test-Path -LiteralPath $temporaryZip) { Remove-Item -LiteralPath $temporaryZip -Force }

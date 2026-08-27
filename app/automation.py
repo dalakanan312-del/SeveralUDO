@@ -77,7 +77,8 @@ _CONSUMED_SIM_TELEMETRY = {
     "pregnancy_hours_remaining", "is_in_labor", "babies_expected",
     "pregnancy_offspring_count", "offspring_count", "baby_count",
     "babies_delivered", "pregnancy_outcome", "pregnancy_partner_game_sim_id",
-    "other_parent_game_sim_id", "illnesses", "health_buffs", "symptoms",
+    "other_parent_game_sim_id", "responsible_pregnancy_states",
+    "responsible_pregnancy_detected", "illnesses", "health_buffs", "symptoms",
     "unknown_health_traits", "occult_types", "species_occult", "occult_progress",
     "aspirations", "active_aspiration", "completed_aspirations", "lifestyles",
     "fears", "character_values", "preferences", "is_dead", "death_type",
@@ -666,6 +667,13 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
                 for value in (snapshot.get("relationships") or []) if isinstance(value, dict)
             ],
         }
+    if "responsible_pregnancy_states" in snapshot:
+        snapshot = {
+            **snapshot,
+            "responsible_pregnancy_states": game_metadata.responsible_pregnancy_states(
+                snapshot.get("responsible_pregnancy_states")
+            ),
+        }
     made = []
     data = dict(sim.data or {})
     history_entries = telemetry.capture_sim_changes(session, save, sim, snapshot, data)
@@ -769,6 +777,11 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         "game_pregnancy_stage": snapshot.get("pregnancy_stage"),
         "game_pregnancy_hours_remaining": snapshot.get("pregnancy_hours_remaining"),
         "game_in_labor": snapshot.get("is_in_labor"),
+        "game_responsible_pregnancy_states": [
+            row for row in (snapshot.get("responsible_pregnancy_states") or []) if isinstance(row, dict)
+        ],
+        "game_responsible_pregnancy_detected": snapshot.get("responsible_pregnancy_detected")
+        if "responsible_pregnancy_detected" in snapshot else None,
         "game_occult_progress": snapshot.get("occult_progress") or {},
         "game_aspirations": _detected_list(snapshot.get("aspirations")),
         "game_active_aspiration": snapshot.get("active_aspiration"),
@@ -824,6 +837,9 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             },
             "relationship_scan_supported": {"game_relationships"},
             "health_scan_supported": {"game_health_buffs", "game_symptoms"},
+            "responsible_pregnancy_scan_supported": {
+                "game_responsible_pregnancy_states", "game_responsible_pregnancy_detected",
+            },
             "career_scan_supported": {"game_careers"},
             "education_scan_supported": {"game_degrees", "game_school"},
             "personal_development_scan_supported": {"game_aspirations", "game_active_aspiration", "game_completed_aspirations", "game_lifestyles", "game_fears", "game_character_values", "game_preferences"},
@@ -1056,6 +1072,7 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
     if has_pregnancy_state and was_pregnant != is_pregnant:
         base = sim.version; sim.data = {**sim.data, **data, "game_was_pregnant": is_pregnant}; sim.version += 1; journal(session, sim, "upsert", base)
     history_entries.extend(telemetry.capture_pregnancy_progress(session, save, sim, snapshot))
+    history_entries.extend(telemetry.capture_responsible_pregnancy(session, save, sim, snapshot))
     snapshot["_history_entries"] = history_entries
     return made
 

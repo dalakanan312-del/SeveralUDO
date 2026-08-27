@@ -150,7 +150,7 @@ class ClockModSourceTests(unittest.TestCase):
         )
         result = module._extended_snapshot(sim, None)
         self.assertEqual(result["telemetry_version"], 5)
-        self.assertEqual(result["clock_sync_version"], "2.2.6")
+        self.assertEqual(result["clock_sync_version"], "2.2.7")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)
@@ -198,6 +198,33 @@ class ClockModSourceTests(unittest.TestCase):
         self.assertEqual(result["health_buffs"][0]["tuning_id"], "10936279956231109735")
         self.assertEqual(result["health_buffs"][0]["source_kind"], "active_buff")
         self.assertNotIn("Malaria Immune Trait", result["symptoms"])
+
+    def test_responsible_pregnancy_states_are_separate_from_illnesses(self):
+        module = self.load_module()
+
+        class Kemzima_ResponsiblePregnancy_NewbornComplications_Buff_LowBirthWeight:
+            guid64 = 14778631640759100390
+
+        class Kemzima_ResponsiblePregnancy_CatLitter_Buff_ToxoplasmosisInfection_Stage2:
+            guid64 = 13283056988740328786
+
+        class Kemzima_ResponsiblePregnancy_Foundation_BirthComplications_Buff_Enabled:
+            guid64 = 17836605024682867054
+
+        component = types.SimpleNamespace(get_active_buff_types=lambda: (
+            Kemzima_ResponsiblePregnancy_NewbornComplications_Buff_LowBirthWeight,
+            Kemzima_ResponsiblePregnancy_CatLitter_Buff_ToxoplasmosisInfection_Stage2,
+            Kemzima_ResponsiblePregnancy_Foundation_BirthComplications_Buff_Enabled,
+        ))
+        sim = types.SimpleNamespace(Buffs=component, trait_tracker=types.SimpleNamespace(traits=()))
+        result = module._extended_snapshot(sim, None)
+        states = {row["key"]: row for row in result["responsible_pregnancy_states"]}
+        self.assertEqual(set(states), {"low-birth-weight", "toxoplasmosis"})
+        self.assertEqual(states["toxoplasmosis"]["name"], "Toxoplasmosis infection — stage 2")
+        self.assertEqual(states["low-birth-weight"]["category"], "Newborn complication")
+        self.assertTrue(result["responsible_pregnancy_detected"])
+        self.assertTrue(result["responsible_pregnancy_scan_supported"])
+        self.assertNotIn("Low birth weight", {row["name"] for row in result["illnesses"]})
 
     def test_healthcare_redux_deadly_disease_stage_is_reported_without_guessing(self):
         module = self.load_module()

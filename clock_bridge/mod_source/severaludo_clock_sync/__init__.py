@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.6 reliable, queued life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.7 reliable, queued life-history telemetry for The Sims 4."""
 
 import base64
 import hashlib
@@ -12,7 +12,7 @@ import time
 from . import compat_201 as _compat
 
 
-VERSION = "2.2.6"
+VERSION = "2.2.7"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -693,7 +693,14 @@ def _health_condition_name(value, provider=""):
     return ""
 
 
-def _health_details(sim_info):
+def _active_buff_trait_markers(sim_info):
+    """Return active buff and trait tuning without depending on an optional mod.
+
+    Healthcare Redux and Kemzima Responsible Pregnancy both keep important
+    states on BuffComponent, but game patches have exposed that component under
+    several names.  Keep the guarded discovery in one place so the two
+    compatibility readers cannot disagree about what is currently active.
+    """
     # BuffComponent belongs to SimInfo as ``Buffs`` on current game builds,
     # while older builds and test doubles expose ``buff_component``.  Some
     # releases also keep the component only on the instantiated Sim.  Read all
@@ -745,8 +752,14 @@ def _health_details(sim_info):
                 if key not in trait_keys:
                     trait_keys.add(key)
                     traits.append(trait)
+    markers = tuple((buff, "active_buff") for buff in buffs) + tuple((trait, "trait") for trait in traits)
+    return markers, bool(components) or trait_tracker is not None
+
+
+def _health_details(sim_info):
+    markers, supported = _active_buff_trait_markers(sim_info)
     rows = []
-    for marker, source_kind in tuple((buff, "active_buff") for buff in buffs) + tuple((trait, "trait") for trait in traits):
+    for marker, source_kind in markers:
         tuning = getattr(marker, "buff_type", None) or getattr(marker, "tuning", None) or marker
         provider = _tuning_provider(tuning)
         name = _health_condition_name(tuning, provider)
@@ -781,9 +794,88 @@ def _health_details(sim_info):
     return {
         "health_buffs": unique,
         "symptoms": [row["name"] for row in unique],
-        "health_scan_supported": bool(components) or trait_tracker is not None,
+        "health_scan_supported": supported,
         "healthcare_redux_detected": any(row.get("provider") == "Healthcare Redux" for row in unique),
-    }, bool(components) or trait_tracker is not None
+    }, supported
+
+
+_RESPONSIBLE_PREGNANCY_RULES = (
+    (("suddeninfantdeathsyndrome",), "sids", "Sudden infant death syndrome", "Critical newborn outcome", "critical"),
+    (("congenitaltoxoplasmosis",), "congenital-toxoplasmosis", "Congenital toxoplasmosis", "Newborn complication", "critical"),
+    (("lowbirthweight",), "low-birth-weight", "Low birth weight", "Newborn complication", "high"),
+    (("colickybaby",), "colicky-baby", "Colicky baby", "Newborn condition", "moderate"),
+    (("temporarilylactoseintolerant",), "temporary-lactose-intolerance", "Temporary lactose intolerance", "Newborn condition", "moderate"),
+    (("breastmilkhealth", "taintedmilk"), "feeding-health-risk", "Infant feeding health risk", "Newborn care", "moderate"),
+    (("toxoplasmosisinfection",), "toxoplasmosis", "Toxoplasmosis infection", "Pregnancy complication", "high"),
+    (("pregnancyinsomnia",), "pregnancy-insomnia", "Pregnancy insomnia", "Pregnancy condition", "moderate"),
+    (("overexertedpregnancy",), "prenatal-overexertion", "Prenatal overexertion", "Pregnancy risk", "moderate"),
+    (("sciaticaflare",), "sciatica-flare", "Sciatica flare", "Pregnancy condition", "moderate"),
+    (("recentlyconsumedalcohol", "alcoholinpast24hours"), "alcohol-exposure", "Alcohol exposure", "Pregnancy exposure", "high"),
+    (("recentlyconsumeddrugs",), "drug-exposure", "Recreational drug exposure", "Pregnancy exposure", "high"),
+    (("secondhandsmoke",), "secondhand-smoke", "Secondhand smoke exposure", "Pregnancy exposure", "moderate"),
+    (("recentlyconsumedcaffeine", "caffeinebuffwarning", "caffeinewarning"), "caffeine-exposure", "Caffeine exposure", "Pregnancy exposure", "low"),
+    (("dietunwell",), "nutrition-unwell", "Prenatal nutrition — unwell", "Prenatal nutrition", "moderate"),
+    (("dietsluggish",), "nutrition-sluggish", "Prenatal nutrition — sluggish", "Prenatal nutrition", "low"),
+    (("dietwellnourished",), "nutrition-well-nourished", "Prenatal nutrition — well nourished", "Prenatal nutrition", "positive"),
+    (("diethealthymeal",), "nutrition-healthy-meal", "Prenatal nutrition — healthy meal", "Prenatal nutrition", "positive"),
+    (("chemicalheadache",), "chemical-headache", "Chemical exposure headache", "Environmental exposure", "moderate"),
+    (("toxicfumes",), "toxic-fumes", "Toxic fumes exposure", "Environmental exposure", "high"),
+    (("airpollution",), "air-pollution", "Air pollution exposure", "Environmental exposure", "moderate"),
+    (("moldsystem",), "mold-exposure", "Mold exposure", "Environmental exposure", "moderate"),
+    (("gardeningspray", "insectrepellent", "eaudebleach", "graffitipaint", "chemicallab"),
+     "chemical-exposure", "Household chemical exposure", "Environmental exposure", "moderate"),
+)
+
+
+def _responsible_pregnancy_state(tuning):
+    technical = str(_core._tuning_text(tuning) or "")
+    compact = re.sub(r"[^a-z0-9]+", "", technical.casefold())
+    if "responsiblepregnancy" not in compact and "kemzima" not in compact:
+        return None
+    for aliases, key, label, category, severity in _RESPONSIBLE_PREGNANCY_RULES:
+        if any(alias in compact for alias in aliases):
+            if key == "toxoplasmosis":
+                stage = re.search(r"stage\s*([123])", technical, re.IGNORECASE)
+                if stage:
+                    label += " — stage " + stage.group(1)
+            return {
+                "key": key,
+                "name": label,
+                "category": category,
+                "severity": severity,
+                "provider": "Kemzima Responsible Pregnancy",
+                "technical_name": technical,
+                "tuning_id": _tuning_id(tuning),
+            }
+    return None
+
+
+def _responsible_pregnancy_details(sim_info):
+    markers, supported = _active_buff_trait_markers(sim_info)
+    states = {}
+    for marker, source_kind in markers:
+        tuning = getattr(marker, "buff_type", None) or getattr(marker, "tuning", None) or marker
+        state = _responsible_pregnancy_state(tuning)
+        if not state:
+            continue
+        state.update({
+            "source_kind": source_kind,
+            "remaining_minutes": _number(marker, ("remaining_time", "time_remaining", "remaining_minutes")),
+        })
+        current = states.get(state["key"])
+        if current is None or (source_kind == "trait" and current.get("source_kind") != "trait"):
+            states[state["key"]] = state
+    rows = sorted(states.values(), key=lambda row: (row["category"], row["name"]))
+    loaded = tuple(str(name).casefold() for name in sys.modules)
+    mod_loaded = any(any(marker in module for marker in (
+        "babybirthstate_injection", "babyweight_measurement",
+        "birthcomplications_settings", "kemzima_responsiblepregnancy",
+    )) for module in loaded)
+    return {
+        "responsible_pregnancy_states": rows,
+        "responsible_pregnancy_detected": bool(rows) or mod_loaded,
+        "responsible_pregnancy_scan_supported": supported,
+    }, supported
 
 
 def _tuning_provider(value):
@@ -1005,6 +1097,10 @@ def _environment_diagnostics(capabilities, errors):
         pass
     optional_markers = {
         "Healthcare Redux": ("adeepindigo", "healthcare"),
+        "Kemzima Responsible Pregnancy": (
+            "babybirthstate_injection", "babyweight_measurement",
+            "birthcomplications_settings", "kemzima_responsiblepregnancy",
+        ),
         "MC Command Center": ("mc_cmd_center", "mc_utils"),
         "SeveralUDO Healthcare": ("severaludo_healthcare",),
     }
@@ -1047,6 +1143,7 @@ def _extended_snapshot(sim_info, household):
         ("genealogy", lambda: _genealogy_details(sim_info)),
         ("relationships", lambda: _relationship_details(sim_info, result.get("relationships") or [])),
         ("health", lambda: _health_details(sim_info)),
+        ("responsible_pregnancy", lambda: _responsible_pregnancy_details(sim_info)),
         ("life_stage", lambda: _life_stage_details(sim_info)),
         ("career_education", lambda: _career_education_details(sim_info)),
         ("occult_progress", lambda: _occult_progress_details(sim_info)),

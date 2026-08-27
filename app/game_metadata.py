@@ -190,6 +190,23 @@ def _healthcare_packages() -> tuple[Path, ...]:
     return tuple(sorted(packages))
 
 
+def _responsible_pregnancy_packages() -> tuple[Path, ...]:
+    """Find only Kemzima Responsible Pregnancy packages, when installed."""
+    root = _mods_root()
+    if not root.is_dir():
+        return ()
+    packages: set[Path] = set()
+    try:
+        for current, _, filenames in os.walk(root):
+            for name in filenames:
+                folded = name.casefold()
+                if folded.endswith(".package") and "responsiblepregnancy" in folded and "kemzima" in folded:
+                    packages.add(Path(current) / name)
+    except OSError:
+        return ()
+    return tuple(sorted(packages))
+
+
 def _dbpf_index_metadata(header: bytes):
     if len(header) < 72 or header[:4] != b"DBPF":
         return None
@@ -398,6 +415,12 @@ def healthcare_localizations() -> dict[int, str]:
 
 
 @lru_cache(maxsize=1)
+def responsible_pregnancy_localizations() -> dict[int, str]:
+    """Read Kemzima's labels without importing or requiring the mod."""
+    return _package_localizations(_responsible_pregnancy_packages())
+
+
+@lru_cache(maxsize=1)
 def bundled_localizations() -> dict[int, str]:
     """Load the compact, non-personal name dictionary shipped to hosted editions."""
     try:
@@ -426,6 +449,7 @@ def trait_localizations() -> dict[int, str]:
     labels.update(game_localizations())
     labels.update(gameplay_mod_localizations())
     labels.update(healthcare_localizations())
+    labels.update(responsible_pregnancy_localizations())
     return labels
 
 
@@ -575,6 +599,82 @@ def readable_trait_label(value, localizations: dict[int, str] | None = None) -> 
 
 def readable_trait_labels(value, localizations: dict[int, str] | None = None) -> list[str]:
     return readable_named_labels(value, kind="trait", localizations=localizations)
+
+
+_RESPONSIBLE_PREGNANCY_RULES = (
+    (("suddeninfantdeathsyndrome",), "sids", "Sudden infant death syndrome", "Critical newborn outcome", "critical"),
+    (("congenitaltoxoplasmosis",), "congenital-toxoplasmosis", "Congenital toxoplasmosis", "Newborn complication", "critical"),
+    (("lowbirthweight",), "low-birth-weight", "Low birth weight", "Newborn complication", "high"),
+    (("colickybaby",), "colicky-baby", "Colicky baby", "Newborn condition", "moderate"),
+    (("temporarilylactoseintolerant",), "temporary-lactose-intolerance", "Temporary lactose intolerance", "Newborn condition", "moderate"),
+    (("breastmilkhealth", "taintedmilk"), "feeding-health-risk", "Infant feeding health risk", "Newborn care", "moderate"),
+    (("toxoplasmosisinfection",), "toxoplasmosis", "Toxoplasmosis infection", "Pregnancy complication", "high"),
+    (("pregnancyinsomnia",), "pregnancy-insomnia", "Pregnancy insomnia", "Pregnancy condition", "moderate"),
+    (("overexertedpregnancy",), "prenatal-overexertion", "Prenatal overexertion", "Pregnancy risk", "moderate"),
+    (("sciaticaflare",), "sciatica-flare", "Sciatica flare", "Pregnancy condition", "moderate"),
+    (("recentlyconsumedalcohol", "alcoholinpast24hours"), "alcohol-exposure", "Alcohol exposure", "Pregnancy exposure", "high"),
+    (("recentlyconsumeddrugs",), "drug-exposure", "Recreational drug exposure", "Pregnancy exposure", "high"),
+    (("secondhandsmoke",), "secondhand-smoke", "Secondhand smoke exposure", "Pregnancy exposure", "moderate"),
+    (("recentlyconsumedcaffeine", "caffeinebuffwarning", "caffeinewarning"), "caffeine-exposure", "Caffeine exposure", "Pregnancy exposure", "low"),
+    (("dietunwell",), "nutrition-unwell", "Prenatal nutrition — unwell", "Prenatal nutrition", "moderate"),
+    (("dietsluggish",), "nutrition-sluggish", "Prenatal nutrition — sluggish", "Prenatal nutrition", "low"),
+    (("dietwellnourished",), "nutrition-well-nourished", "Prenatal nutrition — well nourished", "Prenatal nutrition", "positive"),
+    (("diethealthymeal",), "nutrition-healthy-meal", "Prenatal nutrition — healthy meal", "Prenatal nutrition", "positive"),
+    (("chemicalheadache",), "chemical-headache", "Chemical exposure headache", "Environmental exposure", "moderate"),
+    (("toxicfumes",), "toxic-fumes", "Toxic fumes exposure", "Environmental exposure", "high"),
+    (("airpollution",), "air-pollution", "Air pollution exposure", "Environmental exposure", "moderate"),
+    (("moldsystem",), "mold-exposure", "Mold exposure", "Environmental exposure", "moderate"),
+    (("gardeningspray", "insectrepellent", "eaudebleach", "graffitipaint", "chemicallab"),
+     "chemical-exposure", "Household chemical exposure", "Environmental exposure", "moderate"),
+)
+
+
+def _responsible_pregnancy_marker(value) -> dict | None:
+    if isinstance(value, dict):
+        technical = str(value.get("technical_name") or value.get("raw_name") or value.get("name") or "")
+    else:
+        technical = str(value or "")
+    compact = re.sub(r"[^a-z0-9]+", "", technical.casefold())
+    if "responsiblepregnancy" not in compact and "kemzima" not in compact:
+        return None
+    for aliases, key, name, category, severity in _RESPONSIBLE_PREGNANCY_RULES:
+        if not any(alias in compact for alias in aliases):
+            continue
+        if key == "toxoplasmosis":
+            stage = re.search(r"stage\s*([123])", technical, re.IGNORECASE)
+            if stage:
+                name += " — stage " + stage.group(1)
+        return {"key": key, "name": name, "category": category, "severity": severity}
+    return None
+
+
+def responsible_pregnancy_states(value) -> list[dict]:
+    """Normalize Clock Sync's optional-mod states into a stable UI contract."""
+    rows = _named_values(value)
+    result: dict[str, dict] = {}
+    for raw in rows:
+        supplied = dict(raw) if isinstance(raw, dict) else {}
+        key = str(supplied.get("key") or "").strip().casefold()
+        name = str(supplied.get("name") or supplied.get("label") or "").strip()
+        category = str(supplied.get("category") or "").strip()
+        severity = str(supplied.get("severity") or "").strip().casefold()
+        classified = _responsible_pregnancy_marker(raw)
+        if classified:
+            key = key or classified["key"]
+            name = name or classified["name"]
+            category = category or classified["category"]
+            severity = severity or classified["severity"]
+        if not key or not name:
+            continue
+        result[key] = {
+            **supplied,
+            "key": key,
+            "name": name,
+            "category": category or "Responsible Pregnancy",
+            "severity": severity or "unrated",
+            "provider": "Kemzima Responsible Pregnancy",
+        }
+    return sorted(result.values(), key=lambda row: (row["category"], row["name"]))
 
 
 OCCULT_ORDER = (

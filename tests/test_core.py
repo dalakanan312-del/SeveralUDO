@@ -963,7 +963,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.2.9")
+            self.assertEqual(health.json()["version"], "4.3.0")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1103,7 +1103,7 @@ class CoreSmokeTests(unittest.TestCase):
             ping = client.get("/api/clock/ping", headers={"Authorization": f"Bearer {private_config['sync_token']}"})
             self.assertEqual(ping.status_code, 200)
             self.assertTrue(ping.json()["ok"])
-            self.assertEqual(ping.json()["clock_sync_version"], "2.2.6")
+            self.assertEqual(ping.json()["clock_sync_version"], "2.2.7")
             private_report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {private_config['sync_token']}"}, json={"game_day": 60, "hour": 12, "minute": 0, "household_members": []})
             self.assertEqual(private_report.status_code, 200)
             clock_link = client.post("/api/clock/links").json()
@@ -2773,6 +2773,50 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertTrue(row["reported"])
                 pending=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.data["sim_id"].as_string()==mother.id))
                 self.assertIsNone(pending)
+                session.rollback()
+
+    def test_responsible_pregnancy_status_updates_sim_and_pregnancy_once(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                mother=Record(save_id=save.id,kind="sim",label="Responsible Pregnancy Parent",data={
+                    "game_sim_id":"rp-"+uuid.uuid4().hex,"game_was_pregnant":True,
+                })
+                session.add(mother);session.flush()
+                pregnancy=Record(save_id=save.id,kind="pregnancy",label="Responsible Pregnancy test",global_day=save.global_day,data={
+                    "mother_id":mother.id,"mother_name":mother.label,"status":"Active",
+                    "conception_global_day":save.global_day-1,"due_global_day":save.global_day+3,
+                })
+                session.add(pregnancy);session.flush()
+                snapshot={
+                    "telemetry_version":5,"is_pregnant":True,
+                    "responsible_pregnancy_scan_supported":True,
+                    "responsible_pregnancy_detected":True,
+                    "responsible_pregnancy_states":[{
+                        "key":"prenatal-overexertion","name":"Prenatal overexertion",
+                        "category":"Pregnancy risk","severity":"moderate",
+                        "provider":"Kemzima Responsible Pregnancy",
+                    }],
+                    "detected_game_day":22,"detected_game_hour":16,"detected_game_minute":40,
+                }
+                self.assertEqual(reconcile_sim(session,save,mother,snapshot),[])
+                session.flush()
+                self.assertEqual(mother.data["game_responsible_pregnancy_states"][0]["key"],"prenatal-overexertion")
+                self.assertEqual(pregnancy.data["responsible_pregnancy_states"][0]["name"],"Prenatal overexertion")
+                self.assertEqual(len(pregnancy.data["responsible_pregnancy_history"]),1)
+                histories=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="game_history",
+                    Record.data["category"].as_string()=="responsible_pregnancy",
+                )))
+                self.assertEqual(len(histories),1)
+                self.assertEqual(reconcile_sim(session,save,mother,snapshot),[])
+                session.flush()
+                self.assertEqual(len(pregnancy.data["responsible_pregnancy_history"]),1)
+                histories=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="game_history",
+                    Record.data["category"].as_string()=="responsible_pregnancy",
+                )))
+                self.assertEqual(len(histories),1)
                 session.rollback()
 
     def test_finance_census_and_illness_statistics_use_existing_telemetry(self):
