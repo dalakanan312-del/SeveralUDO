@@ -271,15 +271,23 @@ def _store_game_portrait(session: Session, save: ChronicleSave, sim: Record, sna
         return False
     stage = _stage_key(snapshot.get("age_stage")) or "default"
     item = session.scalar(select(Portrait).where(Portrait.record_id == sim.id, Portrait.stage == stage))
+    # Automatic detection may refresh its own thumbnails, but it must never
+    # replace a portrait the player uploaded, generated, restored or synced.
+    automatic_sources = {"clock-sync-game", "save-file-game"}
+    if item and item.source not in automatic_sources:
+        return False
     if item and item.image == normalized:
         return False
+    source = str(snapshot.get("portrait_source") or "clock-sync-game")
+    if source not in automatic_sources:
+        source = "clock-sync-game"
     if item:
         item.image = normalized
         item.mime_type = mime
-        item.source = "clock-sync-game"
+        item.source = source
     else:
         item = Portrait(save_id=save.id, record_id=sim.id, stage=stage,
-                        image=normalized, mime_type=mime, source="clock-sync-game")
+                        image=normalized, mime_type=mime, source=source)
         session.add(item)
     session.flush()
     sync.sync_portrait(session, save, item, sim.id, stage)

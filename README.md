@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.2.8` repairs vampire-hunt rolls. Duplicate built-in occult rules are safely consolidated before scheduling, annual household hunts and full-moon checks use stable identities instead of rule-row IDs, and follow-up results now display their named outcomes such as “Not accused” and “Survives.” A triggered hunt schedules one vampire accusation and one eligible-human false-accusation check; only a failed lethal follow-up schedules death.
+`4.2.9` adds read-only Sim portrait detection to the desktop save scanner. Embedded individual thumbnails are matched by the save's exact Sim ID, previewed before reconciliation, and stored in the matching life-stage photo. Manual uploads are never overwritten. Saves do not always contain a generated thumbnail for every Sim, so the existing manual-photo fallback remains available.
 
 `4.2.6` makes the Windows desktop tracker automatically start and supervise the installed Clock Sync relay. The relay follows the app lifecycle, recognizes an already-running instance by heartbeat, and restarts a failed or hung process without losing the ordered offline queue.
 

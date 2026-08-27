@@ -23,7 +23,7 @@ from sqlalchemy import delete, func, select
 from app import accounts, auth, automation, backup_service, exports, insights, legacy_neon, names, notifications, sync, telemetry
 from app.automation import candidate as automation_candidate, classify_game_relationship, reconcile_sim, repair_relationship_classifications, repair_relationship_inbox
 from app.calendar_utils import date_range_label, exact_historical_label
-from app.clock import _game_illnesses, attach_game_identity, estimate_new_sim_birth, imported_sim_match, report_checksum, receive as receive_clock
+from app.clock import _game_illnesses, _store_game_portrait, attach_game_identity, estimate_new_sim_birth, imported_sim_match, report_checksum, receive as receive_clock
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
@@ -31,10 +31,10 @@ from app.domain import apply_married_surnames, backfill_married_surnames, backfi
 from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
-from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Record, User, Workspace
+from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Portrait, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
-from app.save_scanner import _parse_save_slot, _parse_sim, compare_scan, protobuf_fields
+from app.save_scanner import SIM_PORTRAIT_RESOURCE, _embedded_sim_portraits, _parse_save_slot, _parse_sim, compare_scan, protobuf_fields
 from app.session_policy import BROWSER_MODE, PERSISTENT_MODE, REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware
 from desktop_launcher import RelaySupervisor, clock_sync_folder, relay_heartbeat_fresh
 from starlette.middleware.sessions import SessionMiddleware
@@ -480,6 +480,38 @@ class CoreSmokeTests(unittest.TestCase):
         parsed=_parse_save_slot(slot)
         self.assertEqual((parsed["game_day"],parsed["game_hour"],parsed["game_minute"]),(61,7,30))
         self.assertEqual(protobuf_fields(text(1,"ok"))[1][0][1],b"ok")
+
+    def test_save_scanner_matches_only_individual_portraits_by_exact_sim_id(self):
+        output=io.BytesIO();Image.new("RGB",(32,32),(80,40,20)).save(output,format="JPEG")
+        image=output.getvalue();package=b"header"+image
+        entries=[
+            (SIM_PORTRAIT_RESOURCE,0,123,len(b"header"),len(image),len(image),0,0),
+            (SIM_PORTRAIT_RESOURCE,0,999,len(b"header"),len(image),len(image),0,0),
+            (0x14,0,123,len(b"header"),len(image),len(image),0,0),
+        ]
+        found=_embedded_sim_portraits(package,entries,{"123"})
+        self.assertEqual(set(found),{"123"})
+        self.assertEqual(found["123"]["portrait_mime_type"],"image/jpeg")
+        self.assertEqual(found["123"]["portrait_source"],"save-file-game")
+
+    def test_automatic_save_portrait_does_not_replace_manual_life_stage_photo(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                sim=Record(save_id=save.id,kind="sim",label="Portrait Guard",data={"game_age_stage":"adult"})
+                session.add(sim);session.flush()
+                manual_raw=io.BytesIO();Image.new("RGB",(24,24),(10,20,30)).save(manual_raw,format="PNG")
+                manual_image,manual_mime=normalize_image(manual_raw.getvalue(),max_pixels=512)
+                manual=Portrait(save_id=save.id,record_id=sim.id,stage="adult",image=manual_image,mime_type=manual_mime,source="upload")
+                session.add(manual);session.flush()
+                detected_raw=io.BytesIO();Image.new("RGB",(24,24),(200,180,160)).save(detected_raw,format="JPEG")
+                encoded=__import__("base64").b64encode(detected_raw.getvalue()).decode()
+                self.assertFalse(_store_game_portrait(session,save,sim,{"age_stage":"adult","portrait_image_base64":encoded,"portrait_source":"save-file-game"}))
+                self.assertEqual(manual.image,manual_image)
+                self.assertTrue(_store_game_portrait(session,save,sim,{"age_stage":"teen","portrait_image_base64":encoded,"portrait_source":"save-file-game"}))
+                teen=session.scalar(select(Portrait).where(Portrait.record_id==sim.id,Portrait.stage=="teen"))
+                self.assertEqual(teen.source,"save-file-game")
+                session.rollback()
 
     def test_imported_event_rules_supply_die_outcome_and_lethality(self):
         with TestClient(app):
@@ -931,7 +963,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.2.8")
+            self.assertEqual(health.json()["version"], "4.2.9")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)

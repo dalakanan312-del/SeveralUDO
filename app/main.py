@@ -83,7 +83,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.2.8")
+app = FastAPI(title="Decades Tracker", version="4.2.9")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -2971,6 +2971,7 @@ async def scan_game_save(request: Request):
                 f"Read {len(sims)} Sims from {len(households)} player households: "
                 f"{comparison['counts']['changed']} changed, {comparison['counts']['new']} new, "
                 f"and {comparison['counts']['missing']} linked tracker Sims absent from this played-population snapshot. "
+                f"{sum(bool(item.get('has_embedded_portrait')) for item in comparison['rows'])} individual portrait(s) are available. "
                 "Nothing has been imported yet."
             )
     return RedirectResponse("/p/clock#save-scan", status_code=303)
@@ -2996,7 +2997,7 @@ async def apply_game_save_scan(request: Request):
             raise HTTPException(400, "Select at least one Sim to reconcile.")
         backup_service.create_snapshot(session, save, "before read-only game-save reconciliation", force=True)
         result = save_scanner.reconcile_scan(session, save, scan, selected, str(form.get("advance_clock") or "").casefold() in {"1","true","on","yes"})
-        request.session["game_save_notice"] = f"Save scan applied: {result['updated']} linked Sim(s) refreshed, {result['linked']} imported match(es) linked, {result['candidates']} review item(s) created, tracker advanced {result['advanced']} day(s)."
+        request.session["game_save_notice"] = f"Save scan applied: {result['updated']} linked Sim(s) refreshed, {result['linked']} imported match(es) linked, {result['portrait_updates']} portrait(s) added or refreshed, {result['candidates']} review item(s) created, tracker advanced {result['advanced']} day(s)."
     return RedirectResponse("/p/automation", status_code=303)
 
 
@@ -3063,11 +3064,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.2.8-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.2.9-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.2.8-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.2.9-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

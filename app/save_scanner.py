@@ -8,6 +8,7 @@ unknown or newly added game fields are skipped, so an unsupported game build
 produces an empty/partial preview instead of damaging a save.
 """
 
+import base64
 import os
 import struct
 import hashlib
@@ -19,8 +20,10 @@ from .game_metadata import _dbpf_entries, _resource_bytes
 
 
 SAVE_GAME_DATA_RESOURCE = 0x0000000D
+SIM_PORTRAIT_RESOURCE = 0x00000015
 MAX_SAVE_BYTES = 512 * 1024 * 1024
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+MAX_PORTRAIT_BYTES = 5 * 1024 * 1024
 
 
 class SaveScanError(RuntimeError):
@@ -234,6 +237,46 @@ def _parse_save_slot(raw: bytes) -> dict:
     }
 
 
+def _image_mime(raw: bytes) -> str:
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _embedded_sim_portraits(package: bytes, entries, sim_ids: set[str]) -> dict[str, dict]:
+    """Return individual save thumbnails whose DBPF instance is a known Sim ID.
+
+    Sims 4 stores generated Sim thumbnails as resource type 0x15 and uses the
+    Sim's stable numeric identity as the resource instance. Requiring both the
+    type and exact identity prevents lot or household images from being
+    assigned to a person.
+    """
+    wanted = {int(value) for value in sim_ids if str(value).isdigit()}
+    found: dict[str, dict] = {}
+    for entry in entries:
+        if entry[0] != SIM_PORTRAIT_RESOURCE or entry[2] not in wanted:
+            continue
+        image = _resource_bytes(package, entry)
+        if not image or len(image) > MAX_PORTRAIT_BYTES:
+            continue
+        mime = _image_mime(image)
+        if not mime:
+            continue
+        sim_id = str(entry[2])
+        found[sim_id] = {
+            "portrait_image_base64": base64.b64encode(image).decode("ascii"),
+            "portrait_mime_type": mime,
+            "portrait_source": "save-file-game",
+            "portrait_resource_instance": sim_id,
+            "has_embedded_portrait": True,
+        }
+    return found
+
+
 def inspect_save(path: Path) -> dict:
     """Inspect a save file and return a reconciliation preview.
 
@@ -259,8 +302,9 @@ def inspect_save(path: Path) -> dict:
         raise SaveScanError("The selected Sims 4 save could not be read.") from exc
     if raw[:4] != b"DBPF":
         raise SaveScanError("The selected file is not a Sims 4 DBPF save.")
+    entries = list(_dbpf_entries(raw) or ())
     resource = None
-    for entry in _dbpf_entries(raw) or ():
+    for entry in entries:
         if entry[0] == SAVE_GAME_DATA_RESOURCE:
             resource = _resource_bytes(raw, entry)
             if resource:
@@ -279,6 +323,14 @@ def inspect_save(path: Path) -> dict:
     households = [_parse_household(value) for wire, value in outer.get(5, ()) if wire == 2 and isinstance(value, bytes)]
     sims = [item for item in sims if item]
     households = [item for item in households if item]
+    embedded_portraits = _embedded_sim_portraits(raw, entries, {item["game_sim_id"] for item in sims})
+    for sim in sims:
+        portrait = embedded_portraits.get(sim["game_sim_id"])
+        if portrait:
+            sim.update(portrait)
+            sim["portrait_data_uri"] = (
+                f"data:{portrait['portrait_mime_type']};base64,{portrait['portrait_image_base64']}"
+            )
     return {
         "path": str(target),
         "file_name": target.name,
@@ -286,10 +338,11 @@ def inspect_save(path: Path) -> dict:
         "size": stat.st_size,
         "sim_count": len(sims),
         "household_count": len(households),
+        "portrait_count": len(embedded_portraits),
         "slot": slot,
         "sims": sims,
         "households": households,
-        "limitations": "Read-only save scanning supplements Clock Sync. Exact live time, illnesses, traits and transient states still come from Clock Sync.",
+        "limitations": "Read-only save scanning supplements Clock Sync. A portrait is available only when the game has generated and embedded that Sim's thumbnail in this save. Exact live time, illnesses, traits and transient states still come from Clock Sync.",
     }
 
 
@@ -306,7 +359,8 @@ def compare_scan(session, save, scan: dict) -> dict:
     """Build a read-only, field-level comparison with the open tracker save."""
     from sqlalchemy import select
 
-    from .models import Record
+    from . import portraits
+    from .models import Portrait, Record
 
     households, sims = relevant_population(scan)
     tracked = list(session.scalars(select(Record).where(
@@ -322,6 +376,10 @@ def compare_scan(session, save, scan: dict) -> dict:
         if key:
             by_name.setdefault(key, []).append(item)
     household_by_id = {str(item.get("game_household_id") or ""): item for item in households}
+    stored_portraits = {
+        (item.record_id, item.stage): item
+        for item in session.scalars(select(Portrait).where(Portrait.save_id == save.id))
+    }
     rows = []
     present_ids = set()
     for game_sim in sims:
@@ -350,6 +408,30 @@ def compare_scan(session, save, scan: dict) -> dict:
                     differences.append({"field": label, "tracker": tracker_value, "game": game_value})
             if game_sim.get("pregnancy_scan_supported") and bool(data.get("game_is_pregnant")) != bool(game_sim.get("is_pregnant")):
                 differences.append({"field":"pregnancy", "tracker":bool(data.get("game_is_pregnant")), "game":bool(game_sim.get("is_pregnant"))})
+            if game_sim.get("portrait_image_base64"):
+                stage = "".join(
+                    character for character in str(game_sim.get("age_stage") or "default").casefold()
+                    if character.isalpha()
+                ) or "default"
+                current = stored_portraits.get((match.id, stage))
+                if current and current.source not in {"clock-sync-game", "save-file-game"}:
+                    game_sim["portrait_import_status"] = "manual portrait kept"
+                else:
+                    try:
+                        detected, _ = portraits.normalize_image(
+                            base64.b64decode(game_sim["portrait_image_base64"], validate=True),
+                            max_pixels=512,
+                        )
+                    except Exception:
+                        detected = b""
+                    if not current:
+                        differences.append({"field":"portrait", "tracker":"missing", "game":"embedded thumbnail"})
+                        game_sim["portrait_import_status"] = "new portrait"
+                    elif detected and current.image != detected:
+                        differences.append({"field":"portrait", "tracker":"older game thumbnail", "game":"new save thumbnail"})
+                        game_sim["portrait_import_status"] = "updated portrait"
+                    else:
+                        game_sim["portrait_import_status"] = "portrait already current"
         rows.append({
             **game_sim,
             "household_name": home.get("name") or "",
@@ -416,7 +498,7 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
     )))
     by_game_id = {str(item.data.get("game_sim_id") or ""): item for item in tracked if item.data.get("game_sim_id")}
-    candidates = linked = updated = 0
+    candidates = linked = updated = portrait_updates = 0
     journal_entries: list[str] = []
     selected_snapshots: list[tuple[dict, dict]] = []
     for item in sims:
@@ -441,6 +523,9 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
             "telemetry_version": 0,
             "source": "read-only Sims 4 save scan",
         }
+        # The data URI is only for the browser preview. Keep one base64 copy in
+        # the review payload instead of duplicating the image in stored JSON.
+        snapshot.pop("portrait_data_uri", None)
         selected_snapshots.append((item, snapshot))
     household_matches, households_created, households_updated, household_members_linked = clock.sync_game_households(
         session, save, [snapshot for _, snapshot in selected_snapshots], by_game_id,
@@ -493,6 +578,8 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
             session, save, existing, snapshot, household_matches,
         )
         changes = automation.reconcile_sim(session, save, existing, snapshot)
+        if clock._store_game_portrait(session, save, existing, snapshot):
+            portrait_updates += 1
         candidates += len(changes)
         updated += 1
         journal_entries.extend(snapshot.get("_history_entries") or [])
@@ -507,9 +594,12 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
         journal_entries.append(f"{household_members_linked} Sim household assignment(s) were synchronized.")
     if candidates:
         journal_entries.append(f"{candidates} change(s) are ready for review in Automation Inbox.")
+    if portrait_updates:
+        journal_entries.append(f"{portrait_updates} embedded save-file portrait(s) were added or refreshed.")
     automation.session_journal(session, save, journal_entries, int(game_day or 0), hour, minute)
     save.revision += linked + candidates + updated + bool(advanced)
     return {"advanced":advanced, "linked":linked, "updated":updated, "candidates":candidates,
             "households_created":households_created, "households_updated":households_updated,
             "household_members_linked":household_members_linked,
+            "portrait_updates":portrait_updates,
             "selected":len(selected_game_ids), "global_day":save.global_day}
