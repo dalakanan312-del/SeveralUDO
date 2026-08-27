@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import Change, ChronicleSave, Portrait, Record
-from . import calendar_utils, occult_rules, sync
+from . import advanced, calendar_utils, core_rulesets, occult_rules, sync
 from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
 
 
@@ -631,12 +631,12 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
     for stage, age, die, bad in DEFAULT_STAGES:
         if stage.casefold() in existing_rules:
             continue
-        record = Record(save_id=save.id, kind="roll_rule", label=stage, data={"age_days": age, "die": die, "bad_results": bad, "active": True})
+        record = Record(save_id=save.id, kind="roll_rule", label=stage, data={"age_days": age, "die": die, "bad_results": bad, "active": True, "source":"built-in SeveralUDO baseline", "core_ruleset_id":core_rulesets.SEVERALUDO})
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
     for label, die, bad in DEFAULT_MATERNAL_RULES:
         if label.casefold() in existing_rules:
             continue
-        record = Record(save_id=save.id, kind="roll_rule", label=label, data={"age_days": None, "die": die, "bad_results": bad, "active": True, "source": "built-in maternal baseline"})
+        record = Record(save_id=save.id, kind="roll_rule", label=label, data={"age_days": None, "die": die, "bad_results": bad, "active": True, "source": "built-in maternal baseline", "core_ruleset_id":core_rulesets.SEVERALUDO})
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
     existing_causes = {item.label.casefold() for item in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "death_causes", Record.deleted.is_(False)))}
     for group, causes in DEFAULT_DEATH_CAUSES.items():
@@ -648,13 +648,13 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
     for title, category, start_year, end_year, text in DEFAULT_ERA_GUIDANCE:
         if title.casefold() in existing_guidance:
             continue
-        record = Record(save_id=save.id, kind="era_guidance", label=title, data={"category": category, "start_year": start_year, "end_year": end_year, "location": "All", "rule_text": text, "active": True, "source": "Built-in editable baseline"})
+        record = Record(save_id=save.id, kind="era_guidance", label=title, data={"category": category, "start_year": start_year, "end_year": end_year, "location": "All", "rule_text": text, "active": True, "source": "Built-in editable baseline", "core_ruleset_id":core_rulesets.SEVERALUDO})
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
     existing_planner = {(item.label.casefold(), int(item.data.get("start_year", -9999))) for item in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "planner_rule", Record.deleted.is_(False)))}
     for label, start_year, end_year, die, bad, notes in DEFAULT_PLANNER_RULES:
         if (label.casefold(), start_year) in existing_planner:
             continue
-        record = Record(save_id=save.id, kind="planner_rule", label=label, data={"start_year": start_year, "end_year": end_year, "die": die, "bad_results": bad, "notes": notes, "active": True})
+        record = Record(save_id=save.id, kind="planner_rule", label=label, data={"start_year": start_year, "end_year": end_year, "die": die, "bad_results": bad, "notes": notes, "active": True, "core_ruleset_id":core_rulesets.SEVERALUDO})
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
     existing_multiple={(int(item.data.get("start_year",-9999)),int(item.data.get("end_year",9999))) for item in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="multiple_birth_rule",Record.deleted.is_(False)))}
     for start_year,end_year in DEFAULT_MULTIPLE_BIRTH_ERAS:
@@ -662,6 +662,7 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
         record=Record(save_id=save.id,kind="multiple_birth_rule",label=f"Multiple births · {start_year}–{end_year}",data={"start_year":start_year,"end_year":end_year,"max_babies":None,"quintuplet_policy":"","active":True,"notes":"Historical range supplied; enter only sourced limits. Blank means no enforced limit."})
         session.add(record);session.flush();journal(session,record,"upsert",0);created+=1
     created += seed_occult_rules(session, save)
+    created += core_rulesets.sync_rules(session, save)
     save.revision += created
     event_created=seed_event_catalog(session,save)
     generation_updates=sync_generations(session,save)
@@ -1315,7 +1316,7 @@ def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Reco
     year = save.start_year + (save.global_day - 1) // max(1, save.days_per_year)
     rules = [record for record in session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "planner_rule", Record.deleted.is_(False)
-    )) if _pregnancy_count_rule(record) and bool((record.data or {}).get("active", True))]
+    )) if _pregnancy_count_rule(record) and bool((record.data or {}).get("active", True)) and core_rulesets.applies_to_selected_core(save, record)]
     rule = next((record for record in sorted(rules, key=lambda item:int((item.data or {}).get("start_year", -9999)), reverse=True)
                  if int((record.data or {}).get("start_year", -9999)) <= year <= int((record.data or {}).get("end_year", 9999))), None)
     if not rule:
@@ -1336,6 +1337,8 @@ def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Reco
         "roll_type":"Pregnancy Count", "die":rule_data.get("die") or "d20", "bad_results":"",
         "result_rules":stored_rules, "zero_results":str(rule_data.get("bad_results") or ""),
         "planner_rule_id":rule.id, "planner_year":year, "due_global_day":save.global_day,
+        "core_ruleset_id":rule_data.get("core_ruleset_id"),
+        "core_source_rule_id":rule_data.get("source_rule_id"),
         "completed":False, "nonlethal":True, "pregnancy_count_roll":True,
         "notes":f"Pregnancy allowance for {year}; uses the editable era planner rule",
     })
@@ -1437,7 +1440,7 @@ def _schedule_marriage_rolls(session: Session, save: ChronicleSave, sims: list[R
     """Restore the one-time non-heir marriage obligation used by the 3.x planner."""
     rules = [record for record in session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "planner_rule", Record.deleted.is_(False)
-    )) if _marriage_rule(record) and bool((record.data or {}).get("active", True))]
+    )) if _marriage_rule(record) and bool((record.data or {}).get("active", True)) and core_rulesets.applies_to_selected_core(save, record)]
     if not rules:
         return 0, 0
     sims = sims if sims is not None else list(session.scalars(select(Record).where(
@@ -1498,6 +1501,8 @@ def _schedule_marriage_rolls(session: Session, save: ChronicleSave, sims: list[R
             "source":source, "planner_rule_id":rule.id, "due_global_day":due, "completed":False,
             "nonlethal":True, "failure_outcome":"Does not marry", "success_outcome":"May marry",
             "notes":"Auto-generated when this non-heir reached marriage eligibility",
+            "core_ruleset_id":(rule.data or {}).get("core_ruleset_id"),
+            "core_source_rule_id":(rule.data or {}).get("source_rule_id"),
         })
         session.add(roll);session.flush();journal(session,roll,"upsert",0);existing_sim_ids.add(sim.id);created += 1
     return created, retired
@@ -2123,6 +2128,14 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
         due = int((event.data or {}).get("start_global_day", event.global_day))
         rule_data = event_rules.get(event_key(event), {})
         spec = event_roll_configuration(event, rule_data)
+        event_words = f"{event.label} {(event.data or {}).get('scope','')} {(event.data or {}).get('notes','')}".casefold()
+        classic_war = core_rulesets.selected_core(save) == core_rulesets.CLASSIC_2023 and any(
+            word in event_words for word in ("war", "battle", "military", "draft")
+        )
+        if classic_war:
+            spec = {**spec, "die":"d6", "bad_results":"1,3,5",
+                    "result_rules":"1,3,5: Dies in the war; 2,4,6: Returns home",
+                    "failure_outcome":"Dies in the war", "failure_is_lethal":True}
         equivalent_event_ids = {
             equivalent.id for equivalent in event_groups[_event_occurrence_key(event)]
         }
@@ -2152,6 +2165,7 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                 "result_rules": spec["result_rules"], "failure_outcome": spec["failure_outcome"],
                 "failure_is_lethal": spec["failure_is_lethal"], "nonlethal": not spec["failure_is_lethal"],
                 "event_rule_id": spec["event_rule_id"], "source": source, "due_global_day": due, "completed": False,
+                "core_ruleset_id":core_rulesets.CLASSIC_2023 if classic_war else None,
             })
             session.add(roll)
             session.flush()
@@ -2183,6 +2197,10 @@ def schedule_campaign_rolls(session: Session, save: ChronicleSave, sims: list[Re
         except (TypeError, ValueError): continue
         if not (1 <= due <= save.global_day and bool(data.get("active", True)) and bool(data.get("roll_required"))): continue
         spec = event_roll_configuration(campaign)
+        campaign_words=f"{campaign.label} {data.get('scope','')} {data.get('notes','')}".casefold()
+        classic_war=core_rulesets.selected_core(save)==core_rulesets.CLASSIC_2023 and any(word in campaign_words for word in ("war","battle","military","draft"))
+        if classic_war:
+            spec={**spec,"die":"d6","bad_results":"1,3,5","result_rules":"1,3,5: Dies in the war; 2,4,6: Returns home","failure_outcome":"Dies in the war","failure_is_lethal":True}
         allowed_sexes = {value.strip().casefold() for value in str(data.get("eligible_sexes") or "All").split(",") if value.strip()}
         allowed_classes = {value.strip().casefold() for value in str(data.get("eligible_classes") or "All").split(",") if value.strip()}
         minimum = int(data.get("min_age_days") or 0); maximum = int(data.get("max_age_days") or 100000)
@@ -2206,6 +2224,7 @@ def schedule_campaign_rolls(session: Session, save: ChronicleSave, sims: list[Re
                 "result_rules":spec["result_rules"],"failure_outcome":spec["failure_outcome"],
                 "failure_is_lethal":spec["failure_is_lethal"],"nonlethal":not spec["failure_is_lethal"],
                 "source":source,"due_global_day":due,"completed":False,"campaign_role":data.get("role") or "Conscript",
+                "core_ruleset_id":core_rulesets.CLASSIC_2023 if classic_war else None,
             }
             roll = Record(save_id=save.id,kind="roll",label=f"{campaign.label} — {sim.label}",global_day=due,data=payload)
             session.add(roll);session.flush();journal(session,roll,"upsert",0);existing.add(source);created += 1
@@ -2263,8 +2282,63 @@ def _record_campaign_service(session: Session, save: ChronicleSave, roll: Record
     return True
 
 
+def apply_due_migrations(session: Session, save: ChronicleSave) -> int:
+    """Advance current countries from the dated migration ledger exactly once."""
+    moves=list(session.scalars(select(Record).where(
+        Record.save_id==save.id,Record.kind=="migration",Record.deleted.is_(False),
+    )))
+    if not moves: return 0
+    sim_ids={str((item.data or {}).get("sim_id") or "") for item in moves};sim_ids.discard("")
+    if not sim_ids: return 0
+    sims=list(session.scalars(select(Record).where(
+        Record.save_id==save.id,Record.kind=="sim",Record.id.in_(sim_ids),Record.deleted.is_(False),
+    )))
+    changed=0
+    for sim in sims:
+        data=dict(sim.data or {});country=advanced.location_at(sim,save.global_day,moves);birth=advanced.birth_country(sim)
+        updates={}
+        if not data.get("birth_country") and birth!="Unknown": updates["birth_country"]=birth
+        if country!="Unknown" and (str(data.get("country") or "")!=country or str(data.get("current_country") or "")!=country):
+            updates.update({"country":country,"current_country":country})
+        if not updates: continue
+        base=sim.version;sim.data={**data,**updates};sim.version+=1;journal(session,sim,"upsert",base);changed+=1
+    return changed
+
+
+def retire_inactive_core_rolls(session: Session, save: ChronicleSave) -> int:
+    """Retire pending obligations from a core ruleset that is no longer selected."""
+    active = core_rulesets.selected_core(save)
+    changed = 0
+    rule_packs = {
+        item.id:str((item.data or {}).get("core_ruleset_id") or "")
+        for item in session.scalars(select(Record).where(
+            Record.save_id==save.id,Record.deleted.is_(False),
+            Record.kind.in_(("roll_rule","planner_rule")),
+        ))
+    }
+    rolls = session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+    ))
+    for roll in rolls:
+        data = dict(roll.data or {})
+        pack = str(data.get("core_ruleset_id") or "")
+        if not pack:
+            source=str(data.get("source") or "");parts=source.split(":")
+            inferred_rule_id=parts[-1] if parts and parts[0] in {"aging","maternal"} else str(data.get("planner_rule_id") or "")
+            pack=rule_packs.get(inferred_rule_id,"")
+        if not pack or pack == active or data.get("completed"):
+            continue
+        base = roll.version; roll.deleted = True
+        roll.data = {**data, "retired_reason":"Core ruleset changed", "retired_global_day":save.global_day}
+        roll.version += 1; journal(session, roll, "delete", base); changed += 1
+    return changed
+
+
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
-    rules = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False))))
+    save.revision += apply_due_migrations(session,save)
+    rules = [item for item in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False)
+    )) if core_rulesets.applies_to_selected_core(save, item)]
     sims = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False))))
     save.revision += retire_prechallenge_rolls(session, save)
     save.revision += retire_dead_sim_rolls(session, save, sims)
@@ -2287,6 +2361,9 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
             if int(configured_age) == 0 and sim.data.get("newborn_rolls_required") is False:
                 continue
             due = int(birth) + int(configured_age)
+            due_year = save.start_year + (due - 1) // max(1, save.days_per_year)
+            if not int(rule.data.get("start_year", -9999)) <= due_year <= int(rule.data.get("end_year", 9999)):
+                continue
             if due < 1 or (death is not None and due >= int(death)): continue
             source = f"aging:{sim.id}:{rule.id}"
             # Imported 3.x rolls do not have the 4.0 scheduler source token. Match
@@ -2304,7 +2381,23 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
                 ),
             ).limit(1))
             if exists: continue
-            roll = Record(save_id=save.id, kind="roll", label=f"{sim.label} — {rule.label}", global_day=due, data={"sim_id": sim.id, "roll_type": rule.label, "die": rule.data.get("die"), "bad_results": rule.data.get("bad_results"), "source": source, "due_global_day": due, "completed": False})
+            later_ages = sorted(
+                int(item.data.get("age_days")) for item in rules
+                if item.id != rule.id and item.data.get("age_days") not in (None, "")
+                and int(item.data.get("age_days")) > int(configured_age)
+                and str(item.data.get("core_ruleset_id") or "") == str(rule.data.get("core_ruleset_id") or "")
+                and int(item.data.get("start_year", -9999)) <= due_year <= int(item.data.get("end_year", 9999))
+            )
+            payload={
+                "sim_id": sim.id, "roll_type": rule.label, "die": rule.data.get("die"),
+                "bad_results": rule.data.get("bad_results"), "source": source,
+                "due_global_day": due, "completed": False,
+                "core_ruleset_id":rule.data.get("core_ruleset_id"),
+                "core_source_rule_id":rule.data.get("source_rule_id"),
+                "death_age_rng":bool(rule.data.get("death_age_rng")),
+            }
+            if later_ages: payload["death_window_end"]=int(birth)+later_ages[0]-1
+            roll = Record(save_id=save.id, kind="roll", label=f"{sim.label} — {rule.label}", global_day=due, data=payload)
             session.add(roll); session.flush(); journal(session, roll, "upsert", 0); created += 1
     if (save.settings or {}).get("maternal_rolls_enabled", True):
         maternal_rules = [rule for rule in rules if "maternal" in rule.label.casefold() and rule.data.get("active", True)]
@@ -2323,7 +2416,10 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
                 continue
             age = int(due) - int(birth)
             stage = "preteen" if age < 52 else "teen" if age < 72 else "young adult" if age < 160 else "adult" if age < 240 else "elder"
-            rule = next((item for item in maternal_rules if stage in item.label.casefold()), None)
+            due_year = save.start_year + (int(due) - 1) // max(1, save.days_per_year)
+            eligible = [item for item in maternal_rules if int(item.data.get("start_year", -9999)) <= due_year <= int(item.data.get("end_year", 9999))]
+            rule = next((item for item in eligible if stage in item.label.casefold()), None)
+            rule = rule or next((item for item in eligible if "all ages" in item.label.casefold() or "birth" in item.label.casefold()), None)
             if not rule:
                 continue
             source = f"maternal:{pregnancy.id}:{rule.id}"
@@ -2342,6 +2438,8 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
                 "sim_id":mother.id,"sim_name":mother.label,"source_id":pregnancy.id,"roll_type":rule.label,
                 "die":rule.data.get("die"),"bad_results":rule.data.get("bad_results"),"source":source,
                 "due_global_day":int(due),"completed":False,
+                "core_ruleset_id":rule.data.get("core_ruleset_id"),
+                "core_source_rule_id":rule.data.get("source_rule_id"),
             })
             session.add(roll);session.flush();journal(session,roll,"upsert",0);created += 1
     marriage_created, marriage_retired = _schedule_marriage_rolls(session, save, sims)
@@ -2437,7 +2535,11 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     if roll.kind != "roll" or roll.deleted: raise ValueError("That roll is unavailable.")
     base = roll.version
     pregnancy_count = None
-    if bool(roll.data.get("pregnancy_count_roll")):
+    death_age_rng = bool(roll.data.get("death_age_rng"))
+    if death_age_rng:
+        is_bad = False
+        automatic_outcome = f"Death scheduled {actual} historical years after this roll"
+    elif bool(roll.data.get("pregnancy_count_roll")):
         pregnancy_count, automatic_outcome = pregnancy_count_result(actual, str(roll.data.get("result_rules") or ""), str(roll.data.get("zero_results") or ""))
         is_bad = False
     elif _marriage_roll(roll):
@@ -2481,6 +2583,30 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     death = None
     death_created = False
     death_changed = False
+    if death_age_rng:
+        sim_id = roll.data.get("sim_id"); sim = session.get(Record, sim_id) if sim_id else None
+        if sim and not sim.deleted and not bool((sim.data or {}).get("death_confirmed")):
+            proposed = int(roll.global_day or save.global_day) + max(1, int(actual)) * max(1, save.days_per_year)
+            try: existing_day = int((sim.data or {}).get("death_global_day"))
+            except (TypeError, ValueError): existing_day = None
+            death_day = min(proposed, existing_day) if existing_day is not None else proposed
+            if existing_day is None or proposed < existing_day:
+                scheduled = session.scalar(select(Record).where(
+                    Record.save_id == save.id, Record.kind == "death", Record.deleted.is_(False),
+                    Record.data["sim_id"].as_string() == sim.id,
+                ).order_by(Record.global_day.asc()).limit(1))
+                cause = "Old age"
+                fields={"historical_death_date_range":calendar_utils.date_range_label(death_day,save.start_year,save.days_per_year),"death_date_precision":"challenge-day-only"}
+                if scheduled and not bool((scheduled.data or {}).get("completed")):
+                    death=scheduled;base_death=death.version;death.global_day=death_day
+                    death.data={**(death.data or {}),"sim_id":sim.id,"cause":cause,"source_roll_id":roll.id,"completed":False,**fields}
+                    death.version+=1;journal(session,death,"upsert",base_death)
+                else:
+                    death=Record(save_id=save.id,kind="death",label=f"Death of {sim.label}",global_day=death_day,data={"sim_id":sim.id,"cause":cause,"source_roll_id":roll.id,"completed":False,**fields})
+                    session.add(death);session.flush();journal(session,death,"upsert",0);death_created=True
+                sim_base=sim.version;sim.data={**(sim.data or {}),"death_global_day":death_day,"cause_of_death":cause,"death_confirmed":False,"death_source_roll_id":roll.id,**fields};sim.version+=1;journal(session,sim,"upsert",sim_base)
+                death_changed=True
+            save.revision += _retire_rolls_after_death(session,save,sim.id,death_day,roll.id)
     if is_bad and not bool(roll.data.get("nonlethal")):
         sim_id = roll.data.get("sim_id")
         sim = session.get(Record, sim_id) if sim_id else None

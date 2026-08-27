@@ -79,6 +79,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
                 name = name[9:].strip()
             deaths_by_name[name] = str(data.get("cause_of_death") or data.get("cause") or "an unrecorded cause")
     relationships = [item for item in entries if item.kind == "relationship"]
+    migrations = [item for item in entries if item.kind == "migration"]
     pregnancies = [item for item in entries if item.kind == "pregnancy"]
     illnesses = [item for item in entries if item.kind == "illness"]
     completed_rolls = [item for item in entries if item.kind == "roll" and bool((item.data or {}).get("completed"))]
@@ -116,6 +117,9 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
         sentences.append(f"The year also carried loss: {_natural_list(losses)} {'was' if len(losses) == 1 else 'were'} recorded among the dead.")
     if relationships:
         sentences.append(f"Family bonds shifted through {_natural_list([item.label for item in relationships])}; these unions, separations, or commitments changed the shape of the household record.")
+    if migrations:
+        routes=[f"{(item.data or {}).get('sim_name') or item.label} from {(item.data or {}).get('from_country') or 'an earlier home'} to {(item.data or {}).get('to_country') or 'a new country'}" for item in migrations]
+        sentences.append(f"Movement reshaped the family's world as {_natural_list(routes)} entered the migration ledger.")
     if pregnancies:
         details = []
         for item in pregnancies:
@@ -163,7 +167,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
 
 
 def build(session: Session, save: ChronicleSave) -> dict:
-    story_kinds={"sim","household","relationship","pregnancy","illness","roll","event","death","game_history","story_entry","session_journal"}
+    story_kinds={"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","story_entry","session_journal"}
     records = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.in_(story_kinds), Record.deleted.is_(False))))
     ignored_event_ids={item.id for item in records if item.kind=="event" and event_is_ignored(item)}
     records=[item for item in records if item.id not in ignored_event_ids and str((item.data or {}).get("event_id") or "") not in ignored_event_ids]
@@ -263,7 +267,7 @@ def build(session: Session, save: ChronicleSave) -> dict:
 
 
 def _story_facts(session: Session, save: ChronicleSave) -> tuple[list[Record], list[str]]:
-    allowed={"sim","relationship","pregnancy","illness","roll","event","death","game_history","session_journal"}
+    allowed={"sim","relationship","pregnancy","illness","roll","event","death","migration","game_history","session_journal"}
     rows=list(session.scalars(select(Record).where(
         Record.save_id==save.id,Record.kind.in_(allowed),Record.deleted.is_(False)
     ).order_by(Record.global_day.desc(),Record.updated_at.desc()).limit(80)))

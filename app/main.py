@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, auth, automation, backup_service, calendar_utils, clock, clock_bundle, dice, exports, game_metadata, names, notifications, occult_rules, portraits, save_scanner, tray_scanner, sync, storyline, telemetry, insights
+from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, names, notifications, occult_rules, portraits, save_scanner, tray_scanner, sync, storyline, telemetry, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -42,12 +42,17 @@ FEATURES = {
     "timeline": ("Chronicle", "A narrative history of the save"),
     "planner": ("Play Planner", "Household rotations, family plans and forecasts"),
     "challenge": ("Challenge Management", "Succession, matchmaking and campaigns"),
+    "world": ("World & Migration", "Birth countries, moves, historical locations and migration routes"),
+    "legacy-lab": ("Legacy Lab", "Progress, biographies, compatibility, consistency and safe rule experiments"),
+    "avatar": ("Avatar Add-on", "Bending, nations, Spirits, the Avatar Cycle and the BG/AG timeline"),
+    "harry-potter": ("Harry Potter Add-on", "Magical families, Hogwarts, secrecy and Wizarding history"),
+    "game-of-thrones": ("Game of Thrones Add-on", "Houses, succession, courts, wars, dragons and BC/AC history"),
     "statistics": ("Statistics", "Population, survival, fertility and records"),
     "tutorial": ("Tutorial", "A step-by-step guide to setup, daily play and automation"),
     "notes": ("Notes", "A private notebook for this save"),
     "plants": ("Planting Reference", "Historical crops by year, season and location"),
     "names": ("Name Generator", "Offline names from your own sourced historical libraries"),
-    "guides": ("Challenge Guides", "SeveralUDO and MorbidGamer references"),
+    "guides": ("Challenge Guides", "SeveralUDO, Morbid, and Classic 2023 references"),
     "rules": ("Rules & Data", "Editable defaults, eras, dice and causes of death"),
     "health": ("Rules Health", "Coverage, duplicates and maintenance checks"),
     "clock": ("Game Clock", "Local or hosted Sims 4 time and population receiver"),
@@ -604,7 +609,13 @@ def home(request: Request):
         counts = {}
         if save:
             counts = dict(session.execute(select(Record.kind, func.count()).where(Record.save_id == save.id, Record.deleted.is_(False)).group_by(Record.kind)).all())
-        return templates.TemplateResponse(request, "dashboard.html", {**ctx, "counts": counts})
+        selected_rule_packs=list((save.settings or {}).get("selected_rule_packs") or []) if save else []
+        return templates.TemplateResponse(request, "dashboard.html", {
+            **ctx, "counts": counts, "rule_packs":advanced.RULE_PACKS,
+            "core_rulesets":core_rulesets.CORE_RULESETS,
+            "selected_core_ruleset":core_rulesets.selected_core(save) if save else core_rulesets.SEVERALUDO,
+            "selected_rule_packs":selected_rule_packs,
+        })
 
 
 @app.post("/auth/register")
@@ -1107,6 +1118,17 @@ def export_chronicle_pdf(request: Request, save_id: str):
         return _download(exports.chronicle_pdf(session,save,story),"application/pdf",f"{exports.safe_filename(save.name)}-chronicle.pdf")
 
 
+@app.get("/exports/{save_id}/biographies.md")
+def export_biographies(request: Request, save_id: str):
+    with db() as session:
+        save=owned_save(request,session,save_id)
+        rows=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.deleted.is_(False))))
+        lines=[f"# The People of {save.name}","",f"Through historical year {advanced.year_for(save,save.global_day)}.",""]
+        for bio in advanced.biographies(rows,save):
+            lines.extend([f"## {bio['sim'].label}","",bio["text"],""])
+        return _download("\n".join(lines),"text/markdown; charset=utf-8",f"{exports.safe_filename(save.name)}-biographies.md")
+
+
 @app.get("/exports/{save_id}/family-tree/print",response_class=HTMLResponse)
 def printable_family_tree(request: Request, save_id: str):
     with db() as session:
@@ -1187,8 +1209,13 @@ def feature_page(request: Request, page: str):
             "households":{"household","sim","game_history","pregnancy","illness"},
             "planner":{"sim","household","play_rotation","family_plan","roll"},
             "challenge":{"sim","household","relationship","roll","planner_rule","campaign","service","era_guidance","era_rule"},
+            "world":{"sim","migration","household"},
+            "legacy-lab":{"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","clock_diagnostic"},
             "events":{"event","event_rule"}, "notes":{"note"},
-            "rules":{"sim","roll","roll_rule","occult_rule","death_causes","planner_rule","multiple_birth_rule","era_guidance","era_rule","event_rule","source_archive","detection_candidate","task","roll_rule_era"},
+            "rules":{"sim","roll","roll_rule","occult_rule","addon_rule","death_causes","planner_rule","multiple_birth_rule","era_guidance","era_rule","event_rule","source_archive","detection_candidate","task","roll_rule_era"},
+            "avatar":{"sim","addon_rule"},
+            "harry-potter":{"sim","household","addon_rule"},
+            "game-of-thrones":{"sim","household","addon_rule"},
         }.get(page)
         if save and view_kinds:
             view_records = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind.in_(view_kinds),Record.deleted.is_(False))))
@@ -1294,20 +1321,22 @@ def feature_page(request: Request, page: str):
             ctx.update(name_coverage=names.coverage(name_pool),name_cultures=cultures,name_culture=culture,name_sex=sex,name_surname_culture=surname_culture,name_count=count,name_no_surname=no_surname,name_suggestions=names.generate(name_pool,culture,sex,count,surname_culture=surname_culture,no_surname=no_surname) if request.query_params.get("generate") else [],name_medieval=names.medieval_summary())
             records=[]
         if page == "rules" and save:
+            selected_core=core_rulesets.selected_core(save)
+            visible_core=lambda item: not (item.data or {}).get("core_ruleset_id") or (item.data or {}).get("core_ruleset_id")==selected_core
             occult_rule_records=sorted((item for item in view_records if item.kind=="occult_rule"),key=lambda item:(str((item.data or {}).get("occult") or ""),str((item.data or {}).get("rule_key") or ""),int_or_none((item.data or {}).get("start_year")) or -9999))
             occult_sims=[item for item in view_records if item.kind=="sim" and occult_rules.sim_occult_types(item.data)]
-            ctx.update(roll_rules=sorted((item for item in view_records if item.kind=="roll_rule"),key=lambda item:(int_or_none((item.data or {}).get("age_days")) if int_or_none((item.data or {}).get("age_days")) is not None else 10**9,item.label)),
+            ctx.update(roll_rules=sorted((item for item in view_records if item.kind=="roll_rule" and visible_core(item)),key=lambda item:(int_or_none((item.data or {}).get("start_year")) or -9999,int_or_none((item.data or {}).get("age_days")) if int_or_none((item.data or {}).get("age_days")) is not None else 10**9,item.label)),
                        cause_groups=[item for item in view_records if item.kind=="death_causes"],
-                       planner_rules=sorted((item for item in view_records if item.kind=="planner_rule"),key=lambda item:(item.label,int_or_none((item.data or {}).get("start_year")) or -9999)),
+                       planner_rules=sorted((item for item in view_records if item.kind=="planner_rule" and visible_core(item)),key=lambda item:(item.label,int_or_none((item.data or {}).get("start_year")) or -9999)),
                        multiple_birth_rules=sorted((item for item in view_records if item.kind=="multiple_birth_rule"),key=lambda item:int_or_none((item.data or {}).get("start_year")) or -9999),
-                       era_guidance=sorted((item for item in view_records if item.kind=="era_guidance"),key=lambda item:(int_or_none((item.data or {}).get("start_year")) or -9999,item.label)),
+                       era_guidance=sorted((item for item in view_records if item.kind=="era_guidance" and visible_core(item)),key=lambda item:(int_or_none((item.data or {}).get("start_year")) or -9999,item.label)),
                        imported_era_rules=[item for item in view_records if item.kind=="era_rule"],
                        event_rule_count=sum(item.kind=="event_rule" for item in view_records),
                        compatibility_records=[item for item in view_records if item.kind in {"source_archive","detection_candidate","task","roll_rule_era"}],
                        occult_rules=occult_rule_records,detected_occult_sims=occult_sims,
                        occult_rule_sims=sorted((item for item in view_records if item.kind=="sim"),key=lambda item:item.label.casefold()),
                        occult_pending_count=sum(item.kind=="roll" and bool((item.data or {}).get("occult_roll")) and not bool((item.data or {}).get("completed")) for item in view_records),
-                       save_settings=dict(save.settings or {}));records=[]
+                       save_settings=dict(save.settings or {}),core_ruleset=core_rulesets.current_catalog_entry(save));records=[]
         if page == "planner" and save:
             sims=[item for item in view_records if item.kind=="sim"];households=[item for item in view_records if item.kind=="household"]
             rotations=[item for item in view_records if item.kind=="play_rotation"];plans=[item for item in view_records if item.kind=="family_plan"]
@@ -1349,6 +1378,25 @@ def feature_page(request: Request, page: str):
             marriage_rolls=[item for item in view_records if item.kind=="roll" and domain._marriage_roll(item)]
             campaigns=[item for item in view_records if item.kind=="campaign"]
             ctx.update(challenge_year=year,era_guidance=guidance,succession=succession,campaigns=campaigns,services=[item for item in view_records if item.kind=="service"],all_sims=sorted_sims(sims,save),match_eligible=sorted_sims(match_eligible,save),selected_match=selected_match,match_candidates=match_candidates,kinship_depth=kinship_depth,marriage_rolls=sorted(marriage_rolls,key=lambda item:item.global_day or 0),marriage_roll_counts={"pending":sum(not bool((item.data or {}).get("completed")) for item in marriage_rolls),"may":sum("may marry" in str((item.data or {}).get("outcome") or "").casefold() for item in marriage_rolls),"no":sum("does not marry" in str((item.data or {}).get("outcome") or "").casefold() for item in marriage_rolls)});records=[]
+        if page == "world" and save:
+            sims=[item for item in view_records if item.kind=="sim"]
+            selected_year=int_or_none(request.query_params.get("year"))
+            ctx.update(world=advanced.world_snapshot(view_records,save,selected_year),all_sims=sorted_sims(sims,save),world_notice=request.session.pop("world_notice",None));records=[]
+        if page == "legacy-lab" and save:
+            simulation=advanced.simulate_rules(view_records,save,request.query_params.get("pregnancy_days"),request.query_params.get("kinship_depth"),request.query_params.get("mortality_multiplier"))
+            ctx.update(progress=advanced.progress_dashboard(view_records,save),consistency=advanced.consistency_report(view_records,save),biographies=advanced.biographies(view_records,save),compatibility=advanced.mod_compatibility(view_records),simulation=simulation,rule_packs=advanced.RULE_PACKS);records=[]
+        if page == "avatar" and save:
+            settings_data=dict(save.settings or {});selected=set(settings_data.get("selected_rule_packs") or [])
+            modules=sorted((item for item in view_records if item.kind=="addon_rule" and (item.data or {}).get("rule_pack_id")==avatar_rules.PACK_ID),key=lambda item:str((item.data or {}).get("code") or item.label))
+            current_year=insights.current_year(save)
+            ctx.update(avatar_pack_enabled=avatar_rules.PACK_ID in selected,avatar_modules=modules,avatar_timeline=[{"start":start,"end":end,"label":label,"text":text,"range":avatar_rules.range_label(start,end)} for start,end,label,text in avatar_rules.TIMELINE],avatar_current_year=current_year,avatar_current_label=avatar_rules.date_label(current_year),avatar_canon_mode=bool(settings_data.get("avatar_canon_timeline_mode")),all_sims=sorted_sims((item for item in view_records if item.kind=="sim"),save),avatar_notice=request.session.pop("avatar_notice",None));records=[]
+        if page == "harry-potter" and save:
+            settings_data=dict(save.settings or {});selected=set(settings_data.get("selected_rule_packs") or [])
+            rules=sorted((item for item in view_records if item.kind=="addon_rule" and (item.data or {}).get("rule_pack_id")==harry_potter_rules.PACK_ID),key=lambda item:str((item.data or {}).get("code") or item.label))
+            ctx.update(hp_pack_enabled=harry_potter_rules.PACK_ID in selected,hp_modules=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-") and not str((item.data or {}).get("code") or "").startswith("HP-T")],hp_event_tables=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-T")],hp_timeline=[{"start":start,"end":end,"label":label,"text":text,"range":harry_potter_rules.range_label(start,end)} for start,end,label,text in harry_potter_rules.TIMELINE],hp_timeline_modes=harry_potter_rules.TIMELINE_MODES,hp_timeline_mode=str(settings_data.get("harry_potter_timeline_mode") or "alternate"),hp_current_year=insights.current_year(save),hp_current_label=harry_potter_rules.year_label(insights.current_year(save)),all_sims=sorted_sims((item for item in view_records if item.kind=="sim"),save),all_households=sorted((item for item in view_records if item.kind=="household"),key=lambda item:item.label.casefold()),hp_notice=request.session.pop("hp_notice",None));records=[]
+        if page == "game-of-thrones" and save:
+            settings_data=dict(save.settings or {});selected=set(settings_data.get("selected_rule_packs") or []);rules=sorted((item for item in view_records if item.kind=="addon_rule" and (item.data or {}).get("rule_pack_id")==game_of_thrones_rules.PACK_ID),key=lambda item:str((item.data or {}).get("code") or item.label));current_year=game_of_thrones_rules.lore_year(save)
+            ctx.update(got_pack_enabled=game_of_thrones_rules.PACK_ID in selected,got_modules=[item for item in rules if not str((item.data or {}).get("code") or "").startswith("GOT-T")],got_event_tables=[item for item in rules if str((item.data or {}).get("code") or "").startswith("GOT-T")],got_timeline=[{"start":start,"end":end,"label":label,"text":text,"range":game_of_thrones_rules.range_label(start,end)} for start,end,label,text in game_of_thrones_rules.TIMELINE],got_timeline_modes=game_of_thrones_rules.TIMELINE_MODES,got_timeline_mode=str(settings_data.get("game_of_thrones_timeline_mode") or "original"),got_current_year=current_year,got_current_label=game_of_thrones_rules.year_label(current_year),all_sims=sorted_sims((item for item in view_records if item.kind=="sim"),save),all_households=sorted((item for item in view_records if item.kind=="household"),key=lambda item:item.label.casefold()),got_notice=request.session.pop("got_notice",None));records=[]
         if page == "today" and save:
             # Scheduling is idempotent. Remember the check in process instead
             # of rewriting the save's large settings JSON on every new day.
@@ -1608,6 +1656,8 @@ def feature_page(request: Request, page: str):
             }
             ctx["journals"] = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "session_journal", Record.deleted.is_(False)).order_by(Record.global_day.desc()).limit(30)))
             ctx["legacy_detections"] = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="detection_candidate",Record.deleted.is_(False)).order_by(Record.created_at.desc()).limit(50)))
+            digest_rows=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending").order_by(Record.created_at.asc())))
+            ctx["automation_digest"]=advanced.automation_digest(digest_rows)
         if page == "relationships" and save:
             ctx["relationship_notice"] = request.session.pop("relationship_notice", None)
         if save and page in {"sims", "relationships", "households", "pregnancies", "illnesses", "automation", "rolls"}:
@@ -1631,8 +1681,9 @@ def feature_page(request: Request, page: str):
             "today":"today.html", "sims":"sims.html", "relationships":"relationships.html", "households":"households.html",
             "pregnancies":"pregnancies.html", "illnesses":"illnesses.html", "automation":"automation.html", "storyline":"storyline.html",
             "family-tree":"family_tree.html", "timeline":"timeline.html", "statistics":"statistics.html", "health":"health.html",
-            "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "planner":"planner.html",
+            "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
+            "world":"world.html", "legacy-lab":"legacy_lab.html",
             "clock":"clock.html", "sync":"sync.html", "account":"account.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html",
         }
         return templates.TemplateResponse(request, dedicated.get(page, "feature.html"), ctx)
@@ -2197,6 +2248,19 @@ def dismiss_automation(request: Request, candidate_id: str):
     return RedirectResponse("/p/automation",status_code=303)
 
 
+@app.post("/api/automation/batch-dismiss")
+async def batch_dismiss_automation(request: Request):
+    form=await request.form();candidate_ids=list(dict.fromkeys(str(value) for value in form.getlist("candidate_id") if value))
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        rows=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.id.in_(candidate_ids),Record.kind=="game_candidate",Record.deleted.is_(False)))) if candidate_ids else []
+        for item in rows:
+            if str((item.data or {}).get("status") or "pending")!="pending": continue
+            base=item.version;item.data={**(item.data or {}),"status":"dismissed","batch_reviewed":True};item.version+=1;domain.journal(session,item,"upsert",base);save.revision+=1
+    return RedirectResponse("/p/automation",status_code=303)
+
+
 @app.post("/automation/{candidate_id}/accept")
 async def accept_automation(request: Request, candidate_id: str):
     form = await request.form()
@@ -2552,6 +2616,278 @@ async def update_settings(request: Request):
                 settings_data[key]=key in form
         save.settings=settings_data;save.revision+=1;domain.schedule_rolls(session,save)
     return RedirectResponse(str(form.get("return_to") or "/p/rules"),status_code=303)
+
+
+@app.post("/api/rule-packs")
+async def update_rule_packs(request: Request):
+    form=await request.form();allowed={pack["id"] for pack in advanced.RULE_PACKS};raw_selected=list(form.getlist("rule_pack"));selected=[value for value in raw_selected if value in allowed]
+    legacy_core=core_rulesets.MORBID if "morbidgamer" in raw_selected else core_rulesets.SEVERALUDO if "severaludo" in raw_selected else ""
+    chosen_core=str(form.get("core_ruleset") or legacy_core or core_rulesets.SEVERALUDO)
+    if chosen_core not in core_rulesets.CORE_IDS: chosen_core=core_rulesets.SEVERALUDO
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        values=dict(save.settings or {});values["selected_rule_packs"]=(raw_selected if legacy_core else selected);values["core_ruleset_id"]=chosen_core;values["rule_pack_selection_version"]=3;save.settings=values
+        save.revision+=1+core_rulesets.sync_rules(session,save)+avatar_rules.sync_pack(session,save,selected)+harry_potter_rules.sync_pack(session,save,selected)+game_of_thrones_rules.sync_pack(session,save,selected)
+        save.revision+=domain.retire_inactive_core_rolls(session,save)
+        domain.schedule_rolls(session,save)
+        if avatar_rules.PACK_ID in selected: request.session["avatar_notice"]="Avatar Decades is installed. Recommended modules are on; optional and canon-only modules remain off until you enable them."
+        if harry_potter_rules.PACK_ID in selected: request.session["hp_notice"]="Harry Potter Decades is installed. Recommended modules are on; optional modules and event tables remain off until you enable them."
+        if game_of_thrones_rules.PACK_ID in selected: request.session["got_notice"]="Game of Thrones Decades is installed. Recommended modules are on; optional, supernatural, and timeline tables remain off until you enable them."
+    return RedirectResponse("/",status_code=303)
+
+
+@app.post("/api/avatar/modules/{code}")
+async def update_avatar_module(code: str, request: Request):
+    form=await request.form();enabled=str(form.get("enabled") or "").casefold() in {"1","true","on","yes"}
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        record=avatar_rules.set_module(session,save,code.upper(),enabled)
+        if not record: raise HTTPException(404,"Avatar module not found. Enable the Avatar add-on first.")
+        domain.journal(session,record,"upsert",record.version-1);save.revision+=1
+        request.session["avatar_notice"]=f'{record.label} is now {"enabled" if enabled else "paused"}.'
+    return RedirectResponse("/p/avatar#modules",status_code=303)
+
+
+@app.post("/api/avatar/modules/{code}/edit")
+async def edit_avatar_module(code: str, request: Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        record=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="addon_rule",Record.deleted.is_(False),Record.data["code"].as_string()==code.upper()))
+        if not record or (record.data or {}).get("rule_pack_id")!=avatar_rules.PACK_ID: raise HTTPException(404,"Avatar module not found.")
+        data=dict(record.data or {});base=record.version
+        data.update({"category":str(form.get("category") or "").strip(),"die":str(form.get("die") or "").strip(),"trigger":str(form.get("trigger") or "").strip(),"rule_text":str(form.get("rule_text") or "").strip()})
+        data["result_rules"]=data["rule_text"];record.data=data;record.version+=1;domain.journal(session,record,"upsert",base);save.revision+=1
+        request.session["avatar_notice"]=f"Saved edits to {record.label}."
+    return RedirectResponse("/p/avatar#modules",status_code=303)
+
+
+@app.post("/api/avatar/settings")
+async def update_avatar_settings(request: Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        values=dict(save.settings or {});values["avatar_canon_timeline_mode"]=str(form.get("canon_timeline_mode") or "").casefold() in {"1","true","on","yes"};save.settings=values;save.revision+=1
+        request.session["avatar_notice"]="Avatar timeline preference saved. Canon mode fixes the supplied anchor years; alternate-history mode treats them as reference."
+    return RedirectResponse("/p/avatar#timeline",status_code=303)
+
+
+@app.post("/api/avatar/rolls")
+async def create_avatar_roll(request: Request):
+    form=await request.form();rule_id=str(form.get("rule_id") or "");sim_id=str(form.get("sim_id") or "");due=int_or_none(form.get("global_day"))
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save or due is None or due<1: raise HTTPException(400,"Choose a valid Sim, rule, and Global Day.")
+        rule=session.get(Record,rule_id);sim=session.get(Record,sim_id)
+        if not rule or rule.save_id!=save.id or rule.kind!="addon_rule" or not bool((rule.data or {}).get("active")): raise HTTPException(404,"Active Avatar rule not found.")
+        if not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"Sim not found.")
+        try: roll,created=create_rule_roll_record(session,save,rule,sim,due,context_note=str(form.get("notes") or ""))
+        except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+        if created: save.revision+=1
+        request.session["avatar_notice"]=f'{"Added" if created else "Already scheduled"}: {roll.label} on GD {due}.'
+    return RedirectResponse("/p/avatar#roll-workbench",status_code=303)
+
+
+@app.post("/api/avatar/sims/{sim_id}")
+async def update_avatar_sim(sim_id: str, request: Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save");sim=session.get(Record,sim_id)
+        if not save or not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"Sim not found.")
+        data=dict(sim.data or {});base=sim.version
+        techniques=[part.strip() for part in re.split(r"[;|,]+",str(form.get("advanced_techniques") or "")) if part.strip()]
+        data.update({
+            "avatar_birth_nation":str(form.get("birth_nation") or "").strip(),"avatar_cultural_nation":str(form.get("cultural_nation") or "").strip(),
+            "avatar_elemental_ancestry":str(form.get("elemental_ancestry") or "").strip(),"avatar_bender_status":str(form.get("bender_status") or "").strip(),
+            "avatar_bending_element":str(form.get("bending_element") or "").strip(),"avatar_natural_strength":str(form.get("natural_strength") or "").strip(),
+            "avatar_mastery_rank":str(form.get("mastery_rank") or "").strip(),"avatar_status":str(form.get("avatar_status") or "").strip(),
+            "avatar_spiritually_gifted":str(form.get("spiritually_gifted") or "").casefold() in {"1","true","on","yes"},"avatar_advanced_techniques":techniques,
+        })
+        sim.data=data;sim.version+=1;domain.journal(session,sim,"upsert",base);save.revision+=1;request.session["avatar_notice"]=f"Saved Avatar fields for {sim.label}."
+    return RedirectResponse("/p/avatar#people",status_code=303)
+
+
+@app.post("/api/harry-potter/modules/{code}")
+async def update_hp_module(code: str, request: Request):
+    form=await request.form();enabled=str(form.get("enabled") or "").casefold() in {"1","true","on","yes"}
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        record=harry_potter_rules.set_module(session,save,code.upper(),enabled)
+        if not record: raise HTTPException(404,"Harry Potter module not found. Enable the add-on first.")
+        domain.journal(session,record,"upsert",record.version-1);save.revision+=1;request.session["hp_notice"]=f'{record.label} is now {"enabled" if enabled else "paused"}.'
+    return RedirectResponse("/p/harry-potter#modules",status_code=303)
+
+
+@app.post("/api/harry-potter/modules/{code}/edit")
+async def edit_hp_module(code: str, request: Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        record=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="addon_rule",Record.deleted.is_(False),Record.data["code"].as_string()==code.upper()))
+        if not record or (record.data or {}).get("rule_pack_id")!=harry_potter_rules.PACK_ID: raise HTTPException(404,"Harry Potter module not found.")
+        data=dict(record.data or {});base=record.version;data.update({"category":str(form.get("category") or "").strip(),"die":str(form.get("die") or "").strip(),"trigger":str(form.get("trigger") or "").strip(),"rule_text":str(form.get("rule_text") or "").strip()});data["result_rules"]=data["rule_text"];record.data=data;record.version+=1;domain.journal(session,record,"upsert",base);save.revision+=1;request.session["hp_notice"]=f"Saved edits to {record.label}."
+    return RedirectResponse("/p/harry-potter#modules",status_code=303)
+
+
+@app.post("/api/harry-potter/settings")
+async def update_hp_settings(request: Request):
+    form=await request.form();allowed={mode[0] for mode in harry_potter_rules.TIMELINE_MODES};mode=str(form.get("timeline_mode") or "alternate")
+    if mode not in allowed: raise HTTPException(400,"Choose a valid timeline mode.")
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        values=dict(save.settings or {});values["harry_potter_timeline_mode"]=mode;save.settings=values;save.revision+=1;request.session["hp_notice"]="Harry Potter timeline mode saved."
+    return RedirectResponse("/p/harry-potter#timeline",status_code=303)
+
+
+@app.post("/api/harry-potter/rolls")
+async def create_hp_roll(request: Request):
+    form=await request.form();rule_id=str(form.get("rule_id") or "");sim_id=str(form.get("sim_id") or "");due=int_or_none(form.get("global_day"))
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save or due is None or due<1: raise HTTPException(400,"Choose a valid Sim, rule, and Global Day.")
+        rule=session.get(Record,rule_id);sim=session.get(Record,sim_id)
+        if not rule or rule.save_id!=save.id or rule.kind!="addon_rule" or (rule.data or {}).get("rule_pack_id")!=harry_potter_rules.PACK_ID or not bool((rule.data or {}).get("active")): raise HTTPException(404,"Active Harry Potter rule not found.")
+        if not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"Sim not found.")
+        try: roll,created=create_rule_roll_record(session,save,rule,sim,due,context_note=str(form.get("notes") or ""))
+        except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+        if created: save.revision+=1
+        request.session["hp_notice"]=f'{"Added" if created else "Already scheduled"}: {roll.label} on GD {due}.'
+    return RedirectResponse("/p/harry-potter#roll-workbench",status_code=303)
+
+
+@app.post("/api/harry-potter/sims/{sim_id}")
+async def update_hp_sim(sim_id: str, request: Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save");sim=session.get(Record,sim_id)
+        if not save or not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"Sim not found.")
+        data=dict(sim.data or {});base=sim.version;data.update({"hp_magical_ability":str(form.get("magical_ability") or "").strip(),"hp_blood_status":str(form.get("blood_status") or "").strip(),"hp_hidden_squib":str(form.get("hidden_squib") or "").casefold() in {"1","true","on","yes"},"hp_public_magical_status":str(form.get("public_magical_status") or "").strip(),"hp_magical_school":str(form.get("magical_school") or "").strip(),"hp_hogwarts_house":str(form.get("hogwarts_house") or "").strip(),"hp_obscurial_status":str(form.get("obscurial_status") or "").strip(),"hp_quidditch_status":str(form.get("quidditch_status") or "").strip(),"hp_war_allegiance":str(form.get("war_allegiance") or "").strip(),"hp_death_eater_status":str(form.get("death_eater_status") or "").strip(),"hp_resistance_status":str(form.get("resistance_status") or "").strip(),"hp_prisoner_missing_status":str(form.get("prisoner_missing_status") or "").strip(),"hp_secrecy_violation_count":max(0,int_or_none(form.get("secrecy_violation_count")) or 0)});sim.data=data;sim.version+=1;domain.journal(session,sim,"upsert",base);save.revision+=1;request.session["hp_notice"]=f"Saved Wizarding fields for {sim.label}."
+    return RedirectResponse("/p/harry-potter#people",status_code=303)
+
+
+@app.post("/api/harry-potter/households/{household_id}")
+async def update_hp_household(household_id: str, request: Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save");house=session.get(Record,household_id)
+        if not save or not house or house.save_id!=save.id or house.kind!="household" or house.deleted: raise HTTPException(404,"Household not found.")
+        data=dict(house.data or {});base=house.version;data.update({"hp_blood_purity_level":str(form.get("blood_purity_level") or "").strip(),"hp_inheritance_custom":str(form.get("inheritance_custom") or "").strip(),"hp_family_exception":str(form.get("family_exception") or "").strip(),"hp_living_grandchildren":max(0,int_or_none(form.get("living_grandchildren")) or 0),"hp_fashion_reference_decade":int_or_none(form.get("fashion_reference_decade")),"hp_magic_exposure_level":str(form.get("magic_exposure_level") or "").strip(),"hp_repeated_public_exposure":str(form.get("repeated_public_exposure") or "").casefold() in {"1","true","on","yes"},"hp_political_reputation":str(form.get("political_reputation") or "").strip(),"hp_ministry_connections":str(form.get("ministry_connections") or "").strip(),"hp_hidden_dark_objects":str(form.get("hidden_dark_objects") or "").strip(),"hp_known_war_crimes":str(form.get("known_war_crimes") or "").strip()});house.data=data;house.version+=1;domain.journal(session,house,"upsert",base);save.revision+=1;request.session["hp_notice"]=f"Saved Wizarding fields for {house.label}."
+    return RedirectResponse("/p/harry-potter#families",status_code=303)
+
+
+@app.post("/api/game-of-thrones/modules/{code}")
+async def update_got_module(code: str, request: Request):
+    form=await request.form();enabled=str(form.get("enabled") or "").casefold() in {"1","true","on","yes"}
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save:raise HTTPException(400,"Open a save first.")
+        record=game_of_thrones_rules.set_module(session,save,code.upper(),enabled)
+        if not record:raise HTTPException(404,"Game of Thrones module not found. Enable the add-on first.")
+        domain.journal(session,record,"upsert",record.version-1);save.revision+=1;request.session["got_notice"]=f'{record.label} is now {"enabled" if enabled else "paused"}.'
+    return RedirectResponse("/p/game-of-thrones#modules",status_code=303)
+
+
+@app.post("/api/game-of-thrones/modules/{code}/edit")
+async def edit_got_module(code: str, request: Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save:raise HTTPException(400,"Open a save first.")
+        record=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="addon_rule",Record.deleted.is_(False),Record.data["code"].as_string()==code.upper()))
+        if not record or (record.data or {}).get("rule_pack_id")!=game_of_thrones_rules.PACK_ID:raise HTTPException(404,"Game of Thrones module not found.")
+        data=dict(record.data or {});base=record.version;data.update({"category":str(form.get("category") or "").strip(),"die":str(form.get("die") or "").strip(),"trigger":str(form.get("trigger") or "").strip(),"rule_text":str(form.get("rule_text") or "").strip()});data["result_rules"]=data["rule_text"];record.data=data;record.version+=1;domain.journal(session,record,"upsert",base);save.revision+=1;request.session["got_notice"]=f"Saved edits to {record.label}."
+    return RedirectResponse("/p/game-of-thrones#modules",status_code=303)
+
+
+@app.post("/api/game-of-thrones/settings")
+async def update_got_settings(request: Request):
+    form=await request.form();allowed={mode[0] for mode in game_of_thrones_rules.TIMELINE_MODES};mode=str(form.get("timeline_mode") or "original")
+    if mode not in allowed:raise HTTPException(400,"Choose a valid timeline mode.")
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save:raise HTTPException(400,"Open a save first.")
+        values=dict(save.settings or {});values.update({"game_of_thrones_timeline_mode":mode,"got_monarch":str(form.get("monarch") or "").strip(),"got_royal_house":str(form.get("royal_house") or "").strip(),"got_current_season":str(form.get("current_season") or "").strip(),"got_season_length":max(0,int_or_none(form.get("season_length")) or 0),"got_war_status":str(form.get("war_status") or "").strip(),"got_active_claimants":str(form.get("active_claimants") or "").strip(),"got_long_night_stage":str(form.get("long_night_stage") or "").strip(),"got_dragons_present":str(form.get("dragons_present") or "").casefold() in {"1","true","on","yes"},"got_others_active":str(form.get("others_active") or "").casefold() in {"1","true","on","yes"}});save.settings=values;save.revision+=1;request.session["got_notice"]="Realm and timeline settings saved."
+    return RedirectResponse("/p/game-of-thrones#realm",status_code=303)
+
+
+@app.post("/api/game-of-thrones/rolls")
+async def create_got_roll(request:Request):
+    form=await request.form();rule_id=str(form.get("rule_id") or "");sim_id=str(form.get("sim_id") or "");due=int_or_none(form.get("global_day"))
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save or due is None or due<1:raise HTTPException(400,"Choose a valid Sim, rule, and Global Day.")
+        rule=session.get(Record,rule_id);sim=session.get(Record,sim_id)
+        if not rule or rule.save_id!=save.id or rule.kind!="addon_rule" or (rule.data or {}).get("rule_pack_id")!=game_of_thrones_rules.PACK_ID or not bool((rule.data or {}).get("active")):raise HTTPException(404,"Active Game of Thrones rule not found.")
+        if not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted:raise HTTPException(404,"Sim not found.")
+        try:roll,created=create_rule_roll_record(session,save,rule,sim,due,context_note=str(form.get("notes") or ""))
+        except ValueError as exc:raise HTTPException(400,str(exc)) from exc
+        if created:save.revision+=1
+        request.session["got_notice"]=f'{"Added" if created else "Already scheduled"}: {roll.label} on GD {due}.'
+    return RedirectResponse("/p/game-of-thrones#roll-workbench",status_code=303)
+
+
+@app.post("/api/game-of-thrones/sims/{sim_id}")
+async def update_got_sim(sim_id:str,request:Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save");sim=session.get(Record,sim_id)
+        if not save or not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted:raise HTTPException(404,"Sim not found.")
+        data=dict(sim.data or {});base=sim.version;data.update({"got_house":str(form.get("house") or "").strip(),"got_birth_house":str(form.get("birth_house") or "").strip(),"got_legitimacy":str(form.get("legitimacy") or "").strip(),"got_recognized_bastard":str(form.get("recognized_bastard") or "").casefold() in {"1","true","on","yes"},"got_bastard_surname":str(form.get("bastard_surname") or "").strip(),"got_claim":str(form.get("claim") or "").strip(),"got_martial_ability":str(form.get("martial_ability") or "").strip(),"got_knight_status":str(form.get("knight_status") or "").strip(),"got_court_office":str(form.get("court_office") or "").strip(),"got_vow_order":str(form.get("vow_order") or "").strip(),"got_prisoner_status":str(form.get("prisoner_status") or "").strip(),"got_missing_status":str(form.get("missing_status") or "").strip(),"got_regent_status":str(form.get("regent_status") or "").strip(),"got_dragonrider":str(form.get("dragonrider") or "").casefold() in {"1","true","on","yes"},"got_greensight":str(form.get("greensight") or "").casefold() in {"1","true","on","yes"},"got_skinchanger":str(form.get("skinchanger") or "").casefold() in {"1","true","on","yes"},"got_reputation_conditions":str(form.get("reputation_conditions") or "").strip()});sim.data=data;sim.version+=1;domain.journal(session,sim,"upsert",base);save.revision+=1;request.session["got_notice"]=f"Saved Westerosi fields for {sim.label}."
+    return RedirectResponse("/p/game-of-thrones#people",status_code=303)
+
+
+@app.post("/api/game-of-thrones/households/{household_id}")
+async def update_got_household(household_id:str,request:Request):
+    form=await request.form()
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save");house=session.get(Record,household_id)
+        if not save or not house or house.save_id!=save.id or house.kind!="household" or house.deleted:raise HTTPException(404,"Household not found.")
+        data=dict(house.data or {});base=house.version;data.update({"got_house_name":str(form.get("house_name") or "").strip(),"got_region":str(form.get("region") or "").strip(),"got_rank":str(form.get("rank") or "").strip(),"got_wealth":str(form.get("wealth") or "").strip(),"got_ancestral_seat":str(form.get("ancestral_seat") or "").strip(),"got_house_words":str(form.get("house_words") or "").strip(),"got_sigil":str(form.get("sigil") or "").strip(),"got_religion":str(form.get("religion") or "").strip(),"got_succession_custom":str(form.get("succession_custom") or "").strip(),"got_current_ruler":str(form.get("current_ruler") or "").strip(),"got_current_heir":str(form.get("current_heir") or "").strip(),"got_cadet_branch":str(form.get("cadet_branch") or "").strip(),"got_alliances":str(form.get("alliances") or "").strip(),"got_feuds":str(form.get("feuds") or "").strip(),"got_reputation":str(form.get("reputation") or "").strip(),"got_house_objective":str(form.get("house_objective") or "").strip(),"got_dragon_ownership":str(form.get("dragon_ownership") or "").strip(),"got_valyrian_steel":str(form.get("valyrian_steel") or "").strip()});house.data=data;house.version+=1;domain.journal(session,house,"upsert",base);save.revision+=1;request.session["got_notice"]=f"Saved House fields for {house.label}."
+    return RedirectResponse("/p/game-of-thrones#houses",status_code=303)
+
+
+@app.post("/api/migrations")
+async def add_migration(request: Request):
+    form=await request.form();sim_id=str(form.get("sim_id") or "");move_day=int_or_none(form.get("move_global_day"));to_country=str(form.get("to_country") or "").strip()
+    if move_day is None or move_day<1 or not to_country: raise HTTPException(400,"Choose a Sim, destination country, and valid move day.")
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        sim=session.get(Record,sim_id)
+        if not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404)
+        existing=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="migration",Record.deleted.is_(False))))
+        from_country=advanced.location_at(sim,max(1,move_day-1),existing)
+        sim_data=dict(sim.data or {})
+        if not sim_data.get("birth_country"): sim_data["birth_country"]=advanced.birth_country(sim)
+        payload={"sim_id":sim.id,"sim_name":sim.label,"move_global_day":move_day,"from_country":from_country,"to_country":to_country,"to_location":str(form.get("to_location") or "").strip(),"reason":str(form.get("reason") or "Migration").strip(),"notes":str(form.get("notes") or "").strip()}
+        move=Record(save_id=save.id,kind="migration",label=f"{sim.label}: {from_country} → {to_country}",global_day=move_day,data=payload);session.add(move);session.flush();domain.journal(session,move,"upsert",0)
+        if move_day<=save.global_day:
+            base=sim.version;sim_data.update({"country":to_country,"current_country":to_country,"current_location":payload["to_location"] or to_country});sim.data=sim_data;sim.version+=1;domain.journal(session,sim,"upsert",base)
+        elif sim.data!=sim_data:
+            base=sim.version;sim.data=sim_data;sim.version+=1;domain.journal(session,sim,"upsert",base)
+        save.revision+=2;request.session["world_notice"]=f"Recorded {sim.label}'s move from {from_country} to {to_country} on Global Day {move_day}."
+    return RedirectResponse("/p/world",status_code=303)
+
+
+@app.post("/api/migrations/{migration_id}/delete")
+def delete_migration(request: Request, migration_id: str):
+    with db() as session:
+        move=session.get(Record,migration_id)
+        if not move or move.kind!="migration" or move.deleted: raise HTTPException(404)
+        save=owned_save(request,session,move.save_id);sim=session.get(Record,str((move.data or {}).get("sim_id") or ""))
+        base=move.version;move.deleted=True;move.version+=1;domain.journal(session,move,"delete",base);save.revision+=1
+        if sim and sim.save_id==save.id and not sim.deleted:
+            remaining=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="migration",Record.deleted.is_(False),Record.id!=move.id)))
+            country=advanced.location_at(sim,save.global_day,remaining);data=dict(sim.data or {});sim_base=sim.version;data.update({"country":country,"current_country":country});sim.data=data;sim.version+=1;domain.journal(session,sim,"upsert",sim_base);save.revision+=1
+        request.session["world_notice"]="The migration was removed and the Sim's current country was recalculated from the remaining route."
+    return RedirectResponse("/p/world",status_code=303)
 
 
 @app.post("/defaults/install")

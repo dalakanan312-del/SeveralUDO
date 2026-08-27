@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import delete, func, select
 
-from app import accounts, auth, automation, backup_service, exports, insights, legacy_neon, names, notifications, sync, telemetry
+from app import accounts, advanced, auth, automation, avatar_rules, backup_service, core_rulesets, exports, game_of_thrones_rules, harry_potter_rules, insights, legacy_neon, names, notifications, sync, telemetry
 from app.automation import candidate as automation_candidate, classify_game_relationship, reconcile_sim, repair_relationship_classifications, repair_relationship_inbox
 from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, _store_game_portrait, attach_game_identity, estimate_new_sim_birth, imported_sim_match, report_checksum, receive as receive_clock
@@ -42,6 +42,172 @@ from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_core_rulesets_are_exclusive_and_morbid_tables_schedule_by_era(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Core alternatives");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Core alternatives",start_year=1300,days_per_year=4,global_day=1,settings={"core_ruleset_id":core_rulesets.MORBID})
+            session.add(save);session.flush()
+            session.add(Record(save_id=save.id,kind="roll_rule",label="Infant",data={"age_days":1,"die":"d20","bad_results":"1","active":True,"core_ruleset_id":core_rulesets.SEVERALUDO}))
+            sim=Record(save_id=save.id,kind="sim",label="Source Baby",global_day=1,data={"birth_global_day":1})
+            session.add(sim);session.flush();core_rulesets.sync_rules(session,save);schedule_rolls(session,save);session.flush()
+            rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False))))
+            self.assertTrue(rolls)
+            self.assertTrue(all((item.data or {}).get("core_ruleset_id")==core_rulesets.MORBID for item in rolls))
+            self.assertTrue(any((item.data or {}).get("bad_results")=="5,10,15,20" for item in rolls))
+            session.execute(delete(Record).where(Record.save_id==save.id));session.delete(save);session.delete(workspace);session.commit()
+
+    def test_classic_core_uses_odd_even_war_rolls_without_lifecycle_defaults(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Classic");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Classic",start_year=1890,days_per_year=2,global_day=50,settings={"core_ruleset_id":core_rulesets.CLASSIC_2023})
+            session.add(save);session.flush()
+            sim=Record(save_id=save.id,kind="sim",label="Soldier",global_day=1,data={"birth_global_day":1,"country":"United States"})
+            event=Record(save_id=save.id,kind="event",label="World War I",global_day=49,data={"start_global_day":49,"scope":"Global","roll_required":True,"die":"d20","bad_results":"20","active":True})
+            session.add_all([sim,event]);session.flush();core_rulesets.sync_rules(session,save)
+            self.assertEqual(schedule_event_rolls(session,save,[sim]),1)
+            roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll"))
+            self.assertEqual((roll.data["die"],roll.data["bad_results"]),("d6","1,3,5"))
+            self.assertEqual(roll.data["core_ruleset_id"],core_rulesets.CLASSIC_2023)
+            session.execute(delete(Record).where(Record.save_id==save.id));session.delete(save);session.delete(workspace);session.commit()
+
+    def test_game_of_thrones_catalog_and_no_year_zero_calendar(self):
+        self.assertEqual(len(game_of_thrones_rules.MODULES),69)
+        self.assertEqual(len(game_of_thrones_rules.EVENT_TABLES),6)
+        self.assertEqual({mode[0] for mode in game_of_thrones_rules.TIMELINE_MODES},{"canon","canon_compatible","alternate","original"})
+        save=ChronicleSave(start_year=-1,days_per_year=4,global_day=1)
+        self.assertEqual(game_of_thrones_rules.lore_year(save),-1)
+        save.global_day=5;self.assertEqual(game_of_thrones_rules.lore_year(save),1)
+        save.global_day=9;self.assertEqual(game_of_thrones_rules.lore_year(save),2)
+        self.assertEqual((game_of_thrones_rules.year_label(-1),game_of_thrones_rules.year_label(1)),("1 BC","1 AC"))
+
+    def test_game_of_thrones_addon_installs_and_preserves_long_night_choice(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            client.post("/saves",data={"name":f"Westeros {marker}","start_year":"-1","days_per_year":"4","pregnancy_days":"4"},follow_redirects=False)
+            response=client.post("/api/rule-packs",data={"rule_pack":["severaludo","game_of_thrones_decades"]},follow_redirects=False);self.assertEqual(response.status_code,303)
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Westeros {marker}"));save_id=save.id
+                rules=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule",Record.data["rule_pack_id"].as_string()==game_of_thrones_rules.PACK_ID)))
+                self.assertEqual(len(rules),75)
+                self.assertTrue(next(item for item in rules if item.data["code"]=="GOT-01").data["active"])
+                self.assertFalse(next(item for item in rules if item.data["code"]=="GOT-62").data["active"])
+            client.post("/api/game-of-thrones/modules/GOT-62",data={"enabled":"true"},follow_redirects=False)
+            client.post("/api/game-of-thrones/settings",data={"timeline_mode":"alternate","current_season":"Winter","season_length":"3","others_active":"true"},follow_redirects=False)
+            client.post("/api/rule-packs",data={"rule_pack":["severaludo"]},follow_redirects=False)
+            client.post("/api/rule-packs",data={"rule_pack":["severaludo","game_of_thrones_decades"]},follow_redirects=False)
+            page=client.get("/p/game-of-thrones");self.assertEqual(page.status_code,200);self.assertIn("69 INDEPENDENT MODULES",page.text);self.assertIn("1 BC",page.text)
+            with SessionLocal() as session:
+                save=session.get(ChronicleSave,save_id);walkers=session.scalar(select(Record).where(Record.save_id==save_id,Record.data["code"].as_string()=="GOT-62"))
+                self.assertTrue(walkers.data["active"]);self.assertEqual(save.settings["got_current_season"],"Winter");self.assertTrue(save.settings["got_others_active"])
+                session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_harry_potter_catalog_has_all_modules_tables_and_timeline_modes(self):
+        self.assertEqual(len(harry_potter_rules.MODULES),19)
+        self.assertEqual(len(harry_potter_rules.EVENT_TABLES),5)
+        self.assertEqual({mode[0] for mode in harry_potter_rules.TIMELINE_MODES},{"canon","canon_compatible","alternate"})
+        self.assertEqual((harry_potter_rules.year_label(-500),harry_potter_rules.year_label(1692)),("500 BCE","1,692 CE"))
+        self.assertIn("HP-05",harry_potter_rules.DEPENDENCIES["HP-06"])
+
+    def test_harry_potter_addon_installs_edits_and_restores_choices(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            client.post("/saves",data={"name":f"Wizarding {marker}","start_year":"1300","days_per_year":"4","pregnancy_days":"4"},follow_redirects=False)
+            response=client.post("/api/rule-packs",data={"rule_pack":["severaludo","harry_potter_decades"]},follow_redirects=False);self.assertEqual(response.status_code,303)
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Wizarding {marker}"));save_id=save.id
+                rules=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule",Record.data["rule_pack_id"].as_string()==harry_potter_rules.PACK_ID)))
+                self.assertEqual(len(rules),24)
+                self.assertTrue(next(item for item in rules if item.data["code"]=="HP-04").data["active"])
+                self.assertFalse(next(item for item in rules if item.data["code"]=="HP-T04").data["active"])
+            client.post("/api/harry-potter/modules/HP-13",data={"enabled":"true"},follow_redirects=False)
+            client.post("/api/harry-potter/settings",data={"timeline_mode":"canon_compatible"},follow_redirects=False)
+            client.post("/api/rule-packs",data={"rule_pack":["severaludo"]},follow_redirects=False)
+            client.post("/api/rule-packs",data={"rule_pack":["severaludo","harry_potter_decades"]},follow_redirects=False)
+            page=client.get("/p/harry-potter");self.assertEqual(page.status_code,200);self.assertIn("19 INDEPENDENT MODULES",page.text);self.assertIn("Canon-Compatible Timeline",page.text)
+            with SessionLocal() as session:
+                save=session.get(ChronicleSave,save_id);house=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule",Record.data["code"].as_string()=="HP-13"))
+                self.assertTrue(house.data["active"]);self.assertEqual(save.settings["harry_potter_timeline_mode"],"canon_compatible")
+                session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_avatar_dates_and_module_catalog_match_the_addon(self):
+        self.assertEqual((avatar_rules.date_label(-12),avatar_rules.date_label(0),avatar_rules.date_label(174)),("12 BG","0 AG","174 AG"))
+        self.assertEqual(len(avatar_rules.MODULES),50)
+        self.assertEqual(avatar_rules.MODULES[0]["code"],"ATLA-01")
+        self.assertEqual(avatar_rules.MODULES[-1]["default"],"Off")
+        self.assertIn("ATLA-49",avatar_rules.DEPENDENCIES["ATLA-50"])
+
+    def test_avatar_addon_installs_idempotently_and_keeps_module_choices(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            client.post("/saves",data={"name":f"Avatar {marker}","start_year":"-12","days_per_year":"4","pregnancy_days":"4"},follow_redirects=False)
+            first=client.post("/api/rule-packs",data={"rule_pack":["severaludo","avatar_decades"]},follow_redirects=False)
+            self.assertEqual(first.status_code,303)
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Avatar {marker}"));save_id=save.id
+                modules=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule")))
+                self.assertEqual(len(modules),50)
+                self.assertTrue(next(item for item in modules if (item.data or {}).get("code")=="ATLA-01").data["active"])
+                self.assertFalse(next(item for item in modules if (item.data or {}).get("code")=="ATLA-50").data["active"])
+            client.post("/api/avatar/modules/ATLA-10",data={"enabled":"true"},follow_redirects=False)
+            client.post("/api/rule-packs",data={"rule_pack":["severaludo"]},follow_redirects=False)
+            client.post("/api/rule-packs",data={"rule_pack":["severaludo","avatar_decades"]},follow_redirects=False)
+            with SessionLocal() as session:
+                modules=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule")))
+                protection=next(item for item in modules if (item.data or {}).get("code")=="ATLA-10")
+                self.assertEqual(len(modules),50);self.assertTrue(protection.data["module_enabled"]);self.assertTrue(protection.data["active"])
+            page=client.get("/p/avatar")
+            self.assertEqual(page.status_code,200);self.assertIn("50 INDEPENDENT MODULES",page.text);self.assertIn("12 BG",page.text)
+            with SessionLocal() as session:
+                session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_world_history_keeps_birth_country_until_the_first_move(self):
+        save=ChronicleSave(start_year=1500,days_per_year=4,global_day=20)
+        sim=Record(id="traveler",kind="sim",label="Anne Traveler",global_day=1,data={"birth_global_day":1,"country":"England"})
+        move=Record(id="move",kind="migration",label="Anne moved",global_day=12,data={"sim_id":"traveler","move_global_day":12,"from_country":"England","to_country":"France"})
+        self.assertEqual(advanced.birth_country(sim),"England")
+        self.assertEqual(advanced.location_at(sim,11,[move]),"England")
+        self.assertEqual(advanced.location_at(sim,12,[move]),"France")
+        before=advanced.world_snapshot([sim,move],save,1501)
+        after=advanced.world_snapshot([sim,move],save,1503)
+        self.assertEqual(before["countries"][0][0],"England")
+        self.assertEqual(after["countries"][0][0],"France")
+
+    def test_legacy_lab_reports_conflicts_and_never_saves_simulations(self):
+        save=ChronicleSave(start_year=1500,days_per_year=4,global_day=20,pregnancy_days=4,settings={"kinship_detection_generations":3})
+        sim=Record(id="bad-date",kind="sim",label="Date Conflict",global_day=10,data={"birth_global_day":10,"death_global_day":5})
+        pregnancy=Record(kind="pregnancy",label="Active pregnancy",global_day=24,data={"status":"Active","conception_global_day":20,"due_global_day":24})
+        report=advanced.consistency_report([sim,pregnancy],save)
+        self.assertTrue(any(item["title"]=="Death precedes birth" for item in report["issues"]))
+        simulation=advanced.simulate_rules([sim,pregnancy],save,7,5,1.5)
+        self.assertFalse(simulation["saved"])
+        self.assertEqual(simulation["pregnancy_changes"][0]["simulated_due"],27)
+        self.assertEqual(save.pregnancy_days,4)
+
+    def test_migration_rule_pack_and_legacy_lab_routes(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            created=client.post("/saves",data={"name":f"Legacy Lab {marker}","start_year":"1500","days_per_year":"4","pregnancy_days":"4"},follow_redirects=False)
+            self.assertEqual(created.status_code,303)
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Legacy Lab {marker}"));save.global_day=20
+                sim=Record(save_id=save.id,kind="sim",label=f"Traveler {marker}",global_day=1,data={"birth_global_day":1,"country":"England","sex":"Female","generation":1})
+                session.add(sim);session.commit();save_id,sim_id=save.id,sim.id
+            selected=client.post("/api/rule-packs",data={"rule_pack":["severaludo","historical_events"]},follow_redirects=False)
+            self.assertEqual(selected.status_code,303)
+            moved=client.post("/api/migrations",data={"sim_id":sim_id,"move_global_day":"12","to_country":"France","to_location":"Paris","reason":"Immigration"},follow_redirects=False)
+            self.assertEqual(moved.status_code,303)
+            with SessionLocal() as session:
+                sim=session.get(Record,sim_id);move=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="migration"))
+                self.assertEqual((sim.data["birth_country"],sim.data["country"]),("England","France"));move_id=move.id
+                self.assertEqual(session.get(ChronicleSave,save_id).settings["selected_rule_packs"],["severaludo","historical_events"])
+            world=client.get("/p/world?year=1503");lab=client.get("/p/legacy-lab");bios=client.get(f"/exports/{save_id}/biographies.md")
+            self.assertEqual((world.status_code,lab.status_code,bios.status_code),(200,200,200))
+            self.assertIn("France",world.text);self.assertIn("Safe rule experiment",lab.text);self.assertIn(f"Traveler {marker}",bios.text)
+            removed=client.post(f"/api/migrations/{move_id}/delete",follow_redirects=False);self.assertEqual(removed.status_code,303)
+            with SessionLocal() as session:
+                self.assertEqual(session.get(Record,sim_id).data["country"],"England")
+                session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
     def test_matchmaking_kinship_depth_is_configurable(self):
         common=Record(id="common",kind="sim",label="Common",data={})
         left1=Record(id="left1",kind="sim",label="Left 1",data={"mother_id":"common"});right1=Record(id="right1",kind="sim",label="Right 1",data={"mother_id":"common"})

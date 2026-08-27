@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import advanced, core_rulesets
 from .models import ChronicleSave, Record
 
 
@@ -192,6 +193,10 @@ def _minimal_pdf(lines: list[str]) -> bytes:
 
 def chronicle_pdf(session: Session, save: ChronicleSave, story: dict) -> bytes:
     lines = [f"THE CHRONICLE OF {save.name}", f"Through historical year {story['year']}", "", story["opening"], ""]
+    selected_packs=list((save.settings or {}).get("selected_rule_packs") or [])
+    names=[core_rulesets.current_catalog_entry(save)["name"]]
+    names.extend(pack["name"] for pack in advanced.RULE_PACKS if pack["id"] in selected_packs)
+    lines.extend(["RULE PACKS", ", ".join(names), ""])
     for entry in reversed(story.get("authored_entries") or []):
         lines.extend([entry.label, str((entry.data or {}).get("body") or ""), ""])
     if story.get("occult_outcomes"):
@@ -204,5 +209,18 @@ def chronicle_pdf(session: Session, save: ChronicleSave, story: dict) -> bytes:
         lines.extend([f"Year {chapter['year']}", chapter["summary"]])
         lines.extend(f"- {entry.label}" for entry in chapter["entries"])
         lines.append("")
+    rows=records_for(session,save)
+    migrations=advanced.migrations_for(rows)
+    if migrations:
+        lines.extend(["MIGRATION LEDGER", ""])
+        for move in migrations:
+            data=move.data or {}
+            lines.append(f"- Year {advanced.year_for(save,move.global_day)}: {move.label} ({data.get('reason') or 'Migration'})")
+        lines.append("")
+    biographies=advanced.biographies(rows,save)
+    if biographies:
+        lines.extend(["BIOGRAPHICAL REGISTER", ""])
+        for bio in biographies:
+            lines.extend([bio["sim"].label, bio["text"], ""])
     wrapped = [part for line in lines for part in (textwrap.wrap(str(line), 100) or [""])]
     return _minimal_pdf(wrapped)
