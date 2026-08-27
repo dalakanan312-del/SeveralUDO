@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import Change, ChronicleSave, Portrait, Record
-from . import advanced, calendar_utils, core_rulesets, occult_rules, sync
+from . import advanced, calendar_utils, core_rulesets, decade_portraits, occult_rules, sync
 from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
 
 
@@ -2447,7 +2447,8 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     created += schedule_occult_rolls(session, save, sims)
     created += schedule_event_rolls(session, save, sims)
     created += schedule_campaign_rolls(session, save, sims)
-    save.revision += created + marriage_retired
+    portrait_prompt_created = decade_portraits.schedule_prompt(session, save)
+    save.revision += created + marriage_retired + portrait_prompt_created
     return created
 
 

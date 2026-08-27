@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import delete, func, select
 
-from app import accounts, advanced, auth, automation, avatar_rules, backup_service, core_rulesets, exports, game_of_thrones_rules, harry_potter_rules, insights, legacy_neon, names, notifications, sync, telemetry
+from app import accounts, advanced, auth, automation, avatar_rules, backup_service, core_rulesets, decade_portraits, exports, game_of_thrones_rules, harry_potter_rules, insights, legacy_neon, names, notifications, sync, telemetry
 from app.automation import candidate as automation_candidate, classify_game_relationship, reconcile_sim, repair_relationship_classifications, repair_relationship_inbox
 from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, _store_game_portrait, attach_game_identity, estimate_new_sim_birth, imported_sim_match, report_checksum, receive as receive_clock
@@ -42,6 +42,22 @@ from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_decade_portrait_prompt_is_unique_and_composite_uses_solid_background(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Portrait decade");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Portrait decade",start_year=1500,days_per_year=4,global_day=40)
+            session.add(save);session.flush()
+            self.assertEqual(decade_portraits.schedule_prompt(session,save),0)
+            save.global_day=41
+            self.assertEqual(decade_portraits.schedule_prompt(session,save),1)
+            self.assertEqual(decade_portraits.schedule_prompt(session,save),0)
+            candidate=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate"))
+            self.assertEqual((candidate.data["action"],candidate.data["payload"]["portrait_year"]),("save_portrait",1510))
+            raw=io.BytesIO();Image.new("RGB",(100,140),(200,150,100)).save(raw,format="JPEG")
+            composed=Image.open(io.BytesIO(decade_portraits._compose("Test House",1510,[("Anne",raw.getvalue())],"#123456"))).convert("RGB")
+            self.assertTrue(all(abs(actual-expected)<=2 for actual,expected in zip(composed.getpixel((0,0)),(18,52,86))))
+            session.rollback()
+
     def test_core_rulesets_are_exclusive_and_morbid_tables_schedule_by_era(self):
         with SessionLocal() as session:
             workspace=Workspace(name="Core alternatives");session.add(workspace);session.flush()
@@ -704,6 +720,18 @@ class CoreSmokeTests(unittest.TestCase):
                     self.assertEqual((result["matched"],result["updated"]),(1,1))
                     portrait=session.scalar(select(Portrait).where(Portrait.record_id==sim.id))
                     self.assertEqual((portrait.stage,portrait.source),("adult","tray-library-game"))
+                    home=Record(save_id=save.id,kind="household",label="Tray House",data={"active":True})
+                    session.add(home);session.flush();sim.data={**sim.data,"current_household_id":home.id};session.flush()
+                    archive=decade_portraits.save_from_tray(session,save,1510,"#2b2118",root=root)
+                    self.assertEqual((archive["created"],archive["missing"]),(1,[]))
+                    plate=archive["records"][0]
+                    self.assertEqual((plate.data["household_id"],plate.data["member_names"]),(home.id,["Tray Portrait"]))
+                    plate_image=session.scalar(select(Portrait).where(Portrait.record_id==plate.id))
+                    self.assertEqual((plate_image.mime_type,plate_image.source),("image/webp","tray-household-decade"))
+                    snapshot=archive["snapshot"]
+                    self.assertEqual((snapshot.kind,snapshot.data["portrait_year"],snapshot.data["household_names"]),("decade_snapshot",1510,["Tray House"]))
+                    snapshot_image=session.scalar(select(Portrait).where(Portrait.record_id==snapshot.id))
+                    self.assertEqual((snapshot_image.mime_type,snapshot_image.source),("image/webp","tray-decade-snapshot"))
                     session.rollback()
 
     def test_automatic_save_portrait_does_not_replace_manual_life_stage_photo(self):

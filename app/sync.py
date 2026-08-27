@@ -15,7 +15,7 @@ SYNC_KINDS = {
     "campaign", "service", "migration", "play_rotation", "family_plan", "portrait_meta",
     "task", "source_archive", "death_causes", "planner_rule", "detection_candidate",
     "death", "era_guidance", "game_candidate", "session_journal", "family_plan", "addon_rule",
-    "save_metadata", "portrait_blob", "dice_audit_record", "clock_state", "story_entry", "name_entry", "multiple_birth_rule", "illness_signature", "occult_rule",
+    "save_metadata", "portrait_blob", "dice_audit_record", "clock_state", "story_entry", "name_entry", "multiple_birth_rule", "illness_signature", "occult_rule", "household_portrait", "decade_snapshot",
 }
 
 SECRET_MARKERS = ("password", "secret", "token", "api_key", "apikey", "database_url", "connection_string", "oauth")

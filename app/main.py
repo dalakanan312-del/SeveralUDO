@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, names, notifications, occult_rules, portraits, save_scanner, tray_scanner, sync, storyline, telemetry, insights
+from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, names, notifications, occult_rules, portraits, save_scanner, tray_scanner, sync, storyline, telemetry, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -610,11 +610,14 @@ def home(request: Request):
         if save:
             counts = dict(session.execute(select(Record.kind, func.count()).where(Record.save_id == save.id, Record.deleted.is_(False)).group_by(Record.kind)).all())
         selected_rule_packs=list((save.settings or {}).get("selected_rule_packs") or []) if save else []
+        decade_snapshots=list(session.scalars(select(Record).where(
+            Record.save_id==save.id,Record.kind=="decade_snapshot",Record.deleted.is_(False),
+        ).order_by(Record.data["portrait_year"].as_integer().desc()).limit(12))) if save else []
         return templates.TemplateResponse(request, "dashboard.html", {
             **ctx, "counts": counts, "rule_packs":advanced.RULE_PACKS,
             "core_rulesets":core_rulesets.CORE_RULESETS,
             "selected_core_ruleset":core_rulesets.selected_core(save) if save else core_rulesets.SEVERALUDO,
-            "selected_rule_packs":selected_rule_packs,
+            "selected_rule_packs":selected_rule_packs,"decade_snapshots":decade_snapshots,
         })
 
 
@@ -1167,6 +1170,10 @@ def feature_page(request: Request, page: str):
         if save and page == "challenge":
             domain.schedule_marriage_rolls(session, save)
             save.revision += domain.schedule_campaign_rolls(session, save)
+        if save:
+            added_portrait_prompt=decade_portraits.schedule_prompt(session,save)
+            if added_portrait_prompt:
+                save.revision += added_portrait_prompt
         if save and page != "automation":
             ctx["automation_pending"] = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending")) or 0
         kind = KIND_BY_PAGE.get(page)
@@ -1658,6 +1665,7 @@ def feature_page(request: Request, page: str):
             ctx["legacy_detections"] = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="detection_candidate",Record.deleted.is_(False)).order_by(Record.created_at.desc()).limit(50)))
             digest_rows=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending").order_by(Record.created_at.asc())))
             ctx["automation_digest"]=advanced.automation_digest(digest_rows)
+            ctx["automation_notice"]=request.session.pop("automation_notice",None)
         if page == "relationships" and save:
             ctx["relationship_notice"] = request.session.pop("relationship_notice", None)
         if save and page in {"sims", "relationships", "households", "pregnancies", "illnesses", "automation", "rolls"}:
@@ -2105,7 +2113,11 @@ def household_profile(request: Request, household_id: str):
         sims=sorted(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False))),key=insights.sim_number,reverse=True)
         members=[sim for sim in sims if (sim.data or {}).get("current_household_id")==household.id]
         census=insights.household_census(insights.all_records(session,save.id),save)["rows"].get(household.id,{})
-        ctx=context(request,session,household=household,all_sims=sims,members=members,household_census=census,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),title=household.label,page="households")
+        household_portraits=list(session.scalars(select(Record).where(
+            Record.save_id==save.id,Record.kind=="household_portrait",Record.deleted.is_(False),
+            Record.data["household_id"].as_string()==household.id,
+        ).order_by(Record.data["portrait_year"].as_integer().desc())))
+        ctx=context(request,session,household=household,all_sims=sims,members=members,household_census=census,household_portraits=household_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),title=household.label,page="households")
         return templates.TemplateResponse(request,"household_profile.html",ctx)
 
 
@@ -2284,7 +2296,29 @@ async def accept_automation(request: Request, candidate_id: str):
         def payload_household(name):
             record=session.get(Record,str(payload.get(name) or "")) if payload.get(name) else None
             return record if record and record.kind=="household" and record.save_id==save.id and not record.deleted else None
-        if action=="unknown_illness" and sim:
+        if action=="save_portrait":
+            portrait_year=int_or_none(value("portrait_year",payload.get("portrait_year"))) or historical_year(save,save.global_day)
+            try: portrait_year=int(portrait_year)
+            except (TypeError,ValueError): portrait_year=save.start_year+(save.global_day-1)//max(1,save.days_per_year)
+            result=decade_portraits.save_from_tray(session,save,portrait_year,str(value("background_color",payload.get("background_color")) or decade_portraits.DEFAULT_BACKGROUND))
+            if not result["records"]:
+                request.session["automation_notice"]=(
+                    "No current household portraits were found yet. In The Sims 4, save each active household to My Library, "
+                    "then return here and press Save portrait again. The reminder is still waiting."
+                )
+                return RedirectResponse("/p/automation",status_code=303)
+            resolved_record=result["records"][0]
+            payload={**payload,"scan_result":{
+                "portraits_saved":len(result["records"]),"tray_portraits_available":result["available"],
+                "missing_names":result["missing"],"ambiguous_names":result["ambiguous"],
+                "background_color":result["background_color"],
+            }}
+            item.data={**item.data,"payload":payload}
+            request.session["automation_notice"]=(
+                f"Saved {len(result['records'])} household portrait{'s' if len(result['records'])!=1 else ''} and one combined Decade Snapshot for {portrait_year}. "
+                f"{len(result['missing'])} current household member{'s' if len(result['missing'])!=1 else ''} had no unambiguous Tray portrait."
+            )
+        elif action=="unknown_illness" and sim:
             illness_name=str(value("illness_name",payload.get("suggested_name") or "Unclassified illness") or "Unclassified illness").strip()
             onset=int_or_none(value("onset_global_day")) or save.global_day
             severity=str(value("severity","Moderate") or "Moderate")
