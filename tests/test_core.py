@@ -35,6 +35,7 @@ from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWork
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
 from app.save_scanner import SIM_PORTRAIT_RESOURCE, _embedded_sim_portraits, _parse_save_slot, _parse_sim, compare_scan, import_portraits, protobuf_fields
+from app.tray_scanner import decode_sgi, discover_portraits as discover_tray_portraits, import_portraits as import_tray_portraits
 from app.session_policy import BROWSER_MODE, PERSISTENT_MODE, REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware
 from desktop_launcher import RelaySupervisor, clock_sync_folder, relay_heartbeat_fresh
 from starlette.middleware.sessions import SessionMiddleware
@@ -493,6 +494,42 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(set(found),{"123"})
         self.assertEqual(found["123"]["portrait_mime_type"],"image/jpeg")
         self.assertEqual(found["123"]["portrait_source"],"save-file-game")
+
+    def test_tray_scanner_links_household_name_to_individual_sgi_portrait(self):
+        def varint(value):
+            out=bytearray()
+            while value>127: out.append((value&127)|128);value>>=7
+            out.append(value);return bytes(out)
+        def fixed64(field,value): return varint((field<<3)|1)+int(value).to_bytes(8,"little")
+        def message(field,value): return varint((field<<3)|2)+varint(len(value))+value
+        def text(field,value): return message(field,value.encode())
+        sim_blob=fixed64(1,0x1234)+text(5,"Tray")+text(6,"Portrait")
+        household_blob=message(6,sim_blob)
+        payload=message(1,household_blob)
+        household=b"\x02\0\0\0"+(len(payload)+17).to_bytes(4,"little")+b"\0"*4+len(payload).to_bytes(4,"little")+payload+b"\x01\0\0\0\0"
+        output=io.BytesIO();Image.new("RGB",(48,48),(120,80,40)).save(output,format="JPEG")
+        image=output.getvalue();key=bytes.fromhex("4125e6cd47bab21a")
+        encrypted=bytes(value^key[index%len(key)] for index,value in enumerate(image))
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            (root/"0x00000000!0x0000000000009999.householdbinary").write_bytes(household)
+            (root/"0x00000013!0x0000000000001234.sgi").write_bytes(b"\0"*24+encrypted)
+            found=discover_tray_portraits(root)
+            self.assertEqual([(item.name,item.tray_sim_id) for item in found],[("Tray Portrait",0x1234)])
+            self.assertEqual(decode_sgi(found[0].image_path.read_bytes()),image)
+
+            with TestClient(app):
+                with SessionLocal() as session:
+                    template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                    save=ChronicleSave(workspace_id=template.workspace_id,name="Tray portrait test",global_day=1)
+                    session.add(save);session.flush()
+                    sim=Record(save_id=save.id,kind="sim",label="Tray Portrait",data={"game_age_stage":"adult"})
+                    session.add(sim);session.flush()
+                    result=import_tray_portraits(session,save,root=root)
+                    self.assertEqual((result["matched"],result["updated"]),(1,1))
+                    portrait=session.scalar(select(Portrait).where(Portrait.record_id==sim.id))
+                    self.assertEqual((portrait.stage,portrait.source),("adult","tray-library-game"))
+                    session.rollback()
 
     def test_automatic_save_portrait_does_not_replace_manual_life_stage_photo(self):
         with TestClient(app):
@@ -1006,7 +1043,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.3.1")
+            self.assertEqual(health.json()["version"], "4.3.2")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)

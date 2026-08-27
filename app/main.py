@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, auth, automation, backup_service, calendar_utils, clock, clock_bundle, dice, exports, game_metadata, names, notifications, occult_rules, portraits, save_scanner, sync, storyline, telemetry, insights
+from . import accounts, auth, automation, backup_service, calendar_utils, clock, clock_bundle, dice, exports, game_metadata, names, notifications, occult_rules, portraits, save_scanner, tray_scanner, sync, storyline, telemetry, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -83,7 +83,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.3.1")
+app = FastAPI(title="Decades Tracker", version="4.3.2")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -3078,6 +3078,50 @@ def scan_sim_portrait(request: Request, sim_id: str):
     return RedirectResponse(f"/sims/{sim_id}#portraits", status_code=303)
 
 
+@app.post("/api/tray/portraits")
+def import_tray_portraits(request: Request):
+    """Import exact-name portraits from the desktop user's Sims 4 Tray library."""
+    if not settings.local_mode:
+        raise HTTPException(400, "Tray scanning is available in the desktop edition.")
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save:
+            raise HTTPException(400, "Open a tracker save first.")
+        result = tray_scanner.import_portraits(session, save)
+        request.session["game_save_notice"] = (
+            f"Tray scan finished: {result['updated']} portrait(s) added or refreshed, "
+            f"{result['unchanged']} already current, {result['protected']} manual portrait(s) preserved, "
+            f"{result['ambiguous']} duplicate-name match(es) skipped, and {result['invalid']} invalid image(s) skipped. "
+            f"The Tray library contained {result['available']} linked individual portrait file(s)."
+        )
+    return RedirectResponse("/p/clock#save-scan", status_code=303)
+
+
+@app.post("/sims/{sim_id}/scan-tray-portrait")
+def scan_sim_tray_portrait(request: Request, sim_id: str):
+    if not settings.local_mode:
+        raise HTTPException(400, "Tray scanning is available in the desktop edition.")
+    with db() as session:
+        sim = session.get(Record, sim_id)
+        if not sim or sim.kind != "sim" or sim.deleted:
+            raise HTTPException(404)
+        save = owned_save(request, session, sim.save_id)
+        result = tray_scanner.import_portraits(session, save, target_record_id=sim.id)
+        if result["updated"]:
+            request.session["portrait_notice"] = f"Imported {sim.label}’s current life-stage portrait from the Sims 4 Tray library."
+        elif result["protected"]:
+            request.session["portrait_notice"] = "A manual portrait already fills this life stage, so it was preserved."
+        elif result["unchanged"]:
+            request.session["portrait_notice"] = "The newest matching Tray portrait is already current."
+        elif result["ambiguous"]:
+            request.session["portrait_notice"] = "The Tray match was ambiguous, so no portrait was assigned automatically."
+        elif not result["available"]:
+            request.session["portrait_notice"] = "No individual Sim portraits were found in the Sims 4 Tray folder. Save this household to My Library in game, then retry."
+        else:
+            request.session["portrait_notice"] = "No exact name match was found in the Tray library. Save this Sim or household to My Library with the same name, then retry."
+    return RedirectResponse(f"/sims/{sim_id}#portraits", status_code=303)
+
+
 @app.get("/downloads/clock-sync")
 def download_clock_sync(request: Request):
     with db() as session:
@@ -3141,11 +3185,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.3.1-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.3.2-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.3.1-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.3.2-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

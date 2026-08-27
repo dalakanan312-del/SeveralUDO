@@ -277,11 +277,11 @@ def _store_game_portrait(session: Session, save: ChronicleSave, sim: Record, sna
     # Older manual uploads used title-cased stage names while automatic game
     # thumbnails used lowercase names. Treat both spellings as the same slot,
     # and always prefer the player's portrait when both are present.
-    item = next((value for value in stage_items if value.source not in {"clock-sync-game", "save-file-game"}),
+    item = next((value for value in stage_items if value.source not in {"clock-sync-game", "save-file-game", "tray-library-game"}),
                 stage_items[0] if stage_items else None)
     # Automatic detection may refresh its own thumbnails, but it must never
     # replace a portrait the player uploaded, generated, restored or synced.
-    automatic_sources = {"clock-sync-game", "save-file-game"}
+    automatic_sources = {"clock-sync-game", "save-file-game", "tray-library-game"}
     if item and item.source not in automatic_sources:
         return False
     if item and item.image == normalized:

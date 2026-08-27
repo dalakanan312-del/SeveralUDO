@@ -141,9 +141,13 @@
 {% if local_mode %}
 <section class="panel" id="save-scan">
   <p class="eyebrow">NO MOD REQUIRED · READ ONLY</p>
-  <h2>Scan a Sims 4 save file</h2>
+  <h2>Scan Sims 4 portraits and save data</h2>
   <p>This supplements Clock Sync by reading the selected primary save without changing it. It can find active/player households, Sims, names, life-stage progress, funds, significant-other hints, pregnancy progress, the saved game day/time, and any individual Sim portraits embedded by the game. Detected portraits fill the matching life-stage photo but never replace a manual upload. Live illnesses, traits, skills, milestones, parent detail and moment-to-moment changes still come from Clock Sync.</p>
   {% if game_save_notice %}<div class="notice">{{game_save_notice}}</div>{% endif %}
+  <form action="/api/tray/portraits" method="post" class="portrait-scan-form">
+    <button class="primary">Scan My Library for all Sim portraits</button>
+    <small>Reads individual Sim portraits from the Sims 4 Tray folder and matches them by the names stored in each household. Duplicate names are skipped and manual portraits are preserved.</small>
+  </form>
   {% if game_save_files %}
   <form action="/api/game-save/scan" method="post">
     <label>Detected save<select name="file_name">{% for item in game_save_files %}<option value="{{item.path.name}}">{{item.path.name}} · {{item.modified_at.strftime('%b %d, %Y %I:%M %p')}} · {{(item.size/1048576)|round(1)}} MB</option>{% endfor %}</select></label>
