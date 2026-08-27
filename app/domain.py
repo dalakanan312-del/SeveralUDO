@@ -2161,6 +2161,108 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
     return created
 
 
+def schedule_campaign_rolls(session: Session, save: ChronicleSave, sims: list[Record] | None = None) -> int:
+    """Generate one war/campaign obligation for each living eligible Sim."""
+    sims = sims if sims is not None else list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    )))
+    campaigns = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "campaign", Record.deleted.is_(False),
+    )))
+    households = {item.id:item for item in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
+    ))}
+    existing = set(session.scalars(select(Record.data["source"].as_string()).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["source"].as_string().like("campaign:%"),
+    )))
+    created = 0
+    for campaign in campaigns:
+        data = campaign.data or {}
+        try: due = int(data.get("start_global_day", campaign.global_day))
+        except (TypeError, ValueError): continue
+        if not (1 <= due <= save.global_day and bool(data.get("active", True)) and bool(data.get("roll_required"))): continue
+        spec = event_roll_configuration(campaign)
+        allowed_sexes = {value.strip().casefold() for value in str(data.get("eligible_sexes") or "All").split(",") if value.strip()}
+        allowed_classes = {value.strip().casefold() for value in str(data.get("eligible_classes") or "All").split(",") if value.strip()}
+        minimum = int(data.get("min_age_days") or 0); maximum = int(data.get("max_age_days") or 100000)
+        for sim in sims:
+            sim_data = sim.data or {}; birth = sim_data.get("birth_global_day", sim.global_day); death = sim_data.get("death_global_day")
+            source = f"campaign:{campaign.id}:{sim.id}"
+            if source in existing or birth is None or bool(sim_data.get("game_was_dead")) or (death is not None and int(death) <= due): continue
+            age = due - int(birth)
+            if age < minimum or age > maximum: continue
+            sex = str(sim_data.get("sex") or "").casefold()
+            if allowed_sexes and "all" not in allowed_sexes and sex not in allowed_sexes: continue
+            household = households.get(str(sim_data.get("current_household_id") or "")); household_data = household.data if household else {}
+            social = str(sim_data.get("social_class") or household_data.get("social_class") or "").casefold()
+            if allowed_classes and "all" not in allowed_classes and social not in allowed_classes: continue
+            target = data.get("location") or "All"
+            places = " ".join(str(value or "") for value in (sim_data.get("country"), sim_data.get("location"), sim_data.get("last_game_world"), household_data.get("country"), household_data.get("location"), (save.settings or {}).get("challenge_location")))
+            if _normalized_location(target) not in {"", "all", "global", "worldwide"} and not _event_location_matches(target, places): continue
+            payload = {
+                "campaign_id":campaign.id,"source_id":campaign.id,"sim_id":sim.id,"sim_name":sim.label,
+                "roll_type":f"War — {campaign.label}","die":spec["die"],"bad_results":spec["bad_results"],
+                "result_rules":spec["result_rules"],"failure_outcome":spec["failure_outcome"],
+                "failure_is_lethal":spec["failure_is_lethal"],"nonlethal":not spec["failure_is_lethal"],
+                "source":source,"due_global_day":due,"completed":False,"campaign_role":data.get("role") or "Conscript",
+            }
+            roll = Record(save_id=save.id,kind="roll",label=f"{campaign.label} — {sim.label}",global_day=due,data=payload)
+            session.add(roll);session.flush();journal(session,roll,"upsert",0);existing.add(source);created += 1
+    return created
+
+
+def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Record, actual: int) -> int:
+    """Schedule the configured event/war follow-up only when its trigger matches."""
+    data = origin.data or {}; source_id = data.get("campaign_id") or data.get("event_id")
+    source_record = session.get(Record, source_id) if source_id else None
+    if not source_record or source_record.deleted: return 0
+    config = source_record.data or {}
+    if not bool(config.get("followup_enabled")): return 0
+    trigger = str(config.get("followup_trigger_results") or data.get("bad_results") or "")
+    if trigger and not failed(actual, trigger): return 0
+    sim_id = str(data.get("sim_id") or ""); sim = session.get(Record, sim_id) if sim_id else None
+    if not sim or sim.deleted: return 0
+    source = f"conditional-followup:{origin.id}"
+    exists = session.scalar(select(Record.id).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["source"].as_string() == source,
+    ).limit(1))
+    if exists: return 0
+    due = save.global_day + max(0, int(config.get("followup_delay_days") or 0)); label = str(config.get("followup_label") or f"{source_record.label} follow-up")
+    result_rules = str(config.get("followup_result_rules") or config.get("followup_bad_results") or "")
+    bad_results = _result_numbers(result_rules) if ":" in result_rules else result_rules
+    lethal = bool(config.get("followup_failure_is_lethal")) or _lethal_outcome(result_rules)
+    followup = Record(save_id=save.id,kind="roll",label=f"{sim.label} — {label}",global_day=due,data={
+        "sim_id":sim.id,"sim_name":sim.label,"event_id":data.get("event_id"),"campaign_id":data.get("campaign_id"),
+        "origin_roll_id":origin.id,"roll_type":label,"die":config.get("followup_die") or "d20",
+        "bad_results":bad_results,"result_rules":result_rules,"failure_is_lethal":lethal,"nonlethal":not lethal,
+        "source":source,"due_global_day":due,"completed":False,"automatic_followup":True,
+    })
+    session.add(followup);session.flush();journal(session,followup,"upsert",0)
+    origin.data={**origin.data,"event_followup_roll_id":followup.id,"event_followup_processed":True}
+    return 1
+
+
+def _record_campaign_service(session: Session, save: ChronicleSave, roll: Record) -> bool:
+    data = roll.data or {}; campaign_id = str(data.get("campaign_id") or ""); sim_id = str(data.get("sim_id") or "")
+    if not campaign_id or not sim_id: return False
+    campaign=session.get(Record,campaign_id);sim=session.get(Record,sim_id)
+    if not campaign or not sim: return False
+    outcome=str(data.get("outcome") or "Completed");folded=outcome.casefold()
+    status="Killed" if _lethal_outcome(outcome) else "Injured" if any(word in folded for word in ("injur","wound","maim")) else "Missing" if any(word in folded for word in ("missing","captur","imprison")) else "Returned" if any(word in folded for word in ("return","surviv","complete","passed")) else "Active"
+    existing=session.scalar(select(Record).where(
+        Record.save_id==save.id,Record.kind=="service",Record.deleted.is_(False),
+        Record.data["campaign_id"].as_string()==campaign_id,Record.data["sim_id"].as_string()==sim_id,
+    ).limit(1))
+    payload={"campaign_id":campaign_id,"sim_id":sim_id,"sim_name":sim.label,"role":data.get("campaign_role") or "Conscript","status":status,"enlisted_global_day":int((campaign.data or {}).get("start_global_day",campaign.global_day) or save.global_day),"return_global_day":None if status=="Active" else save.global_day,"outcome":outcome,"source_roll_id":roll.id}
+    if existing:
+        base=existing.version;existing.label=f"{sim.label} — {campaign.label}";existing.global_day=payload["enlisted_global_day"];existing.data={**(existing.data or {}),**payload};existing.version+=1;journal(session,existing,"upsert",base)
+    else:
+        existing=Record(save_id=save.id,kind="service",label=f"{sim.label} — {campaign.label}",global_day=payload["enlisted_global_day"],data=payload);session.add(existing);session.flush();journal(session,existing,"upsert",0)
+    return True
+
+
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     rules = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False))))
     sims = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False))))
@@ -2246,6 +2348,7 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     created += marriage_created
     created += schedule_occult_rolls(session, save, sims)
     created += schedule_event_rolls(session, save, sims)
+    created += schedule_campaign_rolls(session, save, sims)
     save.revision += created + marriage_retired
     return created
 
@@ -2262,7 +2365,7 @@ def failed(actual: int, bad_results: str) -> bool:
 
 
 def _event_death_cause(session: Session, roll: Record) -> str | None:
-    event_id = (roll.data or {}).get("event_id")
+    event_id = (roll.data or {}).get("event_id") or (roll.data or {}).get("campaign_id")
     event = session.get(Record, event_id) if event_id else None
     if not event:
         return None
@@ -2372,6 +2475,8 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         roll.data = {**roll.data, "nonlethal":True}
     occult_changed = apply_occult_roll_result(session, roll, actual)
     automatic_followups = _schedule_automatic_occult_followup(session, save, roll)
+    automatic_followups += _schedule_event_followup(session, save, roll, actual)
+    service_changed = _record_campaign_service(session, save, roll)
     roll.version += 1; journal(session, roll, "upsert", base)
     death = None
     death_created = False
@@ -2443,7 +2548,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 save.revision += end_illnesses_for_death(session, save, sim, death_day)
                 death_changed = True
             save.revision += _retire_rolls_after_death(session, save, sim.id, death_day, roll.id)
-    save.revision += 1 + int(death_changed) + int(allowance_changed) + occult_changed + automatic_followups
+    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(service_changed) + occult_changed + automatic_followups
     return {
         "outcome": roll.data["outcome"], "death": sync.serialize(death) if death else None,
         "death_created": death_created, "death_changed": death_changed, "pregnancy_count":pregnancy_count,

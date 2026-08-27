@@ -13,7 +13,7 @@ if (-not $Compiler) { throw "Inno Setup 6 is required. Install it or set INNO_SE
 if (-not (Test-Path -LiteralPath (Join-Path $Root "dist\Decades Tracker\Decades Tracker.exe") -PathType Leaf)) { throw "Build the desktop application first." }
 & $Compiler $Script
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }
-$Installer = Join-Path $Root "release\Decades-Tracker-4.3.2-Setup.exe"
+$Installer = Join-Path $Root "release\Decades-Tracker-4.4.0-Setup.exe"
 $Checksum = Get-FileHash -LiteralPath $Installer -Algorithm SHA256
 $ChecksumFile = "$Installer.sha256"
 Set-Content -LiteralPath $ChecksumFile -Encoding ASCII -Value ("{0} *{1}" -f $Checksum.Hash.ToLowerInvariant(), (Split-Path -Leaf $Installer))

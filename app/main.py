@@ -83,7 +83,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.3.2")
+app = FastAPI(title="Decades Tracker", version="4.4.0")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -343,11 +343,11 @@ def assign_household_members(session, save: ChronicleSave, household: Record, me
     return changed
 
 
-BOOL_FIELDS = {"active", "roll_required", "legally_married", "contagious", "maternal_rolls_required", "newborn_rolls_required", "pinned", "include_in_tree", "auto_schedule"}
+BOOL_FIELDS = {"active", "roll_required", "legally_married", "contagious", "maternal_rolls_required", "newborn_rolls_required", "pinned", "include_in_tree", "auto_schedule", "followup_enabled", "followup_failure_is_lethal"}
 INT_FIELDS = {
     "start_global_day", "end_global_day", "conception_global_day", "due_global_day", "delivery_global_day",
     "birth_global_day", "death_global_day", "global_day", "start_year", "end_year", "age_days", "min_age_days",
-    "max_age_days", "max_babies", "target_children", "min_birth_spacing_days", "children_count", "babies_expected", "babies_delivered",
+    "max_age_days", "max_babies", "target_children", "min_birth_spacing_days", "children_count", "babies_expected", "babies_delivered", "followup_delay_days",
 }
 
 
@@ -371,6 +371,119 @@ def sim_status(record: Record, save: ChronicleSave) -> str:
     death = int_or_none((record.data or {}).get("death_global_day"))
     if death is None: return "Alive"
     return "Deceased" if death <= save.global_day else "Alive · death scheduled"
+
+
+def sorted_sims(records, save: ChronicleSave) -> list[Record]:
+    """Apply the save's menu preference everywhere a Sim chooser is built."""
+    order = str((save.settings or {}).get("sim_menu_order") or "highest_id").casefold()
+    sims = list(records)
+    if order == "recent":
+        return sorted(sims, key=lambda item: (item.updated_at, insights.sim_number(item)), reverse=True)
+    if order == "alphabetical":
+        return sorted(sims, key=lambda item: (item.label.casefold(), -insights.sim_number(item)))
+    return sorted(sims, key=lambda item: (insights.sim_number(item), item.label.casefold()), reverse=True)
+
+
+def navigation_counts(session, save: ChronicleSave) -> dict[str, int]:
+    """Small indexed count queries keep the sidebar useful without loading ledgers."""
+    base = (Record.save_id == save.id, Record.deleted.is_(False))
+    pending = Record.data["completed"].as_boolean().is_not(True)
+    counts = {
+        "automation": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "game_candidate", Record.data["status"].as_string() == "pending")) or 0,
+        "rolls": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "roll", pending, Record.global_day <= save.global_day)) or 0,
+        "pregnancies": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "pregnancy", func.lower(func.coalesce(Record.data["status"].as_string(), "active")).notin_(["delivered", "complete", "miscarriage", "stillbirth", "cancelled", "canceled"]))) or 0,
+        "illnesses": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "illness", func.lower(func.coalesce(Record.data["status"].as_string(), "active")).notin_(["recovered", "fatal", "resolved", "complete"]))) or 0,
+        "events": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "event", Record.global_day <= save.global_day, or_(Record.data["end_global_day"].as_integer().is_(None), Record.data["end_global_day"].as_integer() >= save.global_day), Record.data["ignored"].as_boolean().is_not(True), Record.data["active"].as_boolean().is_not(False))) or 0,
+        "deaths": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "sim", Record.data["death_global_day"].as_integer() <= save.global_day, Record.data["death_confirmed"].as_boolean().is_not(True))) or 0,
+    }
+    counts["today"] = counts["rolls"] + counts["pregnancies"] + counts["illnesses"] + counts["events"] + counts["deaths"]
+    return {key: int(value) for key, value in counts.items()}
+
+
+def _living_sim(sim: Record, save: ChronicleSave) -> bool:
+    data = sim.data or {}; birth = int_or_none(data.get("birth_global_day", sim.global_day)); death = int_or_none(data.get("death_global_day"))
+    return not bool(data.get("game_was_dead")) and (birth is None or birth <= save.global_day) and (death is None or death > save.global_day)
+
+
+def _ancestor_ids(sim_id: str, by_id: dict[str, Record], limit: int = 3) -> dict[str, int]:
+    found: dict[str, int] = {}; frontier = [(sim_id, 0)]
+    while frontier:
+        current, depth = frontier.pop(0)
+        if depth >= limit or current not in by_id: continue
+        for parent in ((by_id[current].data or {}).get("mother_id"), (by_id[current].data or {}).get("father_id")):
+            parent = str(parent or "")
+            if parent and (parent not in found or depth + 1 < found[parent]):
+                found[parent] = depth + 1; frontier.append((parent, depth + 1))
+    return found
+
+
+def kinship_warning(first_id: str, second_id: str, sims: list[Record], limit: int = 3) -> str:
+    if first_id == second_id: return "Same Sim"
+    by_id = {item.id:item for item in sims}; first = _ancestor_ids(first_id, by_id, limit); second = _ancestor_ids(second_id, by_id, limit)
+    if second_id in first or first_id in second: return "Direct ancestor or descendant"
+    shared = set(first) & set(second)
+    if not shared: return ""
+    a, b = min((first[key], second[key]) for key in shared)
+    if a == b == 1: return "Sibling or half-sibling"
+    if sorted((a, b)) == [1, 2]: return "Aunt/uncle and niece/nephew"
+    if a == b == 2: return "First cousins"
+    return "Shared close ancestor"
+
+
+def succession_ranking(sims: list[Record], save: ChronicleSave) -> list[dict]:
+    settings_data = save.settings or {}; system = str(settings_data.get("succession_system") or "Absolute primogeniture")
+    require_legitimate = bool(settings_data.get("succession_require_legitimate")); root_id = str(settings_data.get("succession_root_id") or "")
+    eligible = [item for item in sims if _living_sim(item, save) and bool((item.data or {}).get("include_in_family_tree", True))]
+    if root_id:
+        descendants = {root_id}; changed = True
+        while changed:
+            before = len(descendants)
+            descendants.update(item.id for item in eligible if str((item.data or {}).get("mother_id") or "") in descendants or str((item.data or {}).get("father_id") or "") in descendants)
+            changed = len(descendants) != before
+        eligible = [item for item in eligible if item.id in descendants and item.id != root_id]
+    rows = []
+    for sim in eligible:
+        data = sim.data or {}; override = str(data.get("succession_override") or "Auto"); legitimacy = str(data.get("legitimacy") or data.get("legitimate") or "").casefold()
+        if any(word in override.casefold() for word in ("exclude", "disinherit")): continue
+        if require_legitimate and legitimacy not in {"1", "true", "yes", "legitimate"}: continue
+        sex = str(data.get("sex") or "").casefold(); sex_priority = 0
+        if "male-preference" in system.casefold(): sex_priority = 0 if sex.startswith("m") else 1
+        elif "female-preference" in system.casefold(): sex_priority = 0 if sex.startswith("f") else 1
+        birth = int_or_none(data.get("birth_global_day"))
+        rows.append({"sim":sim,"override":override,"priority":0 if any(word in override.casefold() for word in ("heir", "priority", "include")) else 1,"sex_priority":sex_priority,"birth":birth if birth is not None else 10**9})
+    rows.sort(key=lambda row:(row["priority"], row["sex_priority"], row["birth"], insights.sim_number(row["sim"])))
+    for index, row in enumerate(rows, 1): row["rank"] = index
+    return rows
+
+
+def planner_analysis(sims: list[Record], plans: list[Record], save: ChronicleSave) -> tuple[list[dict], list[dict]]:
+    by_id = {item.id:item for item in sims}; adulthood = int((save.settings or {}).get("adulthood_age_days") or 72)
+    plan_rows = []
+    for plan in plans:
+        data = plan.data or {}; sim = by_id.get(str(data.get("sim_id") or "")); children = []
+        if sim: children = [item for item in sims if str((item.data or {}).get("mother_id") or "") == sim.id or str((item.data or {}).get("father_id") or "") == sim.id]
+        survived = sum(int_or_none((child.data or {}).get("birth_global_day")) is not None and ((int_or_none((child.data or {}).get("death_global_day")) or 10**9) >= int((child.data or {}).get("birth_global_day")) + adulthood) and (int_or_none((child.data or {}).get("death_global_day")) is not None or save.global_day >= int((child.data or {}).get("birth_global_day")) + adulthood) for child in children)
+        died_young = sum(int_or_none((child.data or {}).get("death_global_day")) is not None and int((child.data or {}).get("death_global_day")) < int((child.data or {}).get("birth_global_day") or 0) + adulthood for child in children)
+        pending = max(0, len(children) - survived - died_young); spacing = int_or_none(data.get("min_birth_spacing_days")) or 0
+        births = [int((child.data or {}).get("birth_global_day")) for child in children if int_or_none((child.data or {}).get("birth_global_day")) is not None]
+        target = int_or_none(data.get("target_children")) or 0
+        forecast = []
+        if sim:
+            birth = int_or_none((sim.data or {}).get("birth_global_day"))
+            if birth is not None:
+                for label, offset in sorted(domain.AGING_STAGE_OFFSETS.items(), key=lambda item:item[1]):
+                    due = birth + int(offset)
+                    if due >= save.global_day: forecast.append({"label":label.title(),"global_day":due})
+                marriage_due = birth + int((save.settings or {}).get("marriage_min_age_days") or 72)
+                if marriage_due >= save.global_day: forecast.append({"label":"Marriage eligibility","global_day":marriage_due})
+        plan_rows.append({"record":plan,"sim":sim,"children":len(children),"survived":survived,"died_young":died_young,"pending":pending,"remaining":max(0,target-len(children)),"next_conception":max(births)+spacing if births and spacing else None,"forecast":sorted(forecast,key=lambda item:item["global_day"])[:12]})
+    dynasties: dict[str, dict] = {}
+    for sim in sims:
+        surname = str((sim.data or {}).get("surname_at_birth") or (sim.data or {}).get("maiden_name") or (sim.data or {}).get("last_name") or sim.label.split()[-1] or "Unknown")
+        row = dynasties.setdefault(surname,{"name":surname,"total":0,"living":0,"first":None}); row["total"] += 1; row["living"] += int(_living_sim(sim,save))
+        birth = int_or_none((sim.data or {}).get("birth_global_day")); row["first"] = birth if row["first"] is None else min(row["first"],birth) if birth is not None else row["first"]
+    dynasty_rows = sorted(({**row,"state":"Extinct" if row["living"]==0 else "Endangered" if row["living"]<=2 else "Surviving"} for row in dynasties.values()),key=lambda row:(row["living"],row["total"],row["name"].casefold()),reverse=True)
+    return plan_rows, dynasty_rows
 
 
 templates.env.globals.update(
@@ -484,6 +597,8 @@ def home(request: Request):
         if not ctx["user"]:
             return templates.TemplateResponse(request, "login.html", ctx)
         save = ctx["save"]
+        if save:
+            ctx["navigation_counts"] = navigation_counts(session, save)
         if save:
             ctx["automation_pending"] = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending")) or 0
         counts = {}
@@ -1027,6 +1142,9 @@ def feature_page(request: Request, page: str):
                 save.revision += repaired_count
                 session.flush()
                 ctx["relationship_inbox_repair"] = relationship_repair
+        if save and page == "challenge":
+            domain.schedule_marriage_rolls(session, save)
+            save.revision += domain.schedule_campaign_rolls(session, save)
         if save and page != "automation":
             ctx["automation_pending"] = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending")) or 0
         kind = KIND_BY_PAGE.get(page)
@@ -1042,7 +1160,7 @@ def feature_page(request: Request, page: str):
                 )))
                 listed=[item for item in support_rows_cache if item.kind=="sim" and not item.deleted]
                 if list_q: listed=[item for item in listed if list_q.casefold() in item.label.casefold()]
-                listed.sort(key=lambda item:(insights.sim_number(item),item.label.casefold()),reverse=True)
+                listed = sorted_sims(listed, save)
                 record_count=len(listed);list_pages=max(1,(record_count+list_size-1)//list_size);list_page=min(list_page,list_pages)
                 records=listed[(list_page-1)*list_size:list_page*list_size]
             else:
@@ -1067,8 +1185,8 @@ def feature_page(request: Request, page: str):
             "statistics":{"sim","household","relationship","pregnancy","illness","event","death","roll"},
             "pregnancies":{"sim","pregnancy","roll"}, "illnesses":{"illness","sim"},
             "households":{"household","sim","game_history","pregnancy","illness"},
-            "planner":{"sim","household","play_rotation","family_plan"},
-            "challenge":{"sim","campaign","service","era_guidance","era_rule"},
+            "planner":{"sim","household","play_rotation","family_plan","roll"},
+            "challenge":{"sim","household","relationship","roll","planner_rule","campaign","service","era_guidance","era_rule"},
             "events":{"event","event_rule"}, "notes":{"note"},
             "rules":{"sim","roll","roll_rule","occult_rule","death_causes","planner_rule","multiple_birth_rule","era_guidance","era_rule","event_rule","source_archive","detection_candidate","task","roll_rule_era"},
         }.get(page)
@@ -1089,7 +1207,7 @@ def feature_page(request: Request, page: str):
             depth = max(1, min(8, int_or_none(request.query_params.get("depth")) or 3))
             tree_photos=request.query_params.get("photos","1")!="0";tree_dates=request.query_params.get("dates","1")!="0"
             ctx.update(tree=insights.family_view(view_records, focus, mode, depth), tree_mode=mode, tree_depth=depth,tree_photos=tree_photos,tree_dates=tree_dates,
-                       all_sims=sorted((item for item in view_records if item.kind == "sim" and bool((item.data or {}).get("include_in_family_tree",True))), key=insights.sim_number, reverse=True),
+                       all_sims=sorted_sims((item for item in view_records if item.kind == "sim" and bool((item.data or {}).get("include_in_family_tree",True))), save),
                        photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id == save.id))))
             records = []
         if page == "statistics" and save:
@@ -1202,7 +1320,8 @@ def feature_page(request: Request, page: str):
                 living=sum((sim.data or {}).get("current_household_id")==home.id and (int_or_none((sim.data or {}).get("death_global_day")) is None or int((sim.data or {}).get("death_global_day"))>save.global_day) for sim in sims)
                 recommendations.append({"household":home,"last":last_played.get(home.id),"living":living})
             recommendations.sort(key=lambda item:((item["last"].global_day if item["last"] else -10**9),item["household"].label.casefold()))
-            ctx.update(planner_recommendations=recommendations,rotation_records=sorted(rotations,key=lambda item:item.global_day or 0,reverse=True),family_plans=plans,all_sims=sorted(sims,key=lambda item:item.label.casefold()),all_households=sorted(households,key=lambda item:item.label.casefold()));records=[]
+            plan_analysis,dynasty_analysis=planner_analysis(sims,plans,save)
+            ctx.update(planner_recommendations=recommendations,rotation_records=sorted(rotations,key=lambda item:item.global_day or 0,reverse=True),family_plans=plans,family_plan_analysis=plan_analysis,dynasty_analysis=dynasty_analysis,all_sims=sorted_sims(sims,save),all_households=sorted(households,key=lambda item:item.label.casefold()));records=[]
         if page == "challenge" and save:
             year=insights.current_year(save);challenge_location=str((save.settings or {}).get("challenge_location") or "").casefold();guidance_by_key={}
             for item in sorted((item for item in view_records if item.kind in {"era_guidance","era_rule"}),key=lambda item:item.kind=="era_guidance"):
@@ -1212,18 +1331,35 @@ def feature_page(request: Request, page: str):
                 key=str(data.get("rule_id") or data.get("legacy_id") or f"{item.label}:{data.get('start_year')}:{data.get('end_year')}")
                 guidance_by_key[key]=item
             guidance=sorted(guidance_by_key.values(),key=lambda item:(str((item.data or {}).get("category") or ""),item.label.casefold()))
-            sims=[item for item in view_records if item.kind=="sim"];succession=sorted((item for item in sims if int_or_none((item.data or {}).get("death_global_day")) is None or int((item.data or {}).get("death_global_day"))>save.global_day),key=lambda item:(0 if "heir" in str((item.data or {}).get("succession_override") or "").casefold() else 1,int_or_none((item.data or {}).get("birth_global_day")) or 10**9))
-            ctx.update(challenge_year=year,era_guidance=guidance,succession=succession,campaigns=[item for item in view_records if item.kind=="campaign"],services=[item for item in view_records if item.kind=="service"],all_sims=sorted(sims,key=lambda item:item.label.casefold()));records=[]
+            sims=[item for item in view_records if item.kind=="sim"];relationships=[item for item in view_records if item.kind=="relationship"]
+            succession=succession_ranking(sims,save);married_ids=set()
+            for relationship in relationships:
+                data=relationship.data or {}
+                if bool(data.get("legally_married")) or "marriage" in str(data.get("type") or "").casefold(): married_ids.update((str(data.get("partner1_id") or ""),str(data.get("partner2_id") or "")))
+            minimum_age=int((save.settings or {}).get("marriage_min_age_days") or 72)
+            match_eligible=[item for item in sims if _living_sim(item,save) and item.id not in married_ids and int_or_none((item.data or {}).get("birth_global_day")) is not None and save.global_day-int((item.data or {}).get("birth_global_day"))>=minimum_age]
+            kinship_depth=max(1,min(8,int((save.settings or {}).get("kinship_detection_generations") or 3)))
+            selected_match=request.query_params.get("match_sim") or (match_eligible[0].id if match_eligible else "");match_candidates=[]
+            for candidate in match_eligible:
+                if candidate.id==selected_match: continue
+                warning=kinship_warning(selected_match,candidate.id,sims,kinship_depth);first=next((item for item in match_eligible if item.id==selected_match),None)
+                age_gap=abs(int((first.data or {}).get("birth_global_day"))-int((candidate.data or {}).get("birth_global_day"))) if first else 0
+                match_candidates.append({"sim":candidate,"warning":warning,"score":max(0,100-age_gap)-(100 if warning else 0)})
+            match_candidates.sort(key=lambda item:(item["score"],item["sim"].label.casefold()),reverse=True)
+            marriage_rolls=[item for item in view_records if item.kind=="roll" and domain._marriage_roll(item)]
+            campaigns=[item for item in view_records if item.kind=="campaign"]
+            ctx.update(challenge_year=year,era_guidance=guidance,succession=succession,campaigns=campaigns,services=[item for item in view_records if item.kind=="service"],all_sims=sorted_sims(sims,save),match_eligible=sorted_sims(match_eligible,save),selected_match=selected_match,match_candidates=match_candidates,kinship_depth=kinship_depth,marriage_rolls=sorted(marriage_rolls,key=lambda item:item.global_day or 0),marriage_roll_counts={"pending":sum(not bool((item.data or {}).get("completed")) for item in marriage_rolls),"may":sum("may marry" in str((item.data or {}).get("outcome") or "").casefold() for item in marriage_rolls),"no":sum("does not marry" in str((item.data or {}).get("outcome") or "").casefold() for item in marriage_rolls)});records=[]
         if page == "today" and save:
             # Scheduling is idempotent. Remember the check in process instead
             # of rewriting the save's large settings JSON on every new day.
             # This keeps an ordinary GET read-only when there are no new rolls.
-            schedule_marker=(save.global_day,5)
+            schedule_marker=(save.global_day,6)
             if _TODAY_SCHEDULE_CHECKED.get(save.id) != schedule_marker:
                 save.revision += domain.retire_prechallenge_rolls(session,save)
                 domain.schedule_marriage_rolls(session,save)
                 save.revision += domain.schedule_occult_rolls(session,save)
                 save.revision += domain.schedule_event_rolls(session,save)
+                save.revision += domain.schedule_campaign_rolls(session,save)
                 _TODAY_SCHEDULE_CHECKED[save.id]=schedule_marker
             g = save.global_day
             params = request.query_params
@@ -1261,7 +1397,7 @@ def feature_page(request: Request, page: str):
                 elif row.kind=="game_history": occult_history.append(row)
                 elif row.kind.endswith("_rule"): raw_rule_definitions.append(row)
             by_day_label=lambda item: (int_or_none(item.global_day) if int_or_none(item.global_day) is not None else 10**9,item.label.casefold())
-            all_sims=sorted(rows_by_kind["sim"],key=lambda item:item.label.casefold())
+            all_sims=sorted_sims(rows_by_kind["sim"],save)
             all_households=sorted(rows_by_kind["household"],key=lambda item:item.label.casefold())
             all_rolls=sorted(rows_by_kind["roll"],key=by_day_label)
             all_pregnancies=sorted(rows_by_kind["pregnancy"],key=by_day_label)
@@ -1478,7 +1614,7 @@ def feature_page(request: Request, page: str):
             support_rows=support_rows_cache if support_rows_cache is not None else list(session.scalars(select(Record).where(
                 Record.save_id==save.id,Record.kind.in_({"sim","household"}),Record.deleted.is_(False),
             )))
-            ctx["all_sims"] = sorted((item for item in support_rows if item.kind=="sim" and not item.deleted), key=insights.sim_number, reverse=True)
+            ctx["all_sims"] = sorted_sims((item for item in support_rows if item.kind=="sim" and not item.deleted), save)
             ctx["all_households"] = sorted((item for item in support_rows if item.kind=="household" and not item.deleted),key=lambda item:item.label.casefold())
             ctx["photo_record_ids"] = set(session.scalars(select(Portrait.record_id).where(Portrait.save_id == save.id)))
             archived_probe=sorted((item for item in support_rows if item.kind==kind and item.deleted),key=lambda item:item.label.casefold())[:101] if support_rows_cache is not None else list(session.scalars(select(Record).where(
@@ -2299,6 +2435,25 @@ def add_record(request: Request, kind: str, label: str = Form(...), global_day: 
     return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
 
 
+@app.post("/api/challenge/matchmaking")
+def create_matchmaking_courtship(request: Request, first_id: str = Form(...), second_id: str = Form(...)):
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Choose a save first")
+        sims=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False))))
+        first=next((item for item in sims if item.id==first_id),None);second=next((item for item in sims if item.id==second_id),None)
+        if not first or not second: raise HTTPException(404,"Sim not found")
+        depth=max(1,min(8,int((save.settings or {}).get("kinship_detection_generations") or 3)))
+        warning=kinship_warning(first.id,second.id,sims,depth)
+        if warning: raise HTTPException(409,f"Courtship blocked: {warning}")
+        relationships=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="relationship",Record.deleted.is_(False))))
+        existing=next((item for item in relationships if {str((item.data or {}).get("partner1_id") or ""),str((item.data or {}).get("partner2_id") or "")}=={first.id,second.id} and str((item.data or {}).get("status") or "Active").casefold() not in {"ended","divorced","annulled"}),None)
+        if not existing:
+            record=Record(save_id=save.id,kind="relationship",label=f"{first.label} & {second.label}",global_day=save.global_day,data={"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":"Courtship","status":"Active","legally_married":False,"start_global_day":save.global_day,"source":"Matchmaking dashboard"})
+            session.add(record);session.flush();domain.journal(session,record,"upsert",0);save.revision+=1
+    return RedirectResponse("/p/challenge?match_sim="+first_id,status_code=303)
+
+
 @app.post("/records/{kind}/structured")
 async def add_structured_record(request: Request, kind: str):
     allowed={"event","note","story_entry","roll_rule","death_causes","planner_rule","multiple_birth_rule","era_guidance","occult_rule","play_rotation","family_plan","campaign","service"}
@@ -2309,7 +2464,7 @@ async def add_structured_record(request: Request, kind: str):
         if not save: raise HTTPException(400,"Choose a save first")
         label=str(form.get("label") or form.get("title") or form.get("name") or kind.replace("_"," ").title()).strip()
         data=structured_form_data(form)
-        if kind=="event":
+        if kind in {"event","campaign"}:
             data.setdefault("start_global_day",int_or_none(form.get("global_day")) or save.global_day);data.setdefault("end_global_day",data.get("start_global_day"));data.setdefault("active",True)
             if "die" in form: data["configured_die"]=str(form.get("die") or "").strip()
             if "bad_results" in form: data["configured_bad_results"]=str(form.get("bad_results") or "").strip()
@@ -2323,6 +2478,8 @@ async def add_structured_record(request: Request, kind: str):
         record=Record(save_id=save.id,kind=kind,label=label,global_day=day,data=data);session.add(record);session.flush();domain.journal(session,record,"upsert",0);save.revision+=1
         if kind in {"roll_rule","occult_rule"}: domain.schedule_rolls(session,save)
         elif kind=="planner_rule": domain.schedule_marriage_rolls(session,save)
+        elif kind=="event": domain.schedule_event_rolls(session,save)
+        elif kind=="campaign": domain.schedule_campaign_rolls(session,save)
     return RedirectResponse(str(form.get("return_to") or request.headers.get("referer") or "/"),status_code=303)
 
 
@@ -2333,7 +2490,7 @@ async def edit_structured_record(request: Request, record_id: str):
         record=session.get(Record,record_id)
         if not record: raise HTTPException(404)
         save=owned_save(request,session,record.save_id);base=record.version;data={**(record.data or {}),**structured_form_data(form)}
-        if record.kind=="event":
+        if record.kind in {"event","campaign"}:
             if "die" in form: data["configured_die"]=str(form.get("die") or "").strip()
             if "bad_results" in form: data["configured_bad_results"]=str(form.get("bad_results") or "").strip()
         record.label=str(form.get("label") or form.get("title") or form.get("name") or record.label).strip()
@@ -2342,6 +2499,8 @@ async def edit_structured_record(request: Request, record_id: str):
         record.global_day=day;record.data=data;record.version+=1;domain.journal(session,record,"upsert",base);save.revision+=1
         if record.kind in {"roll_rule","occult_rule"}: domain.schedule_rolls(session,save)
         elif record.kind=="planner_rule": domain.schedule_marriage_rolls(session,save)
+        elif record.kind=="event": domain.schedule_event_rolls(session,save)
+        elif record.kind=="campaign": domain.schedule_campaign_rolls(session,save)
     return RedirectResponse(str(form.get("return_to") or request.headers.get("referer") or "/"),status_code=303)
 
 
@@ -2381,12 +2540,16 @@ async def update_settings(request: Request):
         save.name=str(form.get("name") or save.name).strip();save.start_year=max(-9999,min(9999,int_or_none(form.get("start_year")) or save.start_year))
         save.days_per_year=max(1,min(365,int_or_none(form.get("days_per_year")) or save.days_per_year));save.pregnancy_days=max(1,min(100,int_or_none(form.get("pregnancy_days")) or save.pregnancy_days))
         settings_data=dict(save.settings or {})
-        for key in ("challenge_location","default_species","succession_system"):
+        for key in ("challenge_location","default_species","succession_system","succession_root_id","sim_menu_order"):
             if key in form: settings_data[key]=str(form.get(key) or "").strip()
-        for key in ("roll_tracking_start_day","try_for_baby_daily_limit","delivery_day_limit","elder_min_age_days","elder_max_age_days","marriage_min_age_days","inheritance_rule_cutoff_year","free_save_a_sims","full_moon_anchor_global_day","full_moon_interval_days"):
+        for key in ("roll_tracking_start_day","try_for_baby_daily_limit","delivery_day_limit","elder_min_age_days","elder_max_age_days","marriage_min_age_days","inheritance_rule_cutoff_year","free_save_a_sims","full_moon_anchor_global_day","full_moon_interval_days","kinship_detection_generations"):
             if key in form and int_or_none(form.get(key)) is not None: settings_data[key]=int_or_none(form.get(key))
-        for key in ("maternal_rolls_enabled","automatic_death_causes"):
-            settings_data[key]=key in form
+        settings_scope=str(form.get("settings_scope") or ("succession" if str(form.get("return_to") or "").startswith("/p/challenge") else "rules"))
+        if settings_scope=="succession":
+            settings_data["succession_require_legitimate"]="succession_require_legitimate" in form
+        elif settings_scope=="rules" and "sim_menu_order" not in form:
+            for key in ("maternal_rolls_enabled","automatic_death_causes"):
+                settings_data[key]=key in form
         save.settings=settings_data;save.revision+=1;domain.schedule_rolls(session,save)
     return RedirectResponse(str(form.get("return_to") or "/p/rules"),status_code=303)
 
@@ -2743,6 +2906,8 @@ def reopen_roll(request: Request, roll_id: str):
         related=[roll]
         auto_deaths=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["source_roll_id"].as_string()==roll.id)))
         related.extend(auto_deaths)
+        conditional_followups=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),Record.data["origin_roll_id"].as_string()==roll.id,Record.data["automatic_followup"].as_boolean().is_(True))))
+        related.extend(conditional_followups)
         if sim: related.append(sim)
         set_today_undo(request,f"Reopened {roll.label}",related)
         for death in auto_deaths:
@@ -2752,6 +2917,8 @@ def reopen_roll(request: Request, roll_id: str):
             else:
                 for key in ("source_roll_id","rescheduled_from_global_day","rescheduled_from_cause","historical_death_date","death_game_hour","death_game_minute","death_time"): data.pop(key,None)
                 data.update({"cause":prior_cause or "Player choice","historical_death_date_range":calendar_utils.date_range_label(prior,save.start_year,save.days_per_year),"death_date_precision":"challenge-day-only"});death.global_day=prior;death.data=data;death.version+=1;domain.journal(session,death,"upsert",base)
+        for followup in conditional_followups:
+            followup_base=followup.version;followup.deleted=True;followup.data={**(followup.data or {}),"retired_reason":"Origin roll reopened","retired_global_day":save.global_day};followup.version+=1;domain.journal(session,followup,"delete",followup_base)
         if sim and (sim.data or {}).get("death_source_roll_id")==roll.id:
             base=sim.version;data=dict(sim.data or {});automatic_day=int_or_none(data.get("death_global_day"));prior=int_or_none(data.get("rescheduled_from_global_day"));prior_cause=data.get("rescheduled_from_cause")
             for key in ("death_source_roll_id","rescheduled_from_global_day","rescheduled_from_cause","historical_death_date","historical_death_date_range","death_date_precision","death_game_hour","death_game_minute","death_time"): data.pop(key,None)
@@ -2773,7 +2940,7 @@ def reopen_roll(request: Request, roll_id: str):
         for retired in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(True),Record.data["retired_by_death_roll_id"].as_string()==roll.id)):
             base=retired.version;data=dict(retired.data or {});data.pop("retired_reason",None);data.pop("retired_global_day",None);data.pop("retired_by_death_roll_id",None);retired.data=data;retired.deleted=False;retired.version+=1;domain.journal(session,retired,"upsert",base)
         base=roll.version;data=dict(roll.data or {})
-        for key in ("actual","outcome","completed","completed_global_day","pregnancy_count","nonlethal"): data.pop(key,None)
+        for key in ("actual","outcome","completed","completed_global_day","pregnancy_count","nonlethal","event_followup_roll_id","event_followup_processed"): data.pop(key,None)
         data["correction_note"]="Reopened for correction";roll.data=data;roll.version+=1;domain.journal(session,roll,"upsert",base);save.revision+=1
     return RedirectResponse(request.headers.get("referer") or "/p/rolls",status_code=303)
 
@@ -3185,11 +3352,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.3.2-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.4.0-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.3.2-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.0-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

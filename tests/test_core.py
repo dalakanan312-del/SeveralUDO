@@ -27,10 +27,10 @@ from app.clock import _game_illnesses, _store_game_portrait, attach_game_identit
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
-from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
+from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Portrait, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
@@ -42,6 +42,15 @@ from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_matchmaking_kinship_depth_is_configurable(self):
+        common=Record(id="common",kind="sim",label="Common",data={})
+        left1=Record(id="left1",kind="sim",label="Left 1",data={"mother_id":"common"});right1=Record(id="right1",kind="sim",label="Right 1",data={"mother_id":"common"})
+        left2=Record(id="left2",kind="sim",label="Left 2",data={"mother_id":"left1"});right2=Record(id="right2",kind="sim",label="Right 2",data={"mother_id":"right1"})
+        left3=Record(id="left3",kind="sim",label="Left 3",data={"mother_id":"left2"});right3=Record(id="right3",kind="sim",label="Right 3",data={"mother_id":"right2"})
+        family=[common,left1,right1,left2,right2,left3,right3]
+        self.assertEqual(kinship_warning("left3","right3",family,2),"")
+        self.assertEqual(kinship_warning("left3","right3",family,3),"Shared close ancestor")
+
     def test_desktop_launcher_finds_and_monitors_clock_relay(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder=Path(temporary)/"SeveralUDOClockSync";folder.mkdir()
@@ -1043,7 +1052,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.3.2")
+            self.assertEqual(health.json()["version"], "4.4.0")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1809,6 +1818,43 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "Failed")
                 self.assertEqual(sim.data["cause_of_death"], "Killed during Test Battle")
                 self.assertGreaterEqual(sim.data["death_global_day"], save.global_day)
+                session.rollback()
+
+    def test_war_campaign_rolls_filter_roster_and_schedule_conditional_followup(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="War dashboard test",global_day=80,start_year=1500,days_per_year=4,settings={"challenge_location":"England"})
+                session.add(save);session.flush()
+                home=Record(save_id=save.id,kind="household",label="English home",data={"location":"England","social_class":"Peasant"})
+                session.add(home);session.flush()
+                eligible=Record(save_id=save.id,kind="sim",label="Eligible Soldier",data={"birth_global_day":1,"sex":"Male","current_household_id":home.id})
+                too_young=Record(save_id=save.id,kind="sim",label="Young Soldier",data={"birth_global_day":70,"sex":"Male","current_household_id":home.id})
+                campaign=Record(save_id=save.id,kind="campaign",label="Test War",global_day=80,data={"start_global_day":80,"end_global_day":84,"location":"England","min_age_days":40,"max_age_days":200,"eligible_sexes":"Male","eligible_classes":"Peasant","roll_required":True,"active":True,"configured_die":"d12","configured_bad_results":"1-2: Killed; 3-4: Injured","followup_enabled":True,"followup_trigger_results":"3-4","followup_label":"Injury recovery","followup_delay_days":2,"followup_die":"d6","followup_bad_results":"1"})
+                session.add_all([eligible,too_young,campaign]);session.flush()
+                self.assertEqual(schedule_campaign_rolls(session,save),1)
+                origin=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["campaign_id"].as_string()==campaign.id))
+                self.assertEqual((origin.data["sim_id"],origin.data["die"]),(eligible.id,"d12"))
+                result=complete_roll(session,save,origin,3)
+                self.assertEqual(result["automatic_followups"],1)
+                followup=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==origin.id))
+                self.assertEqual((followup.global_day,followup.data["die"],followup.data["sim_id"]),(82,"d6",eligible.id))
+                service=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="service",Record.data["campaign_id"].as_string()==campaign.id))
+                self.assertEqual((service.data["sim_id"],service.data["status"],service.data["outcome"]),(eligible.id,"Injured","Injured"))
+                self.assertEqual(schedule_campaign_rolls(session,save),0)
+                session.rollback()
+
+    def test_event_followup_is_conditional_and_deduplicated(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Event followup test",global_day=20,start_year=1500,days_per_year=4)
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label="Event Sim",data={"birth_global_day":1})
+                event=Record(save_id=save.id,kind="event",label="Flood",global_day=20,data={"start_global_day":20,"end_global_day":20,"scope":"Global","location":"Global","roll_required":True,"active":True,"configured_die":"d6","configured_bad_results":"1-2","followup_enabled":True,"followup_trigger_results":"2","followup_label":"Displacement","followup_delay_days":1,"followup_die":"d4","followup_bad_results":"1"})
+                session.add_all([sim,event]);session.flush();self.assertEqual(schedule_event_rolls(session,save),1)
+                origin=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["event_id"].as_string()==event.id))
+                self.assertEqual(complete_roll(session,save,origin,1)["automatic_followups"],0)
                 session.rollback()
 
     def test_global_event_backfill_needs_no_location_and_uses_editable_start_day(self):
