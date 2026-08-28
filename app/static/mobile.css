@@ -124,3 +124,24 @@
     .app-main{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
   }
 }
+
+/* Task navigation replaces the former two-column wall of page links. */
+.nav-search{position:relative}
+@media(max-width:800px){
+  .app-sidebar.mobile-menu-open .app-nav{display:block;max-height:72dvh;padding:8px;overflow-x:hidden;overflow-y:auto}
+  .app-nav>.nav-overview{width:100%}
+  .nav-quick{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:7px}
+  .nav-quick h3{display:flex}
+  .nav-group{width:100%}
+  .nav-group>summary{min-height:48px}
+  .nav-group-links{padding-left:31px}
+  .nav-group-links a{min-height:42px}
+  .page-breadcrumb{max-width:100%;margin:-4px 0 11px!important;overflow:hidden;white-space:nowrap}
+  .dashboard-map{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dashboard-map-card{min-height:160px}
+}
+@media(max-width:520px){
+  .dashboard-map{grid-template-columns:1fr}
+  .dashboard-map-card{min-height:0}
+  .nav-group-copy small{white-space:normal}
+}

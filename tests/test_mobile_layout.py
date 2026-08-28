@@ -14,6 +14,9 @@ class MobileLayoutTests(unittest.TestCase):
         self.assertIn('class="mobile-menu-toggle"', template)
         self.assertIn('aria-controls="mobile-navigation"', template)
         self.assertIn('id="mobile-navigation"', template)
+        self.assertIn('id="navigation-filter"', template)
+        self.assertIn('class="nav-group"', template)
+        self.assertIn('class="page-breadcrumb"', template)
 
     def test_mobile_styles_cover_small_screens_and_touch_targets(self):
         css = (ROOT / "app" / "static" / "mobile.css").read_text(encoding="utf-8")
@@ -37,6 +40,8 @@ class MobileLayoutTests(unittest.TestCase):
         self.assertIn("aria-expanded", script)
         self.assertIn("event.key==='Escape'", script)
         self.assertIn("innerWidth>800", script)
+        self.assertIn("filterNavigation", script)
+        self.assertIn("NAVIGATION_STATE_KEY", script)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.4.1` adds reviewed birth circumstances, birthplace and legitimacy controls, plus date-aware location inheritance for births, relationships, marriages, and households. Migration history is respected without letting later moves rewrite earlier events. It retains the challenge-management overhaul from 4.4.0 and read-only Sims 4 Tray portrait scanning from 4.3.2.
+`4.4.2` reorganizes the complete tracker into six task-based sections with persistent collapsible navigation, page search, quick access, breadcrumbs, and a clearer overview map. Every existing page and feature remains available. It also retains the reviewed family-event details from 4.4.1, the challenge-management overhaul from 4.4.0, and read-only Sims 4 Tray portrait scanning from 4.3.2.
 
 `4.3.0` adds optional Kemzima Responsible Pregnancy compatibility. Clock Sync 2.2.7 detects selected active pregnancy exposures, risks, maternal conditions, and newborn complications without treating them as ordinary illnesses. Current states appear on Sim and pregnancy profiles, state changes enter the chronicle once, and repeated reports do not create duplicate inbox work. Players without the mod continue to use the tracker normally.
 

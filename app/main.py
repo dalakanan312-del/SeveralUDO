@@ -64,6 +64,58 @@ FEATURES = {
     "support": ("About & Support", "Version, help, privacy and project support"),
 }
 
+# Navigation follows the player's workflow instead of the underlying record
+# types.  Keep this as the single source of truth for the sidebar and overview
+# so every feature remains discoverable without presenting one very long list.
+NAVIGATION_GROUPS = (
+    {
+        "id": "play",
+        "label": "Play",
+        "description": "What needs attention now",
+        "icon": "▶",
+        "pages": ("today", "automation", "planner", "clock", "rolls"),
+    },
+    {
+        "id": "family",
+        "label": "Family & Life",
+        "description": "People, homes and life events",
+        "icon": "♟",
+        "pages": ("sims", "households", "relationships", "pregnancies", "illnesses", "family-tree"),
+    },
+    {
+        "id": "history",
+        "label": "History & Story",
+        "description": "The chronicle, world and memories",
+        "icon": "✒",
+        "pages": ("timeline", "storyline", "events", "world", "notes"),
+    },
+    {
+        "id": "challenge",
+        "label": "Challenge & Rules",
+        "description": "Rulesets, succession and play aids",
+        "icon": "⚖",
+        "pages": ("challenge", "rules", "guides", "plants", "names", "avatar", "harry-potter", "game-of-thrones"),
+    },
+    {
+        "id": "insights",
+        "label": "Insights",
+        "description": "Progress, statistics and checks",
+        "icon": "⌁",
+        "pages": ("statistics", "legacy-lab", "dice-audit", "health"),
+    },
+    {
+        "id": "setup",
+        "label": "Settings & Help",
+        "description": "Saves, devices, access and guidance",
+        "icon": "⚙",
+        "pages": ("saves", "sync", "account", "tutorial", "support"),
+    },
+)
+
+
+def navigation_group_for(page: str | None):
+    return next((group for group in NAVIGATION_GROUPS if page in group["pages"]), None)
+
 KIND_BY_PAGE = {
     "sims": "sim", "households": "household", "relationships": "relationship",
     "pregnancies": "pregnancy", "rolls": "roll", "events": "event",
@@ -88,7 +140,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.4.1")
+app = FastAPI(title="Decades Tracker", version="4.4.2")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -657,9 +709,12 @@ def context(request: Request, session, **extra):
         if active:
             request.session["save_id"] = active.id
     last_roll = request.session.pop("last_roll", None)
+    current_page = extra.get("page")
     return {"request": request, "user": user, "saves": saves, "save": active,
             "save_settings": dict(active.settings or {}) if active else {},
-            "features": FEATURES, "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "last_roll": last_roll,
+            "features": FEATURES, "navigation_groups": NAVIGATION_GROUPS,
+            "navigation_group": navigation_group_for(current_page),
+            "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "last_roll": last_roll,
             "occult_notice": request.session.pop("occult_notice", None),
             "app_version": app.version, "static_version":_STATIC_VERSION,
             "notification_cursor": datetime.now(timezone.utc).isoformat(), **extra}
@@ -3860,11 +3915,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.4.1-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.4.2-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.1-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.2-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

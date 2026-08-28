@@ -30,7 +30,7 @@ from app.dice import notation_for_roll, parse, verify
 from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
-from app.main import FEATURES, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
+from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Portrait, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
@@ -1276,7 +1276,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.1")
+            self.assertEqual(health.json()["version"], "4.4.2")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1298,6 +1298,20 @@ class CoreSmokeTests(unittest.TestCase):
                 with self.subTest(page=page):
                     response=client.get(f"/p/{page}")
                     self.assertEqual(response.status_code,200,response.text[:500])
+
+    def test_task_navigation_covers_every_page_once_and_explains_the_layout(self):
+        grouped_pages=[page for group in NAVIGATION_GROUPS for page in group["pages"]]
+        self.assertEqual(set(grouped_pages),set(FEATURES))
+        self.assertEqual(len(grouped_pages),len(set(grouped_pages)))
+        self.assertEqual(navigation_group_for("pregnancies")["id"],"family")
+        self.assertEqual(navigation_group_for("storyline")["id"],"history")
+        self.assertEqual(navigation_group_for("saves")["id"],"setup")
+        with TestClient(app) as client:
+            home=client.get("/")
+            self.assertEqual(home.status_code,200)
+            self.assertIn("TRACKER MAP",home.text)
+            self.assertIn('id="navigation-filter"',home.text)
+            self.assertEqual(home.text.count('class="nav-group"'),len(NAVIGATION_GROUPS))
 
     def test_tutorial_covers_setup_daily_play_clock_sync_and_backups(self):
         with TestClient(app) as client:
