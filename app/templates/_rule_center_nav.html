@@ -1,0 +1,12 @@
+<nav class="rule-center-nav" aria-label="Rule center sections">
+  {% for key, label, description in [
+    ('rules','Setup','Calendar and automation defaults'),
+    ('roll-tables','Roll tables','Aging, pregnancy and marriage odds'),
+    ('historical-guidance','Historical guidance','Eras, causes and recovered data'),
+    ('occult-rules','Occult rules','Detection and follow-up automation')
+  ] %}
+  <a href="/p/{{key}}" class="{% if page==key %}active{% endif %}" {% if page==key %}aria-current="page"{% endif %}>
+    <strong>{{label}}</strong><small>{{description}}</small>
+  </a>
+  {% endfor %}
+</nav>

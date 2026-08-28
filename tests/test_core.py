@@ -27,7 +27,7 @@ from app.clock import _game_illnesses, _store_game_portrait, attach_game_identit
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
@@ -1276,7 +1276,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.3")
+            self.assertEqual(health.json()["version"], "4.4.4")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1305,6 +1305,7 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(len(grouped_pages),len(set(grouped_pages)))
         self.assertEqual(navigation_group_for("pregnancies")["id"],"family")
         self.assertEqual(navigation_group_for("storyline")["id"],"history")
+        self.assertEqual(navigation_group_for("roll-tables")["id"],"challenge")
         self.assertEqual(navigation_group_for("saves")["id"],"setup")
         with TestClient(app) as client:
             home=client.get("/")
@@ -1312,6 +1313,16 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertIn("TRACKER MAP",home.text)
             self.assertIn('id="navigation-filter"',home.text)
             self.assertEqual(home.text.count('class="nav-group"'),len(NAVIGATION_GROUPS))
+
+    def test_rule_center_separates_setup_tables_history_and_occult_controls(self):
+        with TestClient(app) as client:
+            setup=client.get("/p/rules");tables=client.get("/p/roll-tables");history=client.get("/p/historical-guidance");occult=client.get("/p/occult-rules")
+            self.assertEqual([response.status_code for response in (setup,tables,history,occult)],[200,200,200,200])
+            self.assertIn("Save-wide rules",setup.text);self.assertIn("Open roll tables",setup.text)
+            self.assertIn("Pregnancy, marriage and remarriage",tables.text);self.assertIn("1 on a D6",tables.text);self.assertIn("Add a historical planning range",tables.text)
+            self.assertIn("Death-cause libraries",history.text);self.assertIn("Recovered support data",history.text)
+            self.assertIn("Occult inheritance and danger rolls",occult.text);self.assertIn("Editable occult rule library",occult.text)
+            self.assertEqual(tables.text.count('aria-label="Rule center sections"'),1)
 
     def test_tutorial_covers_setup_daily_play_clock_sync_and_backups(self):
         with TestClient(app) as client:
@@ -1707,6 +1718,53 @@ class CoreSmokeTests(unittest.TestCase):
         with SessionLocal() as session:
             self.assertIsNone(session.get(Record,sim_id).data.get("death_global_day"));self.assertTrue(session.get(Record,roll_id).data["nonlethal"])
             session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_ended_marriage_schedules_one_era_aware_remarriage_roll_for_the_living_spouse(self):
+        marker=uuid.uuid4().hex[:10]
+        self.assertEqual(marriage_roll_result(1,"1: May remarry; 2-8: Does not remarry"),"May remarry")
+        self.assertEqual(marriage_roll_result(7,"1: May remarry; 2-8: Does not remarry"),"Does not remarry")
+        with SessionLocal() as session:
+            template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+            save=ChronicleSave(workspace_id=template.workspace_id,name=f"Remarriage {marker}",global_day=50,start_year=1500,days_per_year=4,settings={"roll_tracking_start_day":1})
+            session.add(save);session.flush()
+            widow=Record(save_id=save.id,kind="sim",label=f"Widow {marker}",global_day=1,data={"birth_global_day":1})
+            spouse=Record(save_id=save.id,kind="sim",label=f"Late spouse {marker}",global_day=1,data={"birth_global_day":1,"death_global_day":40,"game_was_dead":True})
+            session.add_all([widow,spouse]);session.flush()
+            ended=Record(save_id=save.id,kind="relationship",label=f"Ended marriage {marker}",global_day=20,data={"partner1_id":widow.id,"partner2_id":spouse.id,"partner1_name":widow.label,"partner2_name":spouse.label,"type":"Marriage","legally_married":True,"status":"Widowed","start_global_day":20,"end_global_day":40})
+            earlier=Record(save_id=save.id,kind="planner_rule",label="Remarriage Eligibility",data={"rule_key":"remarriage","start_year":-9999,"end_year":1508,"die":"d6","bad_results":"1: May remarry; 2-6: Does not remarry","active":True})
+            current=Record(save_id=save.id,kind="planner_rule",label="Remarriage Eligibility",data={"rule_key":"remarriage","start_year":1509,"end_year":9999,"die":"d8","bad_results":"1: May remarry; 2-8: Does not remarry","active":True})
+            session.add_all([ended,earlier,current]);session.flush()
+            self.assertEqual(schedule_rolls(session,save),1)
+            roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["remarriage_roll"].as_boolean().is_(True)))
+            self.assertIsNotNone(roll);self.assertEqual((roll.global_day,roll.data["die"],roll.data["planner_year"]),(40,"d8",1509))
+            self.assertEqual(roll.data["former_partner_id"],spouse.id);self.assertTrue(roll.data["nonlethal"])
+            self.assertEqual(schedule_rolls(session,save),0)
+            result=complete_roll(session,save,roll,1);self.assertEqual(result["outcome"],"May remarry")
+            session.commit();save_id,roll_id,widow_id=save.id,roll.id,widow.id
+        with SessionLocal() as session:
+            self.assertEqual(session.get(Record,roll_id).data["outcome"],"May remarry")
+            self.assertIsNone(session.get(Record,widow_id).data.get("death_global_day"))
+            session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_remarriage_defaults_seed_and_active_new_marriage_prevents_another_roll(self):
+        marker=uuid.uuid4().hex[:10]
+        with SessionLocal() as session:
+            template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+            save=ChronicleSave(workspace_id=template.workspace_id,name=f"Remarried {marker}",global_day=60,start_year=1500,days_per_year=4)
+            session.add(save);session.flush();seed_defaults(session,save)
+            default=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="planner_rule",Record.label=="Remarriage Eligibility"))
+            self.assertIsNotNone(default);self.assertEqual((default.data["die"],default.data["bad_results"]),("d6","1: May remarry; 2-6: Does not remarry"))
+            first=Record(save_id=save.id,kind="sim",label=f"Already remarried {marker}",global_day=1,data={"birth_global_day":1})
+            old=Record(save_id=save.id,kind="sim",label=f"Former spouse {marker}",global_day=1,data={"birth_global_day":1})
+            current=Record(save_id=save.id,kind="sim",label=f"Current spouse {marker}",global_day=1,data={"birth_global_day":1})
+            session.add_all([first,old,current]);session.flush()
+            session.add_all([
+                Record(save_id=save.id,kind="relationship",label="Old marriage",data={"partner1_id":first.id,"partner2_id":old.id,"type":"Marriage","legally_married":True,"status":"Divorced","end_global_day":40}),
+                Record(save_id=save.id,kind="relationship",label="Current marriage",data={"partner1_id":first.id,"partner2_id":current.id,"type":"Marriage","legally_married":True,"status":"Active","start_global_day":50}),
+            ]);session.flush();schedule_rolls(session,save)
+            rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["remarriage_roll"].as_boolean().is_(True),Record.data["sim_id"].as_string()==first.id)))
+            self.assertEqual(rolls,[])
+            session.rollback()
 
     def test_completed_pregnancy_count_roll_is_backfilled_without_rerolling(self):
         marker=uuid.uuid4().hex[:10]

@@ -75,6 +75,7 @@ DEFAULT_PLANNER_RULES = [
     ("Non-Heir Marriage Eligibility", 1300, 1499, "d10", "1", "Marriage eligibility for a non-heir"),
     ("Non-Heir Marriage Eligibility", 1500, 1799, "d8", "1", "Marriage eligibility for a non-heir"),
     ("Non-Heir Marriage Eligibility", 1800, 9999, "d6", "1", "Marriage eligibility for a non-heir"),
+    ("Remarriage Eligibility", -9999, 9999, "d6", "1: May remarry; 2-6: Does not remarry", "One remarriage roll after a marriage ends; add era ranges to change the odds through history"),
 ]
 
 CLOSED_PREGNANCIES = {"delivered", "complete", "completed", "miscarriage", "stillbirth", "cancelled", "canceled", "closed"}
@@ -654,7 +655,7 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
     for label, start_year, end_year, die, bad, notes in DEFAULT_PLANNER_RULES:
         if (label.casefold(), start_year) in existing_planner:
             continue
-        record = Record(save_id=save.id, kind="planner_rule", label=label, data={"start_year": start_year, "end_year": end_year, "die": die, "bad_results": bad, "notes": notes, "active": True, "core_ruleset_id":core_rulesets.SEVERALUDO})
+        record = Record(save_id=save.id, kind="planner_rule", label=label, data={"start_year": start_year, "end_year": end_year, "die": die, "bad_results": bad, "notes": notes, "active": True, "core_ruleset_id":None if label=="Remarriage Eligibility" else core_rulesets.SEVERALUDO})
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
     existing_multiple={(int(item.data.get("start_year",-9999)),int(item.data.get("end_year",9999))) for item in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="multiple_birth_rule",Record.deleted.is_(False)))}
     for start_year,end_year in DEFAULT_MULTIPLE_BIRTH_ERAS:
@@ -1237,10 +1238,32 @@ def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None 
     return not requested or any(word in social for word in requested)
 
 
+def _remarriage_rule(record: Record) -> bool:
+    data = record.data or {}
+    text = " ".join(str(value or "") for value in (data.get("rule_key"), record.label, data.get("notes"))).casefold()
+    return "remarriage" in text or "remarry" in text
+
+
+def seed_remarriage_rule(session: Session, save: ChronicleSave) -> int:
+    """Install the cross-ruleset remarriage baseline into older saves once."""
+    existing = next((record for record in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "planner_rule", Record.deleted.is_(False)
+    )) if _remarriage_rule(record)), None)
+    if existing:
+        return 0
+    record = Record(save_id=save.id, kind="planner_rule", label="Remarriage Eligibility", data={
+        "rule_key":"remarriage", "start_year":-9999, "end_year":9999, "die":"d6",
+        "bad_results":"1: May remarry; 2-6: Does not remarry", "active":True,
+        "notes":"One remarriage roll after a marriage ends; add era ranges to change the odds through history",
+    })
+    session.add(record); session.flush(); journal(session, record, "upsert", 0); save.revision += 1
+    return 1
+
+
 def _marriage_rule(record: Record) -> bool:
     data = record.data or {}
     text = " ".join(str(value or "") for value in (data.get("rule_key"), record.label, data.get("notes"))).casefold()
-    return "non_heir_marriage" in text or "non-heir marriage" in text or "marriage eligibility" in text
+    return not _remarriage_rule(record) and ("non_heir_marriage" in text or "non-heir marriage" in text or "marriage eligibility" in text)
 
 
 def _marriage_roll(record: Record) -> bool:
@@ -1252,23 +1275,35 @@ def _marriage_roll(record: Record) -> bool:
 def marriage_roll_result(actual: int, result_rules: str, bad_results: str = "") -> str:
     """Interpret full marriage tables while keeping every marriage outcome nonfatal."""
     text = str(result_rules or bad_results or "").replace("–", "-").replace("—", "-")
+    remarriage = "remarri" in text.casefold() or "remarry" in text.casefold()
+    positive = "May remarry" if remarriage else "May marry"
+    negative = "Does not remarry" if remarriage else "Does not marry"
+    default_action = ""
     for clause in (part.strip() for part in re.split(r"[;\n]+", text) if part.strip()):
+        if ":" in clause and any(marker in clause.casefold() for marker in ("all other", "otherwise", "remaining")):
+            default_action = clause.split(":", 1)[1].strip()
         match = re.search(r"(?<!\d)(\d+)(?:\s*-\s*(\d+))?(?!\d)\s*:", clause)
         if not match:
             continue
         low = int(match.group(1)); high = int(match.group(2) or low)
         if min(low, high) <= actual <= max(low, high):
             action = clause.split(":", 1)[1].strip()
-            if "does not marry" in action.casefold():
-                return "Does not marry"
-            if "may marry" in action.casefold() or "marries" in action.casefold():
-                return "May marry"
-            return action or "May marry"
+            if "does not remarry" in action.casefold() or "does not marry" in action.casefold():
+                return negative
+            if "may remarry" in action.casefold() or "remarries" in action.casefold() or "may marry" in action.casefold() or "marries" in action.casefold():
+                return positive
+            return action or positive
+    if default_action:
+        if "does not remarry" in default_action.casefold() or "does not marry" in default_action.casefold():
+            return negative
+        if "may remarry" in default_action.casefold() or "remarries" in default_action.casefold() or "may marry" in default_action.casefold() or "marries" in default_action.casefold():
+            return positive
+        return default_action
     failure_values = str(bad_results or "")
-    if "does not marry" in text.casefold():
-        failure_clause = next((part for part in re.split(r"[;\n]+", text) if "does not marry" in part.casefold()), "")
+    if "does not marry" in text.casefold() or "does not remarry" in text.casefold():
+        failure_clause = next((part for part in re.split(r"[;\n]+", text) if "does not marry" in part.casefold() or "does not remarry" in part.casefold()), "")
         failure_values = failure_clause.split(":", 1)[0]
-    return "Does not marry" if failed(actual, failure_values) else "May marry"
+    return negative if failed(actual, failure_values) else positive
 
 
 def _pregnancy_count_rule(record: Record) -> bool:
@@ -1320,7 +1355,7 @@ def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Reco
     rule = next((record for record in sorted(rules, key=lambda item:int((item.data or {}).get("start_year", -9999)), reverse=True)
                  if int((record.data or {}).get("start_year", -9999)) <= year <= int((record.data or {}).get("end_year", 9999))), None)
     if not rule:
-        raise ValueError(f"No active pregnancy-count rule covers {year}. Add or enable one under Rules & Data.")
+        raise ValueError(f"No active pregnancy-count rule covers {year}. Add or enable one under Roll Tables.")
     source = f"planner:pregnancy-count:{sim.id}:{year}"
     existing = session.scalar(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
@@ -1508,10 +1543,118 @@ def _schedule_marriage_rolls(session: Session, save: ChronicleSave, sims: list[R
     return created, retired
 
 
+def _schedule_remarriage_rolls(session: Session, save: ChronicleSave, sims: list[Record] | None = None) -> tuple[int, int]:
+    """Schedule one era-aware, nonfatal remarriage decision after each ended marriage."""
+    seed_remarriage_rule(session, save)
+    rules = [record for record in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "planner_rule", Record.deleted.is_(False)
+    )) if _remarriage_rule(record) and bool((record.data or {}).get("active", True)) and core_rulesets.applies_to_selected_core(save, record)]
+    if not rules:
+        return 0, 0
+    sims = sims if sims is not None else list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False)
+    )))
+    sim_by_id = {sim.id: sim for sim in sims}
+    relationships = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "relationship", Record.deleted.is_(False)
+    )))
+    ended_statuses = {"ended", "divorced", "annulled", "widowed", "separated", "inactive", "closed"}
+    active_married_ids: set[str] = set()
+    ended_marriages: list[tuple[Record, int]] = []
+    for relationship in relationships:
+        data = relationship.data or {}
+        relation_type = str(data.get("type") or "").casefold()
+        married = bool(data.get("legally_married")) or "marriage" in relation_type or "spouse" in relation_type
+        if not married:
+            continue
+        status = str(data.get("status") or "Active").strip().casefold()
+        raw_end = data.get("end_global_day")
+        ended = status in ended_statuses or raw_end not in (None, "")
+        if not ended:
+            active_married_ids.update(str(data.get(key) or "") for key in ("partner1_id", "partner2_id"))
+            continue
+        try:
+            ended_day = int(raw_end)
+        except (TypeError, ValueError):
+            ended_day = save.global_day
+        ended_marriages.append((relationship, max(1, ended_day)))
+
+    all_remarriage_rolls = [record for record in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll"
+    )) if "planner:remarriage:" in str((record.data or {}).get("source") or "").casefold()]
+    existing_sources = {str((record.data or {}).get("source") or "") for record in all_remarriage_rolls}
+    tracking_start = max(1, _setting_int(save, "roll_tracking_start_day", _setting_int(save, "roll_tracking_start", 1)))
+    retired = 0
+    for roll in all_remarriage_rolls:
+        if roll.deleted or bool((roll.data or {}).get("completed")):
+            continue
+        sim = sim_by_id.get(str((roll.data or {}).get("sim_id") or ""))
+        death_day = (sim.data or {}).get("death_global_day") if sim else None
+        unavailable = not sim or sim.id in active_married_ids or bool((sim.data or {}).get("game_was_dead")) or (death_day not in (None, "") and int(death_day) <= save.global_day)
+        before_tracking = roll.global_day is not None and int(roll.global_day) < tracking_start
+        if not unavailable and not before_tracking:
+            continue
+        base = roll.version
+        roll.deleted = True
+        roll.data = {**(roll.data or {}), "retired_reason":"Sim is already remarried or no longer eligible" if unavailable else "Eligibility predates roll tracking", "retired_global_day":save.global_day}
+        roll.version += 1; journal(session, roll, "delete", base); retired += 1
+
+    created = 0
+    for relationship, due in ended_marriages:
+        if due < tracking_start:
+            continue
+        relationship_data = relationship.data or {}
+        partner_ids = [str(relationship_data.get(key) or "") for key in ("partner1_id", "partner2_id")]
+        for index, sim_id in enumerate(partner_ids):
+            sim = sim_by_id.get(sim_id)
+            if not sim or sim.id in active_married_ids:
+                continue
+            sim_data = sim.data or {}
+            death_day = sim_data.get("death_global_day")
+            if bool(sim_data.get("game_was_dead")) or (death_day not in (None, "") and int(death_day) <= save.global_day):
+                continue
+            source = f"planner:remarriage:{relationship.id}:{sim.id}"
+            if source in existing_sources:
+                continue
+            year = save.start_year + (due - 1) // max(1, save.days_per_year)
+            rule = next((record for record in sorted(rules, key=lambda item:int((item.data or {}).get("start_year", -9999)), reverse=True)
+                         if int((record.data or {}).get("start_year", -9999)) <= year <= int((record.data or {}).get("end_year", 9999))), None)
+            if not rule:
+                continue
+            rule_data = rule.data or {}
+            die = str(rule_data.get("die") or "d6")
+            result_rules = str(rule_data.get("bad_results") or rule_data.get("result_rules") or "1: May remarry; 2-6: Does not remarry").strip()
+            if ":" not in result_rules:
+                sides_match = re.search(r"d(\d+)", die.casefold())
+                sides = max(2, int(sides_match.group(1))) if sides_match else 6
+                result_rules = f"{result_rules or '1'}: May remarry; 2-{sides}: Does not remarry"
+            failure_values = "; ".join(
+                clause.split(":", 1)[0].strip() for clause in re.split(r"[;\n]+", result_rules)
+                if ":" in clause and "does not remarry" in clause.casefold()
+            )
+            former_partner_id = partner_ids[1-index] if len(partner_ids) > 1 else ""
+            former_partner = sim_by_id.get(former_partner_id)
+            roll = Record(save_id=save.id, kind="roll", label=f"{sim.label} — Remarriage Eligibility", global_day=due, data={
+                "sim_id":sim.id, "sim_name":sim.label, "former_partner_id":former_partner_id,
+                "former_partner_name":former_partner.label if former_partner else relationship_data.get("partner2_name" if index == 0 else "partner1_name"),
+                "relationship_id":relationship.id, "source_id":relationship.id, "source":source,
+                "roll_type":"Remarriage Eligibility", "die":die, "bad_results":failure_values,
+                "result_rules":result_rules, "planner_rule_id":rule.id, "planner_year":year,
+                "due_global_day":due, "completed":False, "nonlethal":True, "remarriage_roll":True,
+                "failure_outcome":"Does not remarry", "success_outcome":"May remarry",
+                "notes":"Auto-generated when the prior marriage ended; completing it records eligibility only and never creates a spouse automatically",
+                "core_ruleset_id":rule_data.get("core_ruleset_id"), "core_source_rule_id":rule_data.get("source_rule_id"),
+            })
+            session.add(roll); session.flush(); journal(session, roll, "upsert", 0)
+            existing_sources.add(source); created += 1
+    return created, retired
+
+
 def schedule_marriage_rolls(session: Session, save: ChronicleSave) -> int:
     created, retired = _schedule_marriage_rolls(session, save)
-    save.revision += created + retired
-    return created
+    remarriage_created, remarriage_retired = _schedule_remarriage_rolls(session, save)
+    save.revision += created + retired + remarriage_created + remarriage_retired
+    return created + remarriage_created
 
 
 def _occult_year(save: ChronicleSave, day: int) -> int:
@@ -2536,11 +2679,13 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
             session.add(roll);session.flush();journal(session,roll,"upsert",0);created += 1
     marriage_created, marriage_retired = _schedule_marriage_rolls(session, save, sims)
     created += marriage_created
+    remarriage_created, remarriage_retired = _schedule_remarriage_rolls(session, save, sims)
+    created += remarriage_created
     created += schedule_occult_rolls(session, save, sims)
     created += schedule_event_rolls(session, save, sims)
     created += schedule_campaign_rolls(session, save, sims)
     portrait_prompt_created = decade_portraits.schedule_prompt(session, save)
-    save.revision += created + marriage_retired + portrait_prompt_created
+    save.revision += created + marriage_retired + remarriage_retired + portrait_prompt_created
     return created
 
 
@@ -2637,7 +2782,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         is_bad = False
     elif _marriage_roll(roll):
         automatic_outcome = marriage_roll_result(actual, str(roll.data.get("result_rules") or ""), str(roll.data.get("bad_results") or ""))
-        is_bad = automatic_outcome == "Does not marry"
+        is_bad = automatic_outcome in {"Does not marry", "Does not remarry"}
     else:
         is_bad = failed(actual, str(roll.data.get("bad_results") or ""))
         mapped_outcome = _mapped_roll_outcome(actual, str(roll.data.get("result_rules") or ""))

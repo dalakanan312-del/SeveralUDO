@@ -53,7 +53,10 @@ FEATURES = {
     "plants": ("Planting Reference", "Historical crops by year, season and location"),
     "names": ("Name Generator", "Offline names from your own sourced historical libraries"),
     "guides": ("Challenge Guides", "SeveralUDO, Morbid, and Classic 2023 references"),
-    "rules": ("Rules & Data", "Editable defaults, eras, dice and causes of death"),
+    "rules": ("Rule Setup", "Calendar, automation, save-wide defaults and display preferences"),
+    "roll-tables": ("Roll Tables", "Aging, pregnancy, marriage, remarriage and multiple-birth rules by era"),
+    "occult-rules": ("Occult Rules", "Occult detection, automatic obligations and follow-up rule library"),
+    "historical-guidance": ("Historical Guidance", "Era guidance, death causes and recovered reference data"),
     "health": ("Rules Health", "Coverage, duplicates and maintenance checks"),
     "clock": ("Game Clock", "Local or hosted Sims 4 time and population receiver"),
     "sync": ("Sync", "Desktop/cloud status, devices and conflict review"),
@@ -73,28 +76,28 @@ NAVIGATION_GROUPS = (
         "label": "Play",
         "description": "What needs attention now",
         "icon": "▶",
-        "pages": ("today", "automation", "planner", "clock", "rolls"),
+        "pages": ("today", "automation", "clock", "planner", "rolls"),
     },
     {
         "id": "family",
         "label": "Family & Life",
         "description": "People, homes and life events",
         "icon": "♟",
-        "pages": ("sims", "households", "relationships", "pregnancies", "illnesses", "family-tree"),
+        "pages": ("sims", "family-tree", "relationships", "households", "pregnancies", "illnesses"),
     },
     {
         "id": "history",
         "label": "History & Story",
         "description": "The chronicle, world and memories",
         "icon": "✒",
-        "pages": ("timeline", "storyline", "events", "world", "notes"),
+        "pages": ("events", "world", "timeline", "storyline", "notes"),
     },
     {
         "id": "challenge",
         "label": "Challenge & Rules",
         "description": "Rulesets, succession and play aids",
         "icon": "⚖",
-        "pages": ("challenge", "rules", "guides", "plants", "names", "avatar", "harry-potter", "game-of-thrones"),
+        "pages": ("challenge", "rules", "roll-tables", "historical-guidance", "occult-rules", "guides", "plants", "names", "avatar", "harry-potter", "game-of-thrones"),
     },
     {
         "id": "insights",
@@ -120,7 +123,7 @@ KIND_BY_PAGE = {
     "sims": "sim", "households": "household", "relationships": "relationship",
     "pregnancies": "pregnancy", "rolls": "roll", "events": "event",
     "illnesses": "illness", "notes": "note", "planner": "play_rotation", "automation": "game_candidate",
-    "challenge": "campaign", "plants": "plant", "rules": "era_rule",
+    "challenge": "campaign", "plants": "plant",
 }
 
 class CachedStaticFiles(StaticFiles):
@@ -140,7 +143,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.4.3")
+app = FastAPI(title="Decades Tracker", version="4.4.4")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1313,6 +1316,8 @@ def feature_page(request: Request, page: str):
             if relationship_classification_repair["records"]:
                 session.flush()
                 ctx["relationship_classification_repair"] = relationship_classification_repair
+            if page == "roll-tables":
+                domain.seed_remarriage_rule(session, save)
         if save and page == "automation":
             relationship_repair = automation.repair_relationship_inbox(session, save)
             repaired_count = relationship_repair["classified"] + relationship_repair["dismissed"]
@@ -1372,7 +1377,9 @@ def feature_page(request: Request, page: str):
             "world":{"sim","migration","household"},
             "legacy-lab":{"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","clock_diagnostic"},
             "events":{"event","event_rule"}, "notes":{"note"},
-            "rules":{"sim","roll","roll_rule","occult_rule","addon_rule","death_causes","planner_rule","multiple_birth_rule","era_guidance","era_rule","event_rule","source_archive","detection_candidate","task","roll_rule_era"},
+            "roll-tables":{"roll_rule","planner_rule","multiple_birth_rule"},
+            "occult-rules":{"sim","roll","occult_rule"},
+            "historical-guidance":{"death_causes","era_guidance","era_rule","event_rule","source_archive","detection_candidate","task","roll_rule_era"},
             "avatar":{"sim","addon_rule"},
             "harry-potter":{"sim","household","addon_rule"},
             "game-of-thrones":{"sim","household","addon_rule"},
@@ -1480,23 +1487,28 @@ def feature_page(request: Request, page: str):
             sex=request.query_params.get("sex") or "Female";surname_culture=request.query_params.get("surname_culture") or culture;count=max(1,min(20,int_or_none(request.query_params.get("count")) or 5));no_surname=request.query_params.get("no_surname") in {"1","true","on","yes"}
             ctx.update(name_coverage=names.coverage(name_pool),name_cultures=cultures,name_culture=culture,name_sex=sex,name_surname_culture=surname_culture,name_count=count,name_no_surname=no_surname,name_suggestions=names.generate(name_pool,culture,sex,count,surname_culture=surname_culture,no_surname=no_surname) if request.query_params.get("generate") else [],name_medieval=names.medieval_summary())
             records=[]
-        if page == "rules" and save:
+        if page in {"rules", "roll-tables", "occult-rules", "historical-guidance"} and save:
             selected_core=core_rulesets.selected_core(save)
             visible_core=lambda item: not (item.data or {}).get("core_ruleset_id") or (item.data or {}).get("core_ruleset_id")==selected_core
-            occult_rule_records=sorted((item for item in view_records if item.kind=="occult_rule"),key=lambda item:(str((item.data or {}).get("occult") or ""),str((item.data or {}).get("rule_key") or ""),int_or_none((item.data or {}).get("start_year")) or -9999))
-            occult_sims=[item for item in view_records if item.kind=="sim" and occult_rules.sim_occult_types(item.data)]
-            ctx.update(roll_rules=sorted((item for item in view_records if item.kind=="roll_rule" and visible_core(item)),key=lambda item:(int_or_none((item.data or {}).get("start_year")) or -9999,int_or_none((item.data or {}).get("age_days")) if int_or_none((item.data or {}).get("age_days")) is not None else 10**9,item.label)),
-                       cause_groups=[item for item in view_records if item.kind=="death_causes"],
-                       planner_rules=sorted((item for item in view_records if item.kind=="planner_rule" and visible_core(item)),key=lambda item:(item.label,int_or_none((item.data or {}).get("start_year")) or -9999)),
-                       multiple_birth_rules=sorted((item for item in view_records if item.kind=="multiple_birth_rule"),key=lambda item:int_or_none((item.data or {}).get("start_year")) or -9999),
-                       era_guidance=sorted((item for item in view_records if item.kind=="era_guidance" and visible_core(item)),key=lambda item:(int_or_none((item.data or {}).get("start_year")) or -9999,item.label)),
-                       imported_era_rules=[item for item in view_records if item.kind=="era_rule"],
-                       event_rule_count=sum(item.kind=="event_rule" for item in view_records),
-                       compatibility_records=[item for item in view_records if item.kind in {"source_archive","detection_candidate","task","roll_rule_era"}],
-                       occult_rules=occult_rule_records,detected_occult_sims=occult_sims,
-                       occult_rule_sims=sorted((item for item in view_records if item.kind=="sim"),key=lambda item:item.label.casefold()),
-                       occult_pending_count=sum(item.kind=="roll" and bool((item.data or {}).get("occult_roll")) and not bool((item.data or {}).get("completed")) for item in view_records),
-                       save_settings=dict(save.settings or {}),core_ruleset=core_rulesets.current_catalog_entry(save));records=[]
+            rule_records=view_records or []
+            ctx.update(save_settings=dict(save.settings or {}),core_ruleset=core_rulesets.current_catalog_entry(save))
+            if page == "roll-tables":
+                ctx.update(roll_rules=sorted((item for item in rule_records if item.kind=="roll_rule" and visible_core(item)),key=lambda item:(int_or_none((item.data or {}).get("start_year")) or -9999,int_or_none((item.data or {}).get("age_days")) if int_or_none((item.data or {}).get("age_days")) is not None else 10**9,item.label)),
+                           planner_rules=sorted((item for item in rule_records if item.kind=="planner_rule" and visible_core(item)),key=lambda item:(item.label,int_or_none((item.data or {}).get("start_year")) or -9999)),
+                           multiple_birth_rules=sorted((item for item in rule_records if item.kind=="multiple_birth_rule"),key=lambda item:int_or_none((item.data or {}).get("start_year")) or -9999))
+            elif page == "occult-rules":
+                occult_rule_records=sorted((item for item in rule_records if item.kind=="occult_rule"),key=lambda item:(str((item.data or {}).get("occult") or ""),str((item.data or {}).get("rule_key") or ""),int_or_none((item.data or {}).get("start_year")) or -9999))
+                occult_sims=[item for item in rule_records if item.kind=="sim" and occult_rules.sim_occult_types(item.data)]
+                ctx.update(occult_rules=occult_rule_records,detected_occult_sims=occult_sims,
+                           occult_rule_sims=sorted((item for item in rule_records if item.kind=="sim"),key=lambda item:item.label.casefold()),
+                           occult_pending_count=sum(item.kind=="roll" and bool((item.data or {}).get("occult_roll")) and not bool((item.data or {}).get("completed")) for item in rule_records))
+            elif page == "historical-guidance":
+                ctx.update(cause_groups=[item for item in rule_records if item.kind=="death_causes"],
+                           era_guidance=sorted((item for item in rule_records if item.kind=="era_guidance" and visible_core(item)),key=lambda item:(int_or_none((item.data or {}).get("start_year")) or -9999,item.label)),
+                           imported_era_rules=[item for item in rule_records if item.kind=="era_rule"],
+                           event_rule_count=sum(item.kind=="event_rule" for item in rule_records),
+                           compatibility_records=[item for item in rule_records if item.kind in {"source_archive","detection_candidate","task","roll_rule_era"}])
+            records=[]
         if page == "planner" and save:
             sims=[item for item in view_records if item.kind=="sim"];households=[item for item in view_records if item.kind=="household"]
             rotations=[item for item in view_records if item.kind=="play_rotation"];plans=[item for item in view_records if item.kind=="family_plan"]
@@ -1537,7 +1549,7 @@ def feature_page(request: Request, page: str):
             match_candidates.sort(key=lambda item:(item["score"],item["sim"].label.casefold()),reverse=True)
             marriage_rolls=[item for item in view_records if item.kind=="roll" and domain._marriage_roll(item)]
             campaigns=[item for item in view_records if item.kind=="campaign"]
-            ctx.update(challenge_year=year,era_guidance=guidance,succession=succession,campaigns=campaigns,services=[item for item in view_records if item.kind=="service"],all_sims=sorted_sims(sims,save),match_eligible=sorted_sims(match_eligible,save),selected_match=selected_match,match_candidates=match_candidates,kinship_depth=kinship_depth,marriage_rolls=sorted(marriage_rolls,key=lambda item:item.global_day or 0),marriage_roll_counts={"pending":sum(not bool((item.data or {}).get("completed")) for item in marriage_rolls),"may":sum("may marry" in str((item.data or {}).get("outcome") or "").casefold() for item in marriage_rolls),"no":sum("does not marry" in str((item.data or {}).get("outcome") or "").casefold() for item in marriage_rolls)});records=[]
+            ctx.update(challenge_year=year,era_guidance=guidance,succession=succession,campaigns=campaigns,services=[item for item in view_records if item.kind=="service"],all_sims=sorted_sims(sims,save),match_eligible=sorted_sims(match_eligible,save),selected_match=selected_match,match_candidates=match_candidates,kinship_depth=kinship_depth,marriage_rolls=sorted(marriage_rolls,key=lambda item:item.global_day or 0),marriage_roll_counts={"pending":sum(not bool((item.data or {}).get("completed")) for item in marriage_rolls),"may":sum(any(text in str((item.data or {}).get("outcome") or "").casefold() for text in ("may marry","may remarry")) for item in marriage_rolls),"no":sum(any(text in str((item.data or {}).get("outcome") or "").casefold() for text in ("does not marry","does not remarry")) for item in marriage_rolls)});records=[]
         if page == "world" and save:
             sims=[item for item in view_records if item.kind=="sim"]
             selected_year=int_or_none(request.query_params.get("year"))
@@ -1861,7 +1873,7 @@ def feature_page(request: Request, page: str):
             "today":"today.html", "sims":"sims.html", "relationships":"relationships.html", "households":"households.html",
             "pregnancies":"pregnancies.html", "illnesses":"illnesses.html", "automation":"automation.html", "storyline":"storyline.html",
             "family-tree":"family_tree.html", "timeline":"timeline.html", "statistics":"statistics.html", "health":"health.html",
-            "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
+            "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "roll-tables":"roll_tables.html", "occult-rules":"occult_rules.html", "historical-guidance":"historical_guidance.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
             "world":"world.html", "legacy-lab":"legacy_lab.html",
             "clock":"clock.html", "sync":"sync.html", "account":"account.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html",
@@ -3188,7 +3200,7 @@ def toggle_occult_rolls(request: Request, enabled: str = Form(""), return_to: st
         )
     destination = return_to.strip()
     if not destination.startswith("/") or destination.startswith("//"):
-        destination = "/p/rules#occult-rules"
+        destination = "/p/occult-rules"
     return RedirectResponse(destination,status_code=303)
 
 
@@ -3205,7 +3217,7 @@ def create_occult_followup(request: Request, rule_id: str = Form(...), sim_id: s
         except ValueError as exc: raise HTTPException(400,str(exc)) from exc
         save.revision+=int(created)
         request.session["occult_notice"]=f"Created {rule.label} for {sim.label} on Global Day {due}."
-    return RedirectResponse("/p/rules#occult-rules",status_code=303)
+    return RedirectResponse("/p/occult-rules",status_code=303)
 
 
 @app.post("/api/rule-rolls/create")
@@ -3915,11 +3927,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.4.3-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.4.4-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.3-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.4-Setup.exe"',"Cache-Control":"no-store",
     })
 
 
