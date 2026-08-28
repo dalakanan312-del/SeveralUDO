@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.4.2` reorganizes the complete tracker into six task-based sections with persistent collapsible navigation, page search, quick access, breadcrumbs, and a clearer overview map. Every existing page and feature remains available. It also retains the reviewed family-event details from 4.4.1, the challenge-management overhaul from 4.4.0, and read-only Sims 4 Tray portrait scanning from 4.3.2.
+`4.4.3` repairs occult follow-up rolls against the supplied source rules: werewolf attacks now select a victim before applying the close-relation check, vampire hunts test every eligible vampire and honor exposure/suspicion, and ghost haunting/move-on rolls require a successful persistence result. Tracker-side transformations, binding, exorcism, and moving on now update the Sim record. It retains the reorganized task-based navigation from 4.4.2, reviewed family-event details from 4.4.1, and the challenge-management overhaul from 4.4.0.
 
 `4.3.0` adds optional Kemzima Responsible Pregnancy compatibility. Clock Sync 2.2.7 detects selected active pregnancy exposures, risks, maternal conditions, and newborn complications without treating them as ordinary illnesses. Current states appear on Sim and pregnancy profiles, state changes enter the chronicle once, and repeated reports do not create duplicate inbox work. Players without the mod continue to use the tracker normally.
 

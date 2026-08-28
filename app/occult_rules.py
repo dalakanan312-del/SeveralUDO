@@ -18,7 +18,6 @@ OCCULT_FOLLOW_UPS = {
     "vampire_hunt": ("vampire_accused", "vampire_false_accusation"),
     "vampire_accused": ("vampire_accused_death",),
     "vampire_false_accusation": ("vampire_accused_death",),
-    "vampire_feeding_suspicion": ("vampire_accused",),
     "alien_discovery": ("alien_discovery_type", "alien_discovery_death"),
     "spellcaster_witch_trial": ("spellcaster_accused", "spellcaster_false_accusation"),
     "spellcaster_accused": ("spellcaster_verdict",),
@@ -57,12 +56,13 @@ AUTOMATIC_OCCULT_FOLLOW_UPS = {
 # to attempt them and, in some cases, select a qualified caster.
 AUTOMATIC_OCCULT_FOLLOW_UP_SPECS = {
     "vampire_hunt": (
-        {"rule_key":"vampire_accused", "target":"origin"},
+        # A hunt tests every vampire in the affected household/settlement, not
+        # just the representative Sim carried by the household-level roll.
+        {"rule_key":"vampire_accused", "target":"eligible_occult_members", "occult":"Vampire"},
         {"rule_key":"vampire_false_accusation", "target":"living_human_other"},
     ),
     "vampire_accused": ({"rule_key":"vampire_accused_death", "target":"origin"},),
     "vampire_false_accusation": ({"rule_key":"vampire_accused_death", "target":"origin"},),
-    "vampire_feeding_suspicion": ({"rule_key":"vampire_accused", "target":"origin"},),
     "alien_discovery": (
         {"rule_key":"alien_discovery_type", "target":"origin", "minimum_year":1946},
         {"rule_key":"alien_discovery_death", "target":"origin"},
@@ -77,11 +77,11 @@ AUTOMATIC_OCCULT_FOLLOW_UP_SPECS = {
     "mermaid_discovery": ({"rule_key":"mermaid_discovery_death", "target":"origin"},),
     "mermaid_sailor": ({"rule_key":"mermaid_murder_suspicion", "target":"origin", "actor_alignment":"bad"},),
     "mermaid_murder_suspicion": ({"rule_key":"mermaid_discovery", "target":"origin"},),
-    # The first target is random. A close relation gets the protective D4 first;
-    # with no close relation the victim proceeds directly to the death roll.
+    # Select the victim first. Only a randomly selected close relation receives
+    # the D4 hesitation check; an unrelated victim proceeds directly to D10.
     "werewolf_attack": ({
-        "rule_key":"werewolf_close_relation", "target":"werewolf_close_relation",
-        "fallback_rule_key":"werewolf_attack_death", "fallback_target":"living_victim",
+        "rule_key":"werewolf_attack_death", "target":"werewolf_attack_victim",
+        "close_relation_rule_key":"werewolf_close_relation",
     },),
     "werewolf_close_relation": (
         {"rule_key":"werewolf_attack_death", "target":"origin", "when":"triggered"},
