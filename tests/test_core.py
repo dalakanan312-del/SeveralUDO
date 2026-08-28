@@ -27,7 +27,7 @@ from app.clock import _game_illnesses, _store_game_portrait, attach_game_identit
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
@@ -100,6 +100,41 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertEqual((roll.data["die"],roll.data["bad_results"]),("d6","1,3,5"))
             self.assertEqual(roll.data["core_ruleset_id"],core_rulesets.CLASSIC_2023)
             session.execute(delete(Record).where(Record.save_id==save.id));session.delete(save);session.delete(workspace);session.commit()
+
+    def test_incorrect_4x_aging_defaults_and_pending_rolls_are_repaired(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Aging repair");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Aging repair",start_year=1300,days_per_year=4,global_day=20)
+            session.add(save);session.flush()
+            sim=Record(save_id=save.id,kind="sim",label="Lifecycle Sim",global_day=1,data={"birth_global_day":1})
+            rule=Record(save_id=save.id,kind="roll_rule",label="Young Adult",data={"age_days":72,"die":"d20","bad_results":"1","active":True,"core_ruleset_id":core_rulesets.SEVERALUDO})
+            session.add_all([sim,rule]);session.flush()
+            pending=Record(save_id=save.id,kind="roll",label="Pending Young Adult",global_day=73,data={"sim_id":sim.id,"roll_type":"Young Adult","source":f"aging:{sim.id}:{rule.id}","die":"d20","bad_results":"1","completed":False})
+            completed=Record(save_id=save.id,kind="roll",label="Completed Young Adult",global_day=73,data={"sim_id":sim.id,"roll_type":"Young Adult","source":f"aging:historic:{rule.id}","die":"d20","bad_results":"1","completed":True,"actual":1})
+            session.add_all([pending,completed]);session.flush()
+            self.assertEqual(repair_default_aging_tables(session,save),2)
+            self.assertEqual((rule.data["die"],rule.data["bad_results"]),("d20","14 16"))
+            self.assertEqual((pending.data["die"],pending.data["bad_results"]),("d20","14 16"))
+            self.assertEqual(completed.data["bad_results"],"1")
+            self.assertEqual(repair_default_aging_tables(session,save),0)
+            session.rollback()
+
+    def test_elder_rng_uses_age_60_to_120_and_is_anchored_to_birth(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Elder age");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Elder age",start_year=1300,days_per_year=4,global_day=241)
+            session.add(save);session.flush()
+            sim=Record(save_id=save.id,kind="sim",label="Elder Sim",global_day=1,data={"birth_global_day":1})
+            session.add(sim);session.flush()
+            roll=Record(save_id=save.id,kind="roll",label="Elder age",global_day=241,data={"sim_id":sim.id,"roll_type":"Elder Death-Age RNG","die":"RNG","bad_results":"60–120","death_age_rng":True,"completed":False})
+            session.add(roll);session.flush()
+            self.assertEqual(notation_for_roll(roll.data["die"],roll.data["bad_results"]),("d61+59","60–120"))
+            with mock.patch("app.domain.random.SystemRandom.randint",return_value=282):
+                result=complete_roll(session,save,roll,70)
+            self.assertTrue(result["death_changed"],result)
+            self.assertEqual(sim.data["death_global_day"],282)
+            self.assertIn("historical age 70",result["outcome"])
+            session.rollback()
 
     def test_game_of_thrones_catalog_and_no_year_zero_calendar(self):
         self.assertEqual(len(game_of_thrones_rules.MODULES),69)
@@ -1276,7 +1311,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.5")
+            self.assertEqual(health.json()["version"], "4.4.6")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1579,6 +1614,8 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertIn("tool-drawer", simplified.text)
             self.assertIn("Pregnancy-count roll", simplified.text)
             self.assertIn("Today settings", simplified.text)
+            self.assertIn("Refresh pending rolls", simplified.text)
+            self.assertIn("/api/rolls/refresh", simplified.text)
             self.assertIn("/api/occult-rolls/toggle", simplified.text)
             self.assertIn("/today-focus", simplified.text)
             with SessionLocal() as session:
@@ -1700,8 +1737,11 @@ class CoreSmokeTests(unittest.TestCase):
                 roll=session.get(Record,roll_id);sim=session.get(Record,sim_id)
                 self.assertEqual(roll.data["pregnancy_count"],7);self.assertEqual(roll.data["outcome"],"7 pregnancies");self.assertIsNone(sim.data.get("death_global_day"))
                 self.assertEqual(sim.data["pregnancy_allowance_count"],7);self.assertEqual(sim.data["pregnancy_allowance_year"],1519);self.assertEqual(sim.data["pregnancy_allowances"]["1519"]["roll_id"],roll_id)
+                plan=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="family_plan",Record.data["source_pregnancy_roll_id"].as_string()==roll_id))
+                self.assertIsNotNone(plan);self.assertEqual((plan.data["target_pregnancies"],plan.data["target_children"]),(7,7))
             profile=client.get(f"/sims/{sim_id}")
             self.assertEqual(profile.status_code,200);self.assertIn("Pregnancy allowance",profile.text);self.assertIn("<span>Allowed</span><strong>7</strong>",profile.text);self.assertIn("<span>Used</span><strong>2</strong>",profile.text);self.assertIn("<span>Remaining</span><strong>5</strong>",profile.text)
+            planner=client.get("/p/planner");self.assertEqual(planner.status_code,200);self.assertIn(f"Planner Sim {marker} family plan",planner.text)
             with SessionLocal() as session:
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
@@ -1721,6 +1761,34 @@ class CoreSmokeTests(unittest.TestCase):
         with SessionLocal() as session:
             self.assertIsNone(session.get(Record,sim_id).data.get("death_global_day"));self.assertTrue(session.get(Record,roll_id).data["nonlethal"])
             session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_relationships_page_owns_courtship_and_lists_generated_marriage_dates(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name=f"Courtship {marker}",global_day=80,start_year=1500,days_per_year=4,settings={"marriage_min_age_days":48})
+                session.add(save);session.flush()
+                first=Record(save_id=save.id,kind="sim",label=f"First {marker}",global_day=1,data={"birth_global_day":1})
+                second=Record(save_id=save.id,kind="sim",label=f"Second {marker}",global_day=1,data={"birth_global_day":1})
+                session.add_all([first,second]);session.flush()
+                roll=Record(save_id=save.id,kind="roll",label="Marriage eligibility",global_day=80,data={"sim_id":first.id,"sim_name":first.label,"source":f"planner:marriage:{first.id}","roll_type":"Non-Heir Marriage Eligibility","die":"d8","bad_results":"1","result_rules":"1: Does not marry; 2-8: May marry","completed":False})
+                session.add(roll);session.flush()
+                with mock.patch("app.domain.random.SystemRandom.randint",return_value=82):
+                    complete_roll(session,save,roll,7)
+                session.commit();save_id=save.id;first_id=first.id;second_id=second.id;roll_id=roll.id
+            client.post("/saves/select",data={"save_id":save_id},follow_redirects=False)
+            relationships=client.get(f"/p/relationships?match_sim={first_id}")
+            self.assertEqual(relationships.status_code,200)
+            self.assertIn("Create a courtship",relationships.text);self.assertIn("Generated marriage dates",relationships.text)
+            self.assertIn("GD 82",relationships.text);self.assertIn("/api/relationships/courtship",relationships.text)
+            challenge=client.get("/p/challenge");self.assertNotIn("Create courtship",challenge.text)
+            created=client.post("/api/relationships/courtship",data={"first_id":first_id,"second_id":second_id,"suggested_marriage_global_day":"82","source_roll_id":roll_id},follow_redirects=False)
+            self.assertEqual(created.status_code,303)
+            with SessionLocal() as session:
+                courtship=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="relationship",Record.data["type"].as_string()=="Courtship"))
+                self.assertIsNotNone(courtship);self.assertEqual((courtship.data["suggested_marriage_global_day"],courtship.data["source_marriage_roll_id"]),(82,roll_id))
+                session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
     def test_ended_marriage_schedules_one_era_aware_remarriage_roll_for_the_living_spouse(self):
         marker=uuid.uuid4().hex[:10]
@@ -1778,9 +1846,10 @@ class CoreSmokeTests(unittest.TestCase):
             sim=Record(save_id=save.id,kind="sim",label=f"Backfilled Sim {marker}",global_day=1,data={"birth_global_day":1})
             session.add(sim);session.flush()
             roll=Record(save_id=save.id,kind="roll",label=f"Backfilled allowance {marker}",global_day=121,data={"sim_id":sim.id,"pregnancy_count_roll":True,"planner_year":1530,"actual":4,"pregnancy_count":4,"outcome":"4 pregnancies","completed":True,"completed_global_day":121})
-            session.add(roll);session.flush();self.assertEqual(backfill_pregnancy_allowances(session,save),1);self.assertEqual(backfill_pregnancy_allowances(session,save),0);session.commit();save_id,sim_id,roll_id=save.id,sim.id,roll.id
+            session.add(roll);session.flush();self.assertEqual(backfill_pregnancy_allowances(session,save),2);self.assertEqual(backfill_pregnancy_allowances(session,save),0);session.commit();save_id,sim_id,roll_id=save.id,sim.id,roll.id
         with SessionLocal() as session:
             sim=session.get(Record,sim_id);self.assertEqual(sim.data["pregnancy_allowance_count"],4);self.assertEqual(sim.data["pregnancy_allowances"]["1530"]["roll_id"],roll_id)
+            plan=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="family_plan"));self.assertIsNotNone(plan);self.assertEqual(plan.data["target_pregnancies"],4);self.assertEqual(plan.data["source_pregnancy_roll_id"],roll_id)
             session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
     def test_today_displays_every_roll_result_completed_on_the_current_day(self):
@@ -2158,6 +2227,58 @@ class CoreSmokeTests(unittest.TestCase):
                 origin=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["event_id"].as_string()==event.id))
                 self.assertEqual(complete_roll(session,save,origin,1)["automatic_followups"],0)
                 session.rollback()
+
+    def test_pending_event_roll_refreshes_after_event_table_is_corrected(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Event table refresh",global_day=61,start_year=1300,days_per_year=4)
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label="Audrey",global_day=1,data={"birth_global_day":1,"country":"England"})
+                event=Record(save_id=save.id,kind="event",label="Great Famine",global_day=61,data={
+                    "start_global_day":61,"end_global_day":72,"location":"Europe","scope":"Famine",
+                    "roll_required":True,"active":True,"configured_die":"d12","configured_bad_results":"2 5",
+                    "configured_result_rules":"2: hunger death; 5: thirst death",
+                })
+                session.add_all([sim,event]);session.flush()
+                stale=Record(save_id=save.id,kind="roll",label="Great Famine — Audrey",global_day=61,data={
+                    "event_id":event.id,"sim_id":sim.id,"sim_name":sim.label,"source":f"event:{event.id}:{sim.id}",
+                    "roll_type":"Event — Great Famine","die":"d10","bad_results":"","result_rules":"",
+                    "failure_outcome":"","failure_is_lethal":False,"completed":False,
+                })
+                completed=Record(save_id=save.id,kind="roll",label="Historical result",global_day=60,data={
+                    "event_id":event.id,"sim_id":sim.id,"source":"historical:event-result","die":"d10",
+                    "bad_results":"","result_rules":"","completed":True,"actual":7,
+                })
+                session.add_all([stale,completed]);session.flush()
+                self.assertEqual(repair_pending_event_rolls(session,save),1)
+                self.assertEqual((stale.data["die"],stale.data["bad_results"],stale.data["result_rules"]),("d12","2 5","2: hunger death; 5: thirst death"))
+                self.assertTrue(stale.data["failure_is_lethal"])
+                self.assertEqual((completed.data["die"],completed.data["bad_results"]),("d10",""))
+                self.assertEqual(repair_pending_event_rolls(session,save),0)
+                session.rollback()
+
+    def test_manual_roll_refresh_updates_linked_rule_tables_but_not_history(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Roll refresh");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Roll refresh",global_day=20,start_year=1500,days_per_year=4)
+            session.add(save);session.flush()
+            sim=Record(save_id=save.id,kind="sim",label="Rule Sim",global_day=1,data={"birth_global_day":1,"species_occult":"Fairy"})
+            occult_rule=Record(save_id=save.id,kind="occult_rule",label="Fairy check",data={"rule_key":"fairy_discovery_danger","occult":"Fairy","die":"d6","trigger_results":"1-2","result_rules":"1-2: Killed; 3-6: Escapes","notes":"Current table"})
+            planner_rule=Record(save_id=save.id,kind="planner_rule",label="Pregnancy Count",data={"die":"d8","bad_results":"1-2: No pregnancy; 3-8: One pregnancy"})
+            session.add_all([sim,occult_rule,planner_rule]);session.flush()
+            occult_roll=Record(save_id=save.id,kind="roll",label="Stale fairy roll",global_day=20,data={"sim_id":sim.id,"occult_roll":True,"occult_rule_id":occult_rule.id,"occult_rule_key":"fairy_discovery_danger","die":"d20","trigger_results":"1","result_rules":"","bad_results":"","nonlethal":True,"completed":False})
+            planner_roll=Record(save_id=save.id,kind="roll",label="Stale pregnancy count",global_day=20,data={"sim_id":sim.id,"source":"planner:pregnancy-count:test","planner_rule_id":planner_rule.id,"pregnancy_count_roll":True,"die":"d20","result_rules":"","zero_results":"","completed":False})
+            completed=Record(save_id=save.id,kind="roll",label="Completed stale roll",global_day=19,data={"occult_rule_id":occult_rule.id,"die":"d20","completed":True,"actual":7})
+            session.add_all([occult_roll,planner_roll,completed]);session.flush()
+
+            result=refresh_pending_rolls(session,save)
+            self.assertEqual((result["occult"],result["planner"]),(1,1))
+            self.assertEqual((occult_roll.data["die"],occult_roll.data["bad_results"],occult_roll.data["nonlethal"]),("d6","1-2",False))
+            self.assertEqual((planner_roll.data["die"],planner_roll.data["zero_results"]),("d8","1-2: No pregnancy; 3-8: One pregnancy"))
+            self.assertEqual(completed.data["die"],"d20")
+            self.assertEqual(refresh_pending_rolls(session,save)["updated"],0)
+            session.rollback()
 
     def test_source_event_plan_schedules_every_root_and_its_conditional_followups(self):
         with TestClient(app):
@@ -3091,6 +3212,35 @@ class CoreSmokeTests(unittest.TestCase):
                 death_result=complete_roll(session,save,hunt,1)
                 self.assertTrue(death_result["death_changed"])
                 self.assertIsNotNone(wolf.data.get("death_global_day"))
+                session.rollback()
+
+    def test_fairy_discovery_creates_response_and_lethal_hunt_consequences(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Fairy discovery chain",global_day=65,start_year=1500,days_per_year=4,settings={"automatic_occult_rolls":True,"occult_rolls_enabled_from_global_day":65,"automatic_death_causes":True})
+                session.add(save);session.flush()
+                fairy=Record(save_id=save.id,kind="sim",label="Discovered Fairy",global_day=1,data={"species_occult":"Fairy","game_occult_types":["Fairy"],"birth_global_day":1})
+                session.add(fairy);session.flush();seed_occult_rules(session,save);schedule_occult_rolls(session,save,[fairy])
+                discovery=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["occult_rule_key"].as_string()=="fairy_discovery"))
+                self.assertIsNotNone(discovery)
+
+                discovered=complete_roll(session,save,discovery,1)
+                response=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==discovery.id,Record.data["occult_rule_key"].as_string()=="fairy_discovery_response"))
+                self.assertEqual(discovered["automatic_followups"],1)
+                self.assertEqual(fairy.data["fairy_discovery_status"],"Discovered — awaiting community response")
+                self.assertIsNotNone(response)
+
+                persecuted=complete_roll(session,save,response,5)
+                danger=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==response.id,Record.data["occult_rule_key"].as_string()=="fairy_discovery_danger"))
+                self.assertEqual(persecuted["automatic_followups"],1)
+                self.assertTrue(fairy.data["fairy_hunt_active"])
+                self.assertEqual((danger.data["die"],danger.data["bad_results"],danger.data["nonlethal"]),("d6","1-2",False))
+
+                killed=complete_roll(session,save,danger,1)
+                self.assertTrue(killed["death_changed"])
+                self.assertEqual(fairy.data["fairy_discovery_status"],"Killed during fairy persecution")
+                self.assertIsNotNone(fairy.data.get("death_global_day"))
                 session.rollback()
 
     def test_completed_werewolf_discovery_backfills_without_duplicate_followups(self):

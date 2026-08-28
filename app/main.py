@@ -143,7 +143,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.4.5")
+app = FastAPI(title="Decades Tracker", version="4.4.6")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -683,7 +683,7 @@ def startup() -> None:
                 save = ChronicleSave(workspace_id=workspace.id, name="My Decades Challenge")
                 session.add(save); session.flush(); domain.seed_defaults(session, save)
             for existing_save in session.scalars(select(ChronicleSave)):
-                if not settings.skip_startup_migrations and str((existing_save.settings or {}).get("defaults_schema_version") or "")!="4.1.1":
+                if not settings.skip_startup_migrations and str((existing_save.settings or {}).get("defaults_schema_version") or "")!=domain.DEFAULTS_SCHEMA_VERSION:
                     domain.seed_defaults(session,existing_save)
                 domain.backfill_pregnancy_allowances(session,existing_save)
                 existing_save.revision += domain.backfill_married_surnames(session,existing_save)
@@ -711,6 +711,8 @@ def context(request: Request, session, **extra):
         active = next((item for item in saves if item.id == requested), saves[0] if saves else None)
         if active:
             request.session["save_id"] = active.id
+            if not settings.skip_startup_migrations and str((active.settings or {}).get("defaults_schema_version") or "") != domain.DEFAULTS_SCHEMA_VERSION:
+                domain.seed_defaults(session, active)
             if str((active.settings or {}).get("event_catalog_version") or "") != domain.EVENT_CATALOG_VERSION:
                 domain.seed_event_catalog(session, active)
     last_roll = request.session.pop("last_roll", None)
@@ -1751,7 +1753,8 @@ def feature_page(request: Request, page: str):
                 daily_digest=digest_records[0] if digest_records else None,recent_digests=digest_records,
                 occult_summaries=occult_summaries,occult_summary_counts=occult_summary_counts,
                 rule_definitions=rule_definitions,rule_action_outcomes=rule_action_outcomes,
-                rule_workbench_notice=request.session.pop("rule_workbench_notice",None))
+                rule_workbench_notice=request.session.pop("rule_workbench_notice",None),
+                roll_refresh_notice=request.session.pop("roll_refresh_notice",None))
             records=[]
         if page == "dice-audit":
             report = dice.fairness_report(session, save.id if save else None, request.query_params.get("die", "d20"))
@@ -1854,6 +1857,45 @@ def feature_page(request: Request, page: str):
             ctx["automation_notice"]=request.session.pop("automation_notice",None)
         if page == "relationships" and save:
             ctx["relationship_notice"] = request.session.pop("relationship_notice", None)
+            domain.schedule_marriage_rolls(session, save)
+            date_updates = domain.backfill_generated_marriage_dates(session, save)
+            save.revision += date_updates
+            relationship_sims = list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False),
+            )))
+            relationship_rows = list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind=="relationship",Record.deleted.is_(False),
+            )))
+            married_ids=set()
+            for relationship in relationship_rows:
+                rel_data=relationship.data or {}
+                if bool(rel_data.get("legally_married")) or "marriage" in str(rel_data.get("type") or "").casefold():
+                    married_ids.update((str(rel_data.get("partner1_id") or ""),str(rel_data.get("partner2_id") or "")))
+            minimum_age=int((save.settings or {}).get("marriage_min_age_days") or 72)
+            match_eligible=[item for item in relationship_sims if _living_sim(item,save) and item.id not in married_ids and int_or_none((item.data or {}).get("birth_global_day")) is not None and save.global_day-int((item.data or {}).get("birth_global_day"))>=minimum_age]
+            kinship_depth=max(1,min(8,int((save.settings or {}).get("kinship_detection_generations") or 3)))
+            selected_match=request.query_params.get("match_sim") or (match_eligible[0].id if match_eligible else "")
+            selected_record=next((item for item in match_eligible if item.id==selected_match),None)
+            match_candidates=[]
+            for candidate in match_eligible:
+                if candidate.id==selected_match: continue
+                warning=kinship_warning(selected_match,candidate.id,relationship_sims,kinship_depth)
+                age_gap=abs(int((selected_record.data or {}).get("birth_global_day"))-int((candidate.data or {}).get("birth_global_day"))) if selected_record else 0
+                match_candidates.append({"sim":candidate,"warning":warning,"score":max(0,100-age_gap)-(100 if warning else 0)})
+            match_candidates.sort(key=lambda item:(item["score"],item["sim"].label.casefold()),reverse=True)
+            sim_by_id={item.id:item for item in relationship_sims}
+            generated_marriage_rolls=[]
+            for roll in session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),
+                Record.data["completed"].as_boolean().is_(True),
+            ).order_by(Record.updated_at.desc())):
+                roll_data=roll.data or {};suggested=int_or_none(roll_data.get("suggested_marriage_global_day"))
+                if domain._marriage_roll(roll) and suggested is not None:
+                    generated_marriage_rolls.append({"roll":roll,"sim":sim_by_id.get(str(roll_data.get("sim_id") or "")),"global_day":suggested})
+            selected_match_roll=next((row for row in generated_marriage_rolls if row["sim"] and row["sim"].id==selected_match),None)
+            ctx.update(match_eligible=sorted_sims(match_eligible,save),selected_match=selected_match,
+                       selected_match_roll=selected_match_roll,match_candidates=match_candidates,
+                       kinship_depth=kinship_depth,generated_marriage_rolls=generated_marriage_rolls)
         if save and page in {"sims", "relationships", "households", "pregnancies", "illnesses", "automation", "rolls"}:
             support_rows=support_rows_cache if support_rows_cache is not None else list(session.scalars(select(Record).where(
                 Record.save_id==save.id,Record.kind.in_({"sim","household"}),Record.deleted.is_(False),
@@ -2740,8 +2782,10 @@ def add_record(request: Request, kind: str, label: str = Form(...), global_day: 
     return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
 
 
-@app.post("/api/challenge/matchmaking")
-def create_matchmaking_courtship(request: Request, first_id: str = Form(...), second_id: str = Form(...)):
+@app.post("/api/challenge/matchmaking", include_in_schema=False)
+@app.post("/api/relationships/courtship")
+def create_matchmaking_courtship(request: Request, first_id: str = Form(...), second_id: str = Form(...),
+                                 suggested_marriage_global_day: str = Form(""), source_roll_id: str = Form("")):
     with db() as session:
         ctx=context(request,session);save=ctx.get("save")
         if not save: raise HTTPException(400,"Choose a save first")
@@ -2754,9 +2798,13 @@ def create_matchmaking_courtship(request: Request, first_id: str = Form(...), se
         relationships=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="relationship",Record.deleted.is_(False))))
         existing=next((item for item in relationships if {str((item.data or {}).get("partner1_id") or ""),str((item.data or {}).get("partner2_id") or "")}=={first.id,second.id} and str((item.data or {}).get("status") or "Active").casefold() not in {"ended","divorced","annulled"}),None)
         if not existing:
-            record=Record(save_id=save.id,kind="relationship",label=f"{first.label} & {second.label}",global_day=save.global_day,data={"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":"Courtship","status":"Active","legally_married":False,"start_global_day":save.global_day,"source":"Matchmaking dashboard"})
+            suggested=int_or_none(suggested_marriage_global_day)
+            record=Record(save_id=save.id,kind="relationship",label=f"{first.label} & {second.label}",global_day=save.global_day,data={"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":"Courtship","status":"Active","legally_married":False,"start_global_day":save.global_day,"suggested_marriage_global_day":suggested,"suggested_marriage_date_range":calendar_utils.date_range_label(suggested,save.start_year,save.days_per_year) if suggested is not None else None,"source_marriage_roll_id":source_roll_id or None,"source":"Relationships matchmaking"})
             session.add(record);session.flush();domain.journal(session,record,"upsert",0);save.revision+=1
-    return RedirectResponse("/p/challenge?match_sim="+first_id,status_code=303)
+            request.session["relationship_notice"] = f"Courtship created for {first.label} and {second.label}." + (f" Suggested marriage: Global Day {suggested}." if suggested is not None else "")
+        else:
+            request.session["relationship_notice"] = "Those Sims already have an active relationship, so no duplicate courtship was created."
+    return RedirectResponse("/p/relationships?match_sim="+first_id,status_code=303)
 
 
 @app.post("/records/{kind}/structured")
@@ -3206,6 +3254,34 @@ def toggle_occult_rolls(request: Request, enabled: str = Form(""), return_to: st
     return RedirectResponse(destination,status_code=303)
 
 
+@app.post("/api/rolls/refresh")
+def refresh_scheduled_rolls(request: Request, return_to: str = Form("/p/today?task=rolls")):
+    with db() as session:
+        ctx = context(request, session); save = ctx["save"]
+        if not save:
+            raise HTTPException(400, "Open a save first.")
+        repaired = domain.refresh_pending_rolls(session, save)
+        save.revision += repaired["updated"]
+        created = domain.schedule_rolls(session, save)
+        categories = ", ".join(
+            f"{count} {name}" for name, count in repaired.items()
+            if name != "updated" and count
+        )
+        if repaired["updated"] or created:
+            detail = f" Refreshed: {categories}." if categories else ""
+            request.session["roll_refresh_notice"] = (
+                f"Roll refresh complete: corrected {repaired['updated']} unfinished roll"
+                f"{'s' if repaired['updated'] != 1 else ''} and added {created} missing roll"
+                f"{'s' if created != 1 else ''}.{detail} Completed history was not changed."
+            )
+        else:
+            request.session["roll_refresh_notice"] = "All pending rolls already match the current rule tables. Completed history was not changed."
+    destination = return_to.strip()
+    if not destination.startswith("/") or destination.startswith("//"):
+        destination = "/p/today?task=rolls"
+    return RedirectResponse(destination, status_code=303)
+
+
 @app.post("/api/occult-rolls/create")
 def create_occult_followup(request: Request, rule_id: str = Form(...), sim_id: str = Form(...), global_day: int | None = Form(None)):
     with db() as session:
@@ -3435,8 +3511,16 @@ def complete_roll(request: Request, roll_id: str, actual: int = Form(...), outco
             related.append(sim)
             related.extend(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="illness",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))
             related.extend(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))
+            if bool((roll.data or {}).get("pregnancy_count_roll")):
+                related.extend(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="family_plan",Record.deleted.is_(False),
+                    Record.data["source_pregnancy_roll_id"].as_string()==roll.id,
+                )))
         set_today_undo(request,f"Completed {roll.label}",related);result=domain.complete_roll(session,save,roll,actual,outcome)
-        if result.get("death_created"): request.session["today_undo"]["delete_ids"]=[result["death"]["id"]]
+        delete_ids=[]
+        if result.get("death_created"): delete_ids.append(result["death"]["id"])
+        if result.get("family_plan_created") and result.get("family_plan"): delete_ids.append(result["family_plan"]["id"])
+        if delete_ids: request.session["today_undo"]["delete_ids"]=delete_ids
         request.session["last_roll"] = {
             "number": actual, "die": roll.data.get("die") or "die", "roll": roll.label,
             "outcome": result["outcome"], "failed": result["outcome"] == "Failed",
@@ -3929,11 +4013,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.4.5-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.4.6-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.5-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.6-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

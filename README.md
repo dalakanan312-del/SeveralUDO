@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.4.6` keeps unfinished obligations synchronized with their editable event, aging, occult, marriage, pregnancy and campaign tables. Today now has a one-click pending-roll refresh that repairs stale dice and outcomes, adds missing obligations, and never rewrites completed history. It also restores the original SeveralUDO lifecycle mortality tables and the correctly anchored 60–120 elder-age draw; gives fairy discovery an automatic community-response and persecution chain; moves courtship creation to Relationships with stable generated marriage dates; and creates annual family plans automatically from completed pregnancy-count rolls.
+
 `4.4.5` restores every approved historical-event roll table and its conditional follow-up chain. All 500 roll-bearing events now carry source-defined dice and adverse results, including separate regional enlistment paths, multi-stage casualty checks, and branched disaster outcomes. Existing saves receive the repair automatically while player-edited rule fields remain intact.
 
 `4.3.0` adds optional Kemzima Responsible Pregnancy compatibility. Clock Sync 2.2.7 detects selected active pregnancy exposures, risks, maternal conditions, and newborn complications without treating them as ordinary illnesses. Current states appear on Sim and pregnancy profiles, state changes enter the chronicle once, and repeated reports do not create duplicate inbox work. Players without the mod continue to use the tracker normally.

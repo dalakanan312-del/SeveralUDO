@@ -16,13 +16,28 @@ from . import advanced, calendar_utils, core_rulesets, decade_portraits, occult_
 from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
 
 
+DEFAULTS_SCHEMA_VERSION = "4.4.6-aging-tables"
+
+# Authoritative pre-1700 SeveralUDO mortality table recovered from the
+# original Rules Config. The age offsets remain challenge-day milestones;
+# Elder is a 60–120 historical-year draw rather than an ordinary failure roll.
 DEFAULT_STAGES = [
-    ("Being Born", 0, "d20", "1-3"), ("Newborn", 0, "d20", "1"),
-    ("Infant", 1, "d20", "1"), ("Toddler", 4, "d20", "1"),
-    ("Child", 20, "d20", "1"), ("Preteen", 40, "d20", "1"),
-    ("Teen", 52, "d20", "1"), ("Young Adult", 72, "d20", "1"),
-    ("Adult", 160, "d20", "1"), ("Elder Death-Age RNG", 240, "d100", "1-20"),
+    ("Being Born", 0, "d20", "5 10 15"), ("Newborn", 0, "d20", "2 6"),
+    ("Infant", 1, "d20", "17"), ("Toddler", 4, "d20", "5 10 15"),
+    ("Child", 20, "d20", "15 20"), ("Preteen", 40, "d20", "13 18"),
+    ("Teen", 52, "d20", "7"), ("Young Adult", 72, "d20", "14 16"),
+    ("Adult", 160, "d20", "3 9 20"), ("Elder Death-Age RNG", 240, "RNG", "60–120"),
 ]
+
+# Values accidentally introduced by the first 4.x rebuild. They are retained
+# only as a migration fingerprint so player-edited rules are never overwritten.
+LEGACY_INCORRECT_STAGES = {
+    "being born": ("d20", "1-3"), "newborn": ("d20", "1"),
+    "infant": ("d20", "1"), "toddler": ("d20", "1"),
+    "child": ("d20", "1"), "preteen": ("d20", "1"),
+    "teen": ("d20", "1"), "young adult": ("d20", "1"),
+    "adult": ("d20", "1"), "elder death-age rng": ("d100", "1-20"),
+}
 
 AGING_STAGE_OFFSETS = {stage.casefold(): age for stage, age, _die, _bad in DEFAULT_STAGES}
 
@@ -1207,11 +1222,18 @@ def retire_prechallenge_rolls(session: Session, save: ChronicleSave) -> int:
 
 def seed_defaults(session: Session, save: ChronicleSave) -> int:
     created = 0
-    existing_rules = {item.label.casefold() for item in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False)))}
+    existing_rule_records = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False)
+    )))
+    existing_rules = {item.label.casefold() for item in existing_rule_records}
+    existing_aging_rules = {
+        item.label.casefold() for item in existing_rule_records
+        if (item.data or {}).get("age_days") not in (None, "")
+    }
     for stage, age, die, bad in DEFAULT_STAGES:
-        if stage.casefold() in existing_rules:
+        if stage.casefold() in existing_aging_rules:
             continue
-        record = Record(save_id=save.id, kind="roll_rule", label=stage, data={"age_days": age, "die": die, "bad_results": bad, "active": True, "source":"built-in SeveralUDO baseline", "core_ruleset_id":core_rulesets.SEVERALUDO})
+        record = Record(save_id=save.id, kind="roll_rule", label=stage, data={"age_days": age, "die": die, "bad_results": bad, "active": True, "source":"built-in SeveralUDO baseline", "core_ruleset_id":core_rulesets.SEVERALUDO, "death_age_rng":"elder" in stage.casefold()})
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
     for label, die, bad in DEFAULT_MATERNAL_RULES:
         if label.casefold() in existing_rules:
@@ -1241,13 +1263,14 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
         if (start_year,end_year) in existing_multiple: continue
         record=Record(save_id=save.id,kind="multiple_birth_rule",label=f"Multiple births · {start_year}–{end_year}",data={"start_year":start_year,"end_year":end_year,"max_babies":None,"quintuplet_policy":"","active":True,"notes":"Historical range supplied; enter only sourced limits. Blank means no enforced limit."})
         session.add(record);session.flush();journal(session,record,"upsert",0);created+=1
+    created += repair_default_aging_tables(session, save)
     created += seed_occult_rules(session, save)
     created += core_rulesets.sync_rules(session, save)
     save.revision += created
     event_created=seed_event_catalog(session,save)
     generation_updates=sync_generations(session,save)
     save.revision+=generation_updates
-    save_settings=dict(save.settings or {});save_settings["defaults_schema_version"]="4.1.1";save.settings=save_settings
+    save_settings=dict(save.settings or {});save_settings["defaults_schema_version"]=DEFAULTS_SCHEMA_VERSION;save.settings=save_settings
     return created+event_created+generation_updates
 
 
@@ -1347,6 +1370,94 @@ def validate_multiple_birth_count(session: Session, save: ChronicleSave, global_
     policy=str((rule or {}).get("quintuplet_policy") or "").casefold()
     if rule and int(count)==5 and any(marker in policy for marker in ("reroll","not allowed","disallow")):
         raise ValueError(f"The editable multiple-birth rule for {rule['year']} says quintuplets must be rerolled. Correct the count or edit that rule first.")
+
+
+def repair_default_aging_tables(session: Session, save: ChronicleSave) -> int:
+    """Repair only the known incorrect 4.x lifecycle defaults and pending rolls.
+
+    The migration fingerprint is intentionally strict: a player-edited table is
+    preserved. Completed obligations are also preserved as historical facts.
+    """
+    desired = {
+        label.casefold(): {"label": label, "age_days": age, "die": die, "bad_results": bad}
+        for label, age, die, bad in DEFAULT_STAGES
+    }
+    rules = list(session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "roll_rule",
+        Record.deleted.is_(False),
+    )))
+    changed = 0
+    canonical_rules: dict[str, Record] = {}
+    for rule in rules:
+        key = rule.label.strip().casefold()
+        target = desired.get(key)
+        if not target:
+            continue
+        data = dict(rule.data or {})
+        if str(data.get("core_ruleset_id") or core_rulesets.SEVERALUDO) != core_rulesets.SEVERALUDO:
+            continue
+        if data.get("age_days") in (None, "") or int(data.get("age_days")) != int(target["age_days"]):
+            continue
+        canonical_rules[rule.id] = rule
+        current = (str(data.get("die") or ""), str(data.get("bad_results") or ""))
+        target_values = (target["die"], target["bad_results"])
+        migration_values = LEGACY_INCORRECT_STAGES.get(key)
+        updates = {}
+        if current == migration_values:
+            updates.update(die=target["die"], bad_results=target["bad_results"])
+        elif current != target_values:
+            # The player has edited this table; keep their version authoritative.
+            continue
+        updates.update({
+            "source": data.get("source") or "built-in SeveralUDO baseline",
+            "core_ruleset_id": core_rulesets.SEVERALUDO,
+            "death_age_rng": key == "elder death-age rng",
+        })
+        if all(data.get(field) == value for field, value in updates.items()):
+            continue
+        base = rule.version
+        rule.data = {**data, **updates}
+        rule.version += 1
+        journal(session, rule, "upsert", base)
+        changed += 1
+
+    if canonical_rules:
+        pending = session.scalars(select(Record).where(
+            Record.save_id == save.id,
+            Record.kind == "roll",
+            Record.deleted.is_(False),
+        ))
+        for roll in pending:
+            data = dict(roll.data or {})
+            if bool(data.get("completed")):
+                continue
+            source = str(data.get("source") or "")
+            if not source.startswith("aging:"):
+                continue
+            rule_id = source.rsplit(":", 1)[-1]
+            rule = canonical_rules.get(rule_id)
+            if not rule:
+                continue
+            rule_data = rule.data or {}
+            updates = {
+                "die": rule_data.get("die"),
+                "bad_results": rule_data.get("bad_results"),
+                "death_age_rng": bool(rule_data.get("death_age_rng")),
+                "core_ruleset_id": rule_data.get("core_ruleset_id"),
+            }
+            if all(data.get(field) == value for field, value in updates.items()):
+                continue
+            base = roll.version
+            roll.data = {**data, **updates, "aging_table_refreshed": True}
+            roll.version += 1
+            journal(session, roll, "upsert", base)
+            changed += 1
+
+    settings_data = dict(save.settings or {})
+    settings_data["defaults_schema_version"] = DEFAULTS_SCHEMA_VERSION
+    save.settings = settings_data
+    return changed
 
 
 def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = False) -> int:
@@ -1559,12 +1670,16 @@ def event_roll_configuration(event: Record, rule_data: dict | None = None) -> di
     rule = rule_data or {}
     prose = event_roll_spec(data.get("notes") or "")
     configured_bad = str(data.get("configured_bad_results") or "").strip()
+    native_bad = str(data.get("bad_results") or "").strip()
     result_rules = str(
         data.get("configured_result_rules") or rule.get("result_rules") or rule.get("bad_results")
         or data.get("result_rules") or (configured_bad if ":" in configured_bad else "")
+        or (native_bad if ":" in native_bad else "")
         or ""
     ).strip()
     bad_results = configured_bad if configured_bad and ":" not in configured_bad else ""
+    if not bad_results and native_bad and ":" not in native_bad:
+        bad_results = native_bad
     if not bad_results:
         bad_results = _result_numbers(configured_bad or result_rules) if ":" in (configured_bad or result_rules) else (configured_bad or result_rules)
     if not bad_results:
@@ -1572,13 +1687,202 @@ def event_roll_configuration(event: Record, rule_data: dict | None = None) -> di
     outcome_text = " ".join(part.split(":", 1)[-1] for part in re.split(r"[;\n]+", result_rules))
     lethal = _lethal_outcome(outcome_text) or (not result_rules and bool(prose.get("bad_results")))
     return {
-        "die": str(data.get("configured_die") or rule.get("die") or prose.get("die") or data.get("die") or "d20"),
+        "die": str(data.get("configured_die") or rule.get("die") or data.get("die") or prose.get("die") or "d20"),
         "bad_results": bad_results,
         "result_rules": result_rules,
         "failure_outcome": _mapped_roll_outcome(int(re.findall(r"\d+", bad_results)[0]), result_rules) if bad_results and result_rules else "",
         "failure_is_lethal": lethal,
         "event_rule_id": rule.get("record_id"),
     }
+
+
+def repair_pending_event_rolls(session: Session, save: ChronicleSave) -> int:
+    """Refresh unfinished event obligations from their authoritative event table.
+
+    Event rules are editable, and catalog recovery has become more accurate over
+    time. Older obligations used to keep the die and blank result table copied
+    when they were first scheduled. Only unfinished rolls are repaired here, so
+    historical results remain an immutable account of what the player rolled.
+    """
+    events = {
+        item.id: item for item in session.scalars(select(Record).where(
+            Record.save_id == save.id,
+            Record.kind == "event",
+            Record.deleted.is_(False),
+        ))
+    }
+    if not events:
+        return 0
+    rule_map = _event_rule_map(session, save)
+    changed = 0
+    rolls = session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "roll",
+        Record.deleted.is_(False),
+        Record.data["event_id"].as_string().is_not(None),
+    ))
+    for roll in rolls:
+        data = dict(roll.data or {})
+        if bool(data.get("completed")) or not data.get("event_id"):
+            continue
+        event = events.get(str(data.get("event_id") or ""))
+        if not event:
+            continue
+        event_data = event.data or {}
+        spec = event_roll_configuration(event, rule_map.get(event_key(event), {}))
+        plan_index = data.get("source_roll_plan_index")
+        step = None
+        if plan_index not in (None, ""):
+            try:
+                wanted_index = int(plan_index)
+            except (TypeError, ValueError):
+                wanted_index = -1
+            step = next((
+                dict(candidate) for candidate in (event_data.get("source_roll_plan") or [])
+                if isinstance(candidate, dict) and int(candidate.get("index") or 0) == wanted_index
+            ), None)
+        if step:
+            result_rules = str(step.get("result_rules") or "")
+            bad_results = str(step.get("bad_results") or "")
+            spec.update({
+                "die": str(step.get("die") or spec["die"]),
+                "bad_results": bad_results,
+                "result_rules": result_rules,
+                "failure_outcome": (
+                    _mapped_roll_outcome(int(re.findall(r"\d+", bad_results)[0]), result_rules)
+                    if bad_results and result_rules else ""
+                ),
+                "failure_is_lethal": bool(step.get("failure_is_lethal")) or _lethal_outcome(result_rules),
+            })
+        context_label = str((step or {}).get("context") or "").split(";")[0].strip()
+        source = str(data.get("source") or "")
+        show_context = bool(context_label and (":step:" in source or source.startswith("conditional-followup:")))
+        roll_type = f"Event — {event.label}" + (f" — {context_label[:80]}" if show_context else "")
+        updates = {
+            "die": spec["die"],
+            "bad_results": spec["bad_results"],
+            "result_rules": spec["result_rules"],
+            "failure_outcome": spec["failure_outcome"],
+            "failure_is_lethal": spec["failure_is_lethal"],
+            "nonlethal": not spec["failure_is_lethal"],
+            "event_rule_id": spec["event_rule_id"],
+            "roll_type": roll_type,
+        }
+        if all(data.get(key) == value for key, value in updates.items()):
+            continue
+        base = roll.version
+        roll.data = {**data, **updates, "event_table_refreshed": True}
+        roll.version += 1
+        journal(session, roll, "upsert", base)
+        changed += 1
+    return changed
+
+
+def refresh_pending_rolls(session: Session, save: ChronicleSave) -> dict[str, int]:
+    """Re-read editable rule tables for unfinished rolls only.
+
+    This is the explicit maintenance action behind the Today-page refresh
+    button.  Completed rolls are historical facts and are never rewritten.
+    """
+    counts = {
+        "event": repair_pending_event_rolls(session, save),
+        "aging": repair_default_aging_tables(session, save),
+        "occult": 0,
+        "planner": 0,
+        "campaign": 0,
+    }
+    pending = list(session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "roll",
+        Record.deleted.is_(False),
+    )))
+    for roll in pending:
+        data = dict(roll.data or {})
+        if bool(data.get("completed")) or data.get("event_id"):
+            continue
+        updates: dict = {}
+        category = ""
+
+        source = str(data.get("source") or "")
+        if source.startswith(("aging:", "maternal:")):
+            rule = session.get(Record, source.rsplit(":", 1)[-1])
+            if rule and rule.save_id == save.id and rule.kind == "roll_rule" and not rule.deleted:
+                rule_data = rule.data or {}
+                updates = {
+                    "die": rule_data.get("die") or "d20",
+                    "bad_results": str(rule_data.get("bad_results") or ""),
+                    "death_age_rng": bool(rule_data.get("death_age_rng")),
+                    "core_ruleset_id": rule_data.get("core_ruleset_id"),
+                    "core_source_rule_id": rule_data.get("source_rule_id"),
+                }
+                category = "aging"
+
+        occult_rule_id = str(data.get("occult_rule_id") or "")
+        if occult_rule_id:
+            rule = session.get(Record, occult_rule_id)
+            if rule and rule.save_id == save.id and rule.kind == "occult_rule" and not rule.deleted:
+                rule_data = rule.data or {}
+                rule_key = str(rule_data.get("rule_key") or data.get("occult_rule_key") or "")
+                lethal = occult_rules.lethal_results(rule_key)
+                updates = {
+                    "die": rule_data.get("die") or "d20",
+                    "trigger_results": str(rule_data.get("trigger_results") or ""),
+                    "result_rules": str(rule_data.get("result_rules") or ""),
+                    "bad_results": lethal,
+                    "nonlethal": not bool(lethal),
+                    "failure_is_lethal": bool(lethal),
+                    "occult_rule_key": rule_key,
+                    "occult_type": rule_data.get("occult"),
+                    "notes": str(rule_data.get("notes") or ""),
+                }
+                category = "occult"
+
+        planner_rule_id = str(data.get("planner_rule_id") or "")
+        if planner_rule_id:
+            rule = session.get(Record, planner_rule_id)
+            if rule and rule.save_id == save.id and rule.kind == "planner_rule" and not rule.deleted:
+                rule_data = rule.data or {}
+                table = str(rule_data.get("bad_results") or rule_data.get("result_rules") or "")
+                updates = {"die": rule_data.get("die") or "d20"}
+                if data.get("pregnancy_count_roll"):
+                    result_rules = table if ":" in table else f"{table}: No pregnancy; all other results: Schedule that many pregnancies"
+                    updates.update({"bad_results":"", "zero_results":table, "result_rules":result_rules, "nonlethal":True})
+                elif data.get("remarriage_roll"):
+                    failure = "; ".join(
+                        clause.split(":", 1)[0].strip() for clause in re.split(r"[;\n]+", table)
+                        if ":" in clause and "does not remarry" in clause.casefold()
+                    )
+                    updates.update({"bad_results":failure, "result_rules":table, "nonlethal":True})
+                elif _marriage_roll(roll):
+                    failure = "; ".join(
+                        clause.split(":", 1)[0].strip() for clause in re.split(r"[;\n]+", table)
+                        if ":" in clause and "does not marry" in clause.casefold()
+                    )
+                    updates.update({"bad_results":failure or ("1" if "does not marry" in table.casefold() else table), "result_rules":table, "nonlethal":True})
+                category = "planner"
+
+        campaign_id = str(data.get("campaign_id") or "")
+        if campaign_id:
+            campaign = session.get(Record, campaign_id)
+            if campaign and campaign.save_id == save.id and campaign.kind == "campaign" and not campaign.deleted:
+                spec = event_roll_configuration(campaign)
+                updates = {
+                    "die": spec["die"], "bad_results": spec["bad_results"],
+                    "result_rules": spec["result_rules"], "failure_outcome": spec["failure_outcome"],
+                    "failure_is_lethal": spec["failure_is_lethal"],
+                    "nonlethal": not spec["failure_is_lethal"],
+                }
+                category = "campaign"
+
+        if not updates or all(data.get(key) == value for key, value in updates.items()):
+            continue
+        base = roll.version
+        roll.data = {**data, **updates, "rule_table_refreshed": True}
+        roll.version += 1
+        journal(session, roll, "upsert", base)
+        counts[category] += 1
+    counts["updated"] = sum(counts.values())
+    return counts
 
 
 def _event_is_global(event: Record) -> bool:
@@ -2148,6 +2452,47 @@ def pregnancy_allowance_status(session: Session, save: ChronicleSave, sim: Recor
     return {"rows":rows, "current":next((row for row in rows if row["year"] == current_year), rows[0] if rows else None)}
 
 
+def sync_family_plan_from_pregnancy_roll(session: Session, save: ChronicleSave, roll: Record,
+                                         sim: Record, pregnancy_count: int) -> tuple[Record, bool, bool]:
+    """Create or update the annual family plan represented by a count roll."""
+    data = roll.data or {}
+    year = int(data.get("planner_year") or (save.start_year + (int(roll.global_day or save.global_day) - 1) // max(1, save.days_per_year)))
+    source = f"pregnancy-count:{roll.id}"
+    plan = session.scalar(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "family_plan",
+        Record.deleted.is_(False),
+        Record.data["source_pregnancy_roll_id"].as_string() == roll.id,
+    ).limit(1))
+    payload = {
+        "sim_id": sim.id,
+        "sim_name": sim.label,
+        "target_pregnancies": max(0, int(pregnancy_count)),
+        # The existing planner forecasts children, so one child per allotted
+        # pregnancy is the transparent baseline until actual births replace it.
+        "target_children": max(0, int(pregnancy_count)),
+        "min_birth_spacing_days": max(0, int(save.pregnancy_days)),
+        "planner_year": year,
+        "source": source,
+        "source_pregnancy_roll_id": roll.id,
+        "automatic": True,
+        "active": True,
+        "notes": f"Created automatically from the {year} pregnancy-count roll; adjust the targets if a multiple birth changes the family goal.",
+    }
+    label = f"{sim.label} family plan · {year}"
+    if plan:
+        current = plan.data or {}
+        if plan.label == label and all(current.get(key) == value for key, value in payload.items()):
+            return plan, False, False
+        base = plan.version; plan.label = label; plan.global_day = int(roll.global_day or save.global_day)
+        plan.data = {**current, **payload}; plan.version += 1; journal(session, plan, "upsert", base)
+        return plan, True, False
+    plan = Record(save_id=save.id, kind="family_plan", label=label,
+                  global_day=int(roll.global_day or save.global_day), data=payload)
+    session.add(plan); session.flush(); journal(session, plan, "upsert", 0)
+    return plan, True, True
+
+
 def backfill_pregnancy_allowances(session: Session, save: ChronicleSave) -> int:
     """Copy completed pre-feature pregnancy-count rolls onto their Sim profiles once."""
     rolls = session.scalars(select(Record).where(
@@ -2166,17 +2511,46 @@ def backfill_pregnancy_allowances(session: Session, save: ChronicleSave) -> int:
         year = int(data.get("planner_year") or (save.start_year + (int(roll.global_day or save.global_day) - 1) // max(1, save.days_per_year)))
         sim_data = dict(sim.data or {}); allowances = dict(sim_data.get("pregnancy_allowances") or {})
         entry = {"allowed":int(data.get("pregnancy_count") or 0), "roll_id":roll.id, "recorded_global_day":data.get("completed_global_day"), "actual":data.get("actual")}
-        if allowances.get(str(year)) == entry:
-            continue
-        allowances[str(year)] = entry
-        sim_data["pregnancy_allowances"] = allowances
-        if int(sim_data.get("pregnancy_allowance_year") or -9999) <= year:
-            sim_data.update({
-                "pregnancy_allowance_count":entry["allowed"], "pregnancy_allowance_year":year,
-                "pregnancy_allowance_roll_id":roll.id, "pregnancy_allowance_recorded_global_day":entry["recorded_global_day"],
-            })
-        base = sim.version; sim.data = sim_data; sim.version += 1; journal(session, sim, "upsert", base); changed += 1
+        if allowances.get(str(year)) != entry:
+            allowances[str(year)] = entry
+            sim_data["pregnancy_allowances"] = allowances
+            if int(sim_data.get("pregnancy_allowance_year") or -9999) <= year:
+                sim_data.update({
+                    "pregnancy_allowance_count":entry["allowed"], "pregnancy_allowance_year":year,
+                    "pregnancy_allowance_roll_id":roll.id, "pregnancy_allowance_recorded_global_day":entry["recorded_global_day"],
+                })
+            base = sim.version; sim.data = sim_data; sim.version += 1; journal(session, sim, "upsert", base); changed += 1
+        _, plan_changed, _ = sync_family_plan_from_pregnancy_roll(session, save, roll, sim, entry["allowed"])
+        changed += int(plan_changed)
     save.revision += changed
+    return changed
+
+
+def backfill_generated_marriage_dates(session: Session, save: ChronicleSave) -> int:
+    """Give older successful marriage rolls one stable suggested date."""
+    changed = 0
+    rolls = session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["completed"].as_boolean().is_(True),
+    ))
+    for roll in rolls:
+        data = dict(roll.data or {})
+        outcome = str(data.get("outcome") or "").casefold()
+        if not _marriage_roll(roll) or not any(value in outcome for value in ("may marry", "may remarry")):
+            continue
+        if data.get("suggested_marriage_global_day") not in (None, ""):
+            continue
+        first_day = max(save.global_day, int(roll.global_day or save.global_day)) + 1
+        last_day = first_day + max(1, int(save.days_per_year)) - 1
+        suggested = random.SystemRandom().randint(first_day, last_day)
+        base = roll.version
+        roll.data = {
+            **data,
+            "suggested_marriage_global_day": suggested,
+            "suggested_marriage_date_range": calendar_utils.date_range_label(suggested, save.start_year, save.days_per_year),
+            "suggested_marriage_date_source": "Generated after successful marriage eligibility roll",
+        }
+        roll.version += 1; journal(session, roll, "upsert", base); changed += 1
     return changed
 
 
@@ -2714,6 +3088,54 @@ def apply_occult_roll_result(session: Session, roll: Record, actual: int) -> int
     elif rule_key == "fairy_changeling_truth" and triggered:
         sim_data["challenge_manifested_occult"] = "Fairy"
         sim_data["occult_transformation_source_roll_id"] = roll.id
+    elif rule_key == "fairy_discovery" and triggered:
+        sim_data.update({
+            "fairy_discovered": True,
+            "fairy_discovery_status": "Discovered — awaiting community response",
+            "fairy_discovery_global_day": int(roll.global_day or 1),
+            "fairy_discovery_source_roll_id": roll.id,
+        })
+    elif rule_key == "fairy_discovery_response":
+        save = session.get(ChronicleSave, roll.save_id)
+        year_days = max(1, int(save.days_per_year if save else 4))
+        if actual <= 2:
+            sim_data.update({
+                "fairy_discovered": False,
+                "fairy_discovery_status": "Dismissed as folklore; secrecy restored",
+                "fairy_relocation_required": False,
+                "fairy_hunt_active": False,
+            })
+        elif actual <= 4:
+            sim_data.update({
+                "fairy_discovered": True,
+                "fairy_discovery_status": "Must leave or hide for one historical year",
+                "fairy_relocation_required": True,
+                "fairy_concealment_until_global_day": int(roll.global_day or 1) + year_days,
+                "fairy_hunt_active": False,
+            })
+        else:
+            sim_data.update({
+                "fairy_discovered": True,
+                "fairy_discovery_status": "Community persecution or fairy hunt",
+                "fairy_relocation_required": True,
+                "fairy_hunt_active": True,
+            })
+    elif rule_key == "fairy_discovery_danger":
+        if triggered:
+            sim_data["fairy_discovery_status"] = "Killed during fairy persecution"
+        elif actual <= 4:
+            sim_data.update({
+                "fairy_discovery_status": "Escaped persecution; must leave the settlement",
+                "fairy_relocation_required": True,
+                "fairy_hunt_active": False,
+            })
+        else:
+            sim_data.update({
+                "fairy_discovered": False,
+                "fairy_discovery_status": "Identity concealed after persecution",
+                "fairy_relocation_required": False,
+                "fairy_hunt_active": False,
+            })
     elif rule_key == "vampire_feeding_suspicion" and triggered:
         sim_data["vampire_suspicion_raised"] = True
         sim_data["vampire_suspicion_source_roll_id"] = roll.id
@@ -3029,6 +3451,7 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
     the indexed record day, because older imports can leave those two values out
     of sync.
     """
+    repaired = repair_pending_event_rolls(session, save)
     if sims is None:
         sims = list(session.scalars(select(Record).where(
             Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
@@ -3081,7 +3504,7 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
         Record.data["source"].as_string().like("event:%"),
     )))
-    created = 0
+    created = repaired
     for event in events:
         due = int((event.data or {}).get("start_global_day", event.global_day))
         rule_data = event_rules.get(event_key(event), {})
@@ -3607,7 +4030,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     death_age_rng = bool(roll.data.get("death_age_rng"))
     if death_age_rng:
         is_bad = False
-        automatic_outcome = f"Death scheduled {actual} historical years after this roll"
+        automatic_outcome = f"Old-age death scheduled during historical age {actual}"
     elif bool(roll.data.get("pregnancy_count_roll")):
         pregnancy_count, automatic_outcome = pregnancy_count_result(actual, str(roll.data.get("result_rules") or ""), str(roll.data.get("zero_results") or ""))
         is_bad = False
@@ -3627,6 +4050,9 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     roll.data = {**roll.data, "actual": actual, "outcome": outcome_override.strip() or automatic_outcome or ("Failed" if is_bad else "Passed"), "completed": True, "completed_global_day": save.global_day,
                  "triggered":rule_triggered if (roll.data.get("occult_roll") or roll.data.get("rule_generated")) and rule_trigger_results else roll.data.get("triggered")}
     allowance_changed = False
+    family_plan = None
+    family_plan_changed = False
+    family_plan_created = False
     if pregnancy_count is not None:
         roll.data = {**roll.data, "pregnancy_count":pregnancy_count}
         sim_id = roll.data.get("sim_id")
@@ -3642,8 +4068,22 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             })
             sim_base = allowance_sim.version; allowance_sim.data = sim_data; allowance_sim.version += 1
             journal(session, allowance_sim, "upsert", sim_base); allowance_changed = True
+            family_plan, family_plan_changed, family_plan_created = sync_family_plan_from_pregnancy_roll(
+                session, save, roll, allowance_sim, pregnancy_count,
+            )
     if _marriage_roll(roll):
-        roll.data = {**roll.data, "nonlethal":True}
+        marriage_updates = {"nonlethal":True}
+        outcome_text = str(roll.data.get("outcome") or "").casefold()
+        if ("may marry" in outcome_text or "may remarry" in outcome_text) and roll.data.get("suggested_marriage_global_day") in (None, ""):
+            first_day = max(save.global_day, int(roll.global_day or save.global_day)) + 1
+            last_day = first_day + max(1, int(save.days_per_year)) - 1
+            suggested = random.SystemRandom().randint(first_day, last_day)
+            marriage_updates.update({
+                "suggested_marriage_global_day": suggested,
+                "suggested_marriage_date_range": calendar_utils.date_range_label(suggested, save.start_year, save.days_per_year),
+                "suggested_marriage_date_source": "Generated after successful marriage eligibility roll",
+            })
+        roll.data = {**roll.data, **marriage_updates}
     occult_changed = apply_occult_roll_result(session, roll, actual)
     automatic_followups = _schedule_automatic_occult_followup(session, save, roll)
     automatic_followups += _schedule_event_followup(session, save, roll, actual)
@@ -3655,7 +4095,13 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     if death_age_rng:
         sim_id = roll.data.get("sim_id"); sim = session.get(Record, sim_id) if sim_id else None
         if sim and not sim.deleted and not bool((sim.data or {}).get("death_confirmed")):
-            proposed = int(roll.global_day or save.global_day) + max(1, int(actual)) * max(1, save.days_per_year)
+            birth_day = (sim.data or {}).get("birth_global_day", sim.global_day)
+            age_year_start = int(birth_day if birth_day is not None else roll.global_day or save.global_day) + max(1, int(actual)) * max(1, save.days_per_year)
+            age_year_end = age_year_start + max(1, save.days_per_year) - 1
+            proposed = (
+                save.global_day if save.global_day > age_year_end
+                else random.SystemRandom().randint(max(save.global_day, age_year_start), age_year_end)
+            )
             try: existing_day = int((sim.data or {}).get("death_global_day"))
             except (TypeError, ValueError): existing_day = None
             death_day = min(proposed, existing_day) if existing_day is not None else proposed
@@ -3743,9 +4189,13 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 save.revision += end_illnesses_for_death(session, save, sim, death_day)
                 death_changed = True
             save.revision += _retire_rolls_after_death(session, save, sim.id, death_day, roll.id)
-    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(service_changed) + occult_changed + automatic_followups
+    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + automatic_followups
     return {
         "outcome": roll.data["outcome"], "death": sync.serialize(death) if death else None,
         "death_created": death_created, "death_changed": death_changed, "pregnancy_count":pregnancy_count,
+        "family_plan": sync.serialize(family_plan) if family_plan else None,
+        "family_plan_changed": family_plan_changed,
+        "family_plan_created": family_plan_created,
+        "suggested_marriage_global_day": roll.data.get("suggested_marriage_global_day"),
         "automatic_followups": automatic_followups,
     }
