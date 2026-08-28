@@ -1311,7 +1311,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.7")
+            self.assertEqual(health.json()["version"], "4.4.8")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -2329,6 +2329,76 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(complete_roll(session,save,roots[1],1)["automatic_followups"],0)
                 self.assertEqual(complete_roll(session,save,child,8)["automatic_followups"],0)
                 session.rollback()
+
+    def test_repeating_event_rolls_schedule_once_per_reached_historical_year(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Repeating event workspace");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Repeating event",global_day=13,start_year=1300,days_per_year=4)
+            session.add(save);session.flush()
+            sim=Record(save_id=save.id,kind="sim",label="Famine Sim",global_day=1,data={"birth_global_day":1,"country":"England"})
+            plan=[{
+                "index":0,"die":"d12","bad_results":"2 5",
+                "result_rules":"2: Hunger death; 5: Thirst death",
+                "context":"Each year roll D12 per Sim","parent_index":None,
+                "parent_indices":[],"repeat_interval_years":1,
+            }]
+            event=Record(save_id=save.id,kind="event",label="Great Famine",global_day=1,data={
+                "start_global_day":1,"end_global_day":17,"scope":"Global","location":"Global",
+                "roll_required":True,"active":True,"source_roll_plan":plan,
+                "configured_die":"d12","configured_bad_results":"2 5",
+            })
+            session.add_all([sim,event]);session.flush()
+
+            self.assertEqual(schedule_event_rolls(session,save,[sim]),4)
+            rolls=list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind=="roll",
+                Record.data["event_id"].as_string()==event.id,
+            ).order_by(Record.global_day)))
+            self.assertEqual([item.global_day for item in rolls],[1,5,9,13])
+            self.assertEqual([item.data["event_occurrence_year"] for item in rolls],[1300,1301,1302,1303])
+            self.assertTrue(all(item.data["event_repeat_interval_years"]==1 for item in rolls))
+            self.assertEqual(schedule_event_rolls(session,save,[sim]),0)
+
+            save.global_day=17
+            self.assertEqual(schedule_event_rolls(session,save,[sim]),1)
+            newest=session.scalar(select(Record).where(
+                Record.save_id==save.id,Record.kind=="roll",Record.global_day==17,
+            ))
+            self.assertEqual((newest.data["event_occurrence_number"],newest.data["event_occurrence_year"]),(5,1304))
+            session.rollback()
+
+    def test_repeating_event_rolls_preserve_legacy_first_year_and_support_ten_year_intervals(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Legacy repeating event workspace");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Legacy repeating event",global_day=45,start_year=1800,days_per_year=4)
+            session.add(save);session.flush()
+            sim=Record(save_id=save.id,kind="sim",label="Plague Sim",global_day=1,data={"birth_global_day":1})
+            plan=[{
+                "index":0,"die":"d100","bad_results":"1-2","result_rules":"1-2: Infected",
+                "context":"Every ten years D100 for all Sims","parent_index":None,
+                "parent_indices":[],"repeat_interval_years":10,
+            }]
+            event=Record(save_id=save.id,kind="event",label="Third Plague Pandemic",global_day=1,data={
+                "start_global_day":1,"end_global_day":80,"scope":"Global","location":"Global",
+                "roll_required":True,"active":True,"source_roll_plan":plan,
+                "configured_die":"d100","configured_bad_results":"1-2",
+            })
+            session.add_all([sim,event]);session.flush()
+            legacy=Record(save_id=save.id,kind="roll",label="Third Plague Pandemic — Plague Sim",global_day=1,data={
+                "event_id":event.id,"sim_id":sim.id,"roll_type":"Event — Third Plague Pandemic",
+                "source":f"event:{event.id}:{sim.id}","die":"d100","bad_results":"1-2","completed":True,
+            })
+            session.add(legacy);session.flush()
+
+            self.assertEqual(schedule_event_rolls(session,save,[sim]),1)
+            rolls=list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind=="roll",
+                Record.data["event_id"].as_string()==event.id,
+            ).order_by(Record.global_day)))
+            self.assertEqual([item.global_day for item in rolls],[1,41])
+            self.assertEqual(rolls[-1].data["event_repeat_interval_years"],10)
+            self.assertEqual(schedule_event_rolls(session,save,[sim]),0)
+            session.rollback()
 
     def test_original_witch_trial_and_great_frost_roll_sequences(self):
         with TestClient(app):
@@ -3860,6 +3930,8 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual((by_catalog["EVT-0491"].data["configured_die"],by_catalog["EVT-0491"].data["followup_die"]),("d20","d12"))
                 self.assertEqual((by_catalog["EVT-0499"].data["source_roll_plan"][1]["die"],by_catalog["EVT-0499"].data["source_roll_plan"][1]["bad_results"]),("d8","4"))
                 self.assertEqual((by_catalog["EVT-0629"].data["source_roll_plan"][1]["die"],by_catalog["EVT-0629"].data["source_roll_plan"][1]["bad_results"]),("d4","3"))
+                self.assertEqual(by_catalog["EVT-0253"].data["source_roll_plan"][0]["repeat_interval_years"],1)
+                self.assertEqual(by_catalog["EVT-0608"].data["source_roll_plan"][0]["repeat_interval_years"],10)
 
                 repaired=by_catalog["EVT-0295"]
                 repaired.data={**repaired.data,"roll_required":False,"die":""}

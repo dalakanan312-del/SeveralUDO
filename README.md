@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.4.8` restores repeating historical-event obligations. Source instructions such as “each year,” “annually,” and “every ten years” now create one durable roll per reached historical interval, anchored to the event's start day. Existing first-year and completed rolls are recognized so refreshes cannot duplicate history, and custom events can set an editable repeat interval from the Events page.
+
 `4.4.7` keeps maternal rolls pending when a delivery is accepted through Clock Sync, Today, a newborn record, or the pregnancy editor. The roll moves to the confirmed delivery day instead of disappearing, while miscarriages and cancellations still retire it. Today’s pending-roll refresh can safely restore delivery-hidden maternal rolls from older builds without reviving duplicates or completed history.
 
 `4.4.6` keeps unfinished obligations synchronized with their editable event, aging, occult, marriage, pregnancy and campaign tables. Today now has a one-click pending-roll refresh that repairs stale dice and outcomes, adds missing obligations, and never rewrites completed history. It also restores the original SeveralUDO lifecycle mortality tables and the correctly anchored 60–120 elder-age draw; gives fairy discovery an automatic community-response and persecution chain; moves courtship creation to Relationships with stable generated marriage dates; and creates annual family plans automatically from completed pregnancy-count rolls.

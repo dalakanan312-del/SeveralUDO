@@ -544,6 +544,68 @@ def _source_step_rules(segment: str, sides: int, *, coin: bool = False) -> tuple
     return result_rules, " ".join(dict.fromkeys(adverse))
 
 
+_REPEAT_YEAR_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "fifteen": 15, "twenty": 20,
+}
+
+
+def source_roll_repeat_interval_years(text: object) -> int:
+    """Return the historical-year interval stated by one source instruction.
+
+    Repeating checks are anchored to the event's first day.  Keeping this as a
+    numeric interval also supports less common source rules such as "every ten
+    years" without adding event-specific scheduler branches.
+    """
+    value = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+    if not value:
+        return 0
+    match = re.search(
+        r"\bevery\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty)\s+(?:historical\s+|in[ -]game\s+)?years?\b",
+        value,
+    )
+    if match:
+        token = match.group(1)
+        return max(1, int(token) if token.isdigit() else _REPEAT_YEAR_WORDS.get(token, 1))
+    if re.search(
+        r"\b(?:each|every)\s+(?:historical\s+|in[ -]game\s+)?year\b|\b(?:annually|yearly)\b|\b(?:once\s+)?per\s+(?:historical\s+|in[ -]game\s+)?year\b",
+        value,
+    ):
+        return 1
+    return 0
+
+
+def _normalize_source_plan_cadence(plan: list[dict], notes: object = "") -> list[dict]:
+    """Attach repeat cadence to the exact root instruction that states it."""
+    normalized = [dict(step) for step in plan if isinstance(step, dict)]
+    root_steps = [
+        step for step in normalized
+        if not (step.get("parent_indices") or []) and step.get("parent_index") is None
+    ]
+    marked = False
+    for step in normalized:
+        explicit = step.get("repeat_interval_years")
+        try:
+            interval = max(0, int(explicit or 0))
+        except (TypeError, ValueError):
+            interval = 0
+        interval = interval or source_roll_repeat_interval_years(step.get("context"))
+        if interval:
+            step["repeat_interval_years"] = interval
+            step["cadence"] = "annual" if interval == 1 else f"every {interval} years"
+            marked = True
+    # A custom/override plan may contain only one root and omit the original
+    # prose from its context.  In that unambiguous case the event-level wording
+    # can safely supply the cadence without repeating unrelated root tables.
+    if not marked and len(root_steps) == 1:
+        interval = source_roll_repeat_interval_years(notes)
+        if interval:
+            root_steps[0]["repeat_interval_years"] = interval
+            root_steps[0]["cadence"] = "annual" if interval == 1 else f"every {interval} years"
+    return normalized
+
+
 def source_event_roll_plan(notes: object) -> list[dict]:
     """Return every actionable die/coin table recoverable from source prose.
 
@@ -629,22 +691,27 @@ def source_event_roll_plan(notes: object) -> list[dict]:
             if not parent_indices:
                 parent_indices = [len(plan) - 1]
         parent_index = parent_indices[0] if parent_indices else None
-        plan.append({
+        step = {
             "index": len(plan), "die": f"d{sides}", "bad_results": bad_results,
             "result_rules": result_rules or f"{bad_results}: Source-defined adverse result",
             "context": context[:500], "parent_index": parent_index,
             "parent_indices": parent_indices,
             "selector": selector,
             "trigger_results": plan[parent_index]["bad_results"] if parent_index is not None else "",
-        })
-    return plan
+        }
+        interval = source_roll_repeat_interval_years(context)
+        if interval:
+            step["repeat_interval_years"] = interval
+            step["cadence"] = "annual" if interval == 1 else f"every {interval} years"
+        plan.append(step)
+    return _normalize_source_plan_cadence(plan, notes)
 
 
 def event_source_roll_plan(notes: object, override: dict | None = None, catalog_id: str = "") -> list[dict]:
     """Return the authoritative editable plan for one catalog event."""
     override = override or {}
     if isinstance(override.get("source_roll_plan"), list):
-        return [dict(step) for step in override["source_roll_plan"] if isinstance(step, dict)]
+        return _normalize_source_plan_cadence(override["source_roll_plan"], notes)
     if override.get("configured_die") and override.get("configured_bad_results"):
         primary_rules = str(override["configured_bad_results"])
         primary = {
@@ -666,7 +733,7 @@ def event_source_roll_plan(notes: object, override: dict | None = None, catalog_
                 "delay_years": int(override.get("followup_delay_years") or 0),
                 "failure_is_lethal": bool(override.get("followup_failure_is_lethal")),
             })
-        return plan
+        return _normalize_source_plan_cadence(plan, notes)
     plan = source_event_roll_plan(notes)
     for index, changes in SOURCE_PLAN_RELATION_OVERRIDES.get(catalog_id, {}).items():
         if not (0 <= index < len(plan)):
@@ -675,7 +742,7 @@ def event_source_roll_plan(notes: object, override: dict | None = None, catalog_
         parents = [int(value) for value in plan[index].get("parent_indices") or []]
         plan[index]["parent_indices"] = parents
         plan[index]["parent_index"] = parents[0] if parents else None
-    return plan
+    return _normalize_source_plan_cadence(plan, notes)
 
 
 def due_on_today(record: Record, global_day: int) -> bool:
@@ -1611,7 +1678,7 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
         first_followup = next((step for step in roll_plan if step.get("parent_index") == primary.get("index", 0)), None)
         source_defaults = {
             "source_roll_plan": roll_plan,
-            "source_roll_plan_version": 2,
+            "source_roll_plan_version": 3,
             "configured_die": primary.get("die") or "",
             "configured_bad_results": primary.get("bad_results") or "",
             "configured_result_rules": primary.get("result_rules") or "",
@@ -1658,9 +1725,9 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
                         "roll_required_source": "Original SeveralUDO event rules",
                     })
                 if original_roll_required:
-                    if int(data.get("source_roll_plan_version") or 0) < 2:
+                    if int(data.get("source_roll_plan_version") or 0) < 3:
                         data["source_roll_plan"] = roll_plan
-                        data["source_roll_plan_version"] = 2
+                        data["source_roll_plan_version"] = 3
                     for key, value in source_defaults.items():
                         if value not in (None, "", [], {}) and data.get(key) in (None, "", [], {}):
                             data[key] = value
@@ -3625,12 +3692,13 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
     )))
     created = repaired
     for event in events:
-        due = int((event.data or {}).get("start_global_day", event.global_day))
+        event_data = event.data or {}
+        event_start = int(event_data.get("start_global_day", event.global_day))
         rule_data = event_rules.get(event_key(event), {})
         spec = event_roll_configuration(event, rule_data)
-        source_plan = [dict(step) for step in ((event.data or {}).get("source_roll_plan") or []) if isinstance(step, dict)]
+        source_plan = [dict(step) for step in (event_data.get("source_roll_plan") or []) if isinstance(step, dict)]
         root_steps = [step for step in source_plan if not (step.get("parent_indices") or []) and step.get("parent_index") is None]
-        event_words = f"{event.label} {(event.data or {}).get('scope','')} {(event.data or {}).get('notes','')}".casefold()
+        event_words = f"{event.label} {event_data.get('scope','')} {event_data.get('notes','')}".casefold()
         classic_war = core_rulesets.selected_core(save) == core_rulesets.CLASSIC_2023 and any(
             word in event_words for word in ("war", "battle", "military", "draft")
         )
@@ -3645,7 +3713,7 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
         for sim in sims:
             death = (sim.data or {}).get("death_global_day")
             household = households.get(str((sim.data or {}).get("current_household_id") or ""))
-            event_text = f"{event.label} {(event.data or {}).get('scope','')} {(event.data or {}).get('notes','')}".casefold()
+            event_text = f"{event.label} {event_data.get('scope','')} {event_data.get('notes','')}".casefold()
             servo_exempt = "Servo" in occult_rules.sim_occult_types(sim.data) and any(
                 word in event_text for word in ("disease", "illness", "plague", "epidemic", "pandemic", "famine", "starvation", "drown")
             )
@@ -3653,30 +3721,38 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                 bool((sim.data or {}).get("game_was_dead"))
                 or (death is not None and int(death) <= save.global_day)
                 or servo_exempt
-                or not _event_applies(event, sim, due, rule_data, household, save, fallback_location, pregnancies)
             ):
                 continue
             steps = root_steps or [None]
             for root_position, step in enumerate(steps):
                 step = dict(step or {})
-                eligible_stages = {str(value).strip().casefold() for value in step.get("eligible_life_stages") or []}
-                if eligible_stages:
-                    birth = (sim.data or {}).get("birth_global_day", sim.global_day)
-                    if birth is None:
-                        continue
-                    age = due - int(birth); inferred_stage = DEFAULT_STAGES[0][0].casefold()
-                    for stage_name, minimum, _die, _bad in DEFAULT_STAGES:
-                        if age >= minimum: inferred_stage = stage_name.casefold()
-                    if inferred_stage not in eligible_stages and not (inferred_stage in {"being born", "newborn", "infant"} and "baby" in eligible_stages):
-                        continue
                 step_index = int(step.get("index") or 0)
-                source = f"event:{event.id}:{sim.id}" if root_position == 0 else f"event:{event.id}:{sim.id}:step:{step_index}"
-                equivalent_source_exists = any(
-                    (f"event:{event_id}:{sim.id}" if root_position == 0 else f"event:{event_id}:{sim.id}:step:{step_index}") in existing_event_sources
-                    for event_id in equivalent_event_ids
-                )
-                if equivalent_source_exists:
-                    continue
+                explicit_interval = event_data.get("roll_repeat_interval_years")
+                if explicit_interval not in (None, ""):
+                    try:
+                        repeat_interval = max(0, int(explicit_interval))
+                    except (TypeError, ValueError):
+                        repeat_interval = 0
+                else:
+                    try:
+                        repeat_interval = max(0, int(step.get("repeat_interval_years") or 0))
+                    except (TypeError, ValueError):
+                        repeat_interval = 0
+                    repeat_interval = repeat_interval or source_roll_repeat_interval_years(step.get("context"))
+                    if not repeat_interval and (not step or len(root_steps) == 1):
+                        repeat_interval = source_roll_repeat_interval_years(event_data.get("notes"))
+                if repeat_interval:
+                    raw_end = event_data.get("end_global_day")
+                    try:
+                        event_end = int(raw_end) if raw_end not in (None, "") else save.global_day
+                    except (TypeError, ValueError):
+                        event_end = save.global_day
+                    reached_end = min(event_end, save.global_day)
+                    interval_days = max(1, save.days_per_year * repeat_interval)
+                    occurrence_days = list(range(event_start, reached_end + 1, interval_days))
+                else:
+                    interval_days = 0
+                    occurrence_days = [event_start]
                 sim_spec = dict(spec)
                 if step:
                     result_rules = str(step.get("result_rules") or "")
@@ -3689,8 +3765,8 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                     })
                 sex = str((sim.data or {}).get("sex") or "").casefold()
                 sex_key = "female" if re.search(r"\b(?:female|woman|girl)\b", sex) else "male" if re.search(r"\b(?:male|man|boy)\b", sex) else ""
-                die_by_sex = (event.data or {}).get("die_by_sex") or {}
-                rules_by_sex = (event.data or {}).get("result_rules_by_sex") or {}
+                die_by_sex = event_data.get("die_by_sex") or {}
+                rules_by_sex = event_data.get("result_rules_by_sex") or {}
                 if root_position == 0 and sex_key and (sex_key in die_by_sex or sex_key in rules_by_sex):
                     result_rules = str(rules_by_sex.get(sex_key) or sim_spec["result_rules"] or "")
                     bad_results = _result_numbers(result_rules) if ":" in result_rules else result_rules
@@ -3702,18 +3778,52 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                     })
                 context_label = str(step.get("context") or "").split(";")[0].strip()
                 roll_type = f"Event — {event.label}" + (f" — {context_label[:80]}" if root_position else "")
-                roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {sim.label}", global_day=due, data={
-                    "event_id": event.id, "source_id": event.id, "sim_id": sim.id, "sim_name": sim.label,
-                    "roll_type": roll_type, "die": sim_spec["die"], "bad_results": sim_spec["bad_results"],
-                    "result_rules": sim_spec["result_rules"], "failure_outcome": sim_spec["failure_outcome"],
-                    "failure_is_lethal": sim_spec["failure_is_lethal"], "nonlethal": not sim_spec["failure_is_lethal"],
-                    "event_rule_id": sim_spec["event_rule_id"], "source": source, "due_global_day": due, "completed": False,
-                    "source_roll_plan_index": step_index if step else None,
-                    "source_roll_plan_root": bool(step),
-                    "core_ruleset_id":core_rulesets.CLASSIC_2023 if classic_war else None,
-                })
-                session.add(roll); session.flush(); journal(session, roll, "upsert", 0)
-                existing_event_sources.add(source); created += 1
+                for occurrence_number, due in enumerate(occurrence_days, start=1):
+                    if not _event_applies(event, sim, due, rule_data, household, save, fallback_location, pregnancies):
+                        continue
+                    eligible_stages = {str(value).strip().casefold() for value in step.get("eligible_life_stages") or []}
+                    if eligible_stages:
+                        birth = (sim.data or {}).get("birth_global_day", sim.global_day)
+                        if birth is None:
+                            continue
+                        age = due - int(birth); inferred_stage = DEFAULT_STAGES[0][0].casefold()
+                        for stage_name, minimum, _die, _bad in DEFAULT_STAGES:
+                            if age >= minimum: inferred_stage = stage_name.casefold()
+                        if inferred_stage not in eligible_stages and not (inferred_stage in {"being born", "newborn", "infant"} and "baby" in eligible_stages):
+                            continue
+                    base_source = f"event:{event.id}:{sim.id}" if root_position == 0 else f"event:{event.id}:{sim.id}:step:{step_index}"
+                    source = f"{base_source}:occurrence:{due}" if repeat_interval else base_source
+                    equivalent_source_exists = False
+                    for event_id in equivalent_event_ids:
+                        equivalent_base = f"event:{event_id}:{sim.id}" if root_position == 0 else f"event:{event_id}:{sim.id}:step:{step_index}"
+                        candidates = {f"{equivalent_base}:occurrence:{due}"} if repeat_interval else {equivalent_base}
+                        # Pre-4.4.8 builds created the first occurrence without
+                        # an occurrence suffix. It represents year one and must
+                        # protect both completed history and pending work.
+                        if repeat_interval and due == event_start:
+                            candidates.add(equivalent_base)
+                        if candidates & existing_event_sources:
+                            equivalent_source_exists = True
+                            break
+                    if equivalent_source_exists:
+                        continue
+                    historical_year = save.start_year + ((due - 1) // max(1, save.days_per_year))
+                    roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {sim.label}", global_day=due, data={
+                        "event_id": event.id, "source_id": event.id, "sim_id": sim.id, "sim_name": sim.label,
+                        "roll_type": roll_type, "die": sim_spec["die"], "bad_results": sim_spec["bad_results"],
+                        "result_rules": sim_spec["result_rules"], "failure_outcome": sim_spec["failure_outcome"],
+                        "failure_is_lethal": sim_spec["failure_is_lethal"], "nonlethal": not sim_spec["failure_is_lethal"],
+                        "event_rule_id": sim_spec["event_rule_id"], "source": source, "due_global_day": due, "completed": False,
+                        "source_roll_plan_index": step_index if step else None,
+                        "source_roll_plan_root": bool(step),
+                        "event_repeat_interval_years": repeat_interval or None,
+                        "event_occurrence_number": occurrence_number if repeat_interval else None,
+                        "event_occurrence_global_day": due if repeat_interval else None,
+                        "event_occurrence_year": historical_year if repeat_interval else None,
+                        "core_ruleset_id":core_rulesets.CLASSIC_2023 if classic_war else None,
+                    })
+                    session.add(roll); session.flush(); journal(session, roll, "upsert", 0)
+                    existing_event_sources.add(source); created += 1
     return created
 
 
