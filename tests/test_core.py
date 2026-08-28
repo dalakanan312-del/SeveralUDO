@@ -30,7 +30,7 @@ from app.dice import notation_for_roll, parse, verify
 from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, repair_duplicate_events, repair_duplicate_obligations, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
-from app.main import FEATURES, app, birth_calendar_fields, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
+from app.main import FEATURES, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, resolve_birth_input, sim_birth_display, sim_weekday
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Portrait, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
@@ -42,6 +42,21 @@ from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def test_birth_circumstances_use_pregnancy_maternal_and_event_facts(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Birth circumstances");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Birth circumstances",global_day=20,pregnancy_days=4)
+            session.add(save);session.flush()
+            mother=Record(save_id=save.id,kind="sim",label="Mother",global_day=1,data={"death_global_day":20,"cause_of_death":"Postpartum hemorrhage"})
+            pregnancy=Record(save_id=save.id,kind="pregnancy",label="Twin pregnancy",global_day=20,data={"conception_global_day":16,"due_global_day":20,"babies_expected":2,"complication":"Difficult labor"})
+            event=Record(save_id=save.id,kind="event",label="Regional famine",global_day=18,data={"start_global_day":18,"end_global_day":21,"active":True})
+            session.add_all([mother,pregnancy,event]);session.flush()
+            result=birth_circumstance_suggestion(session,save,pregnancy,mother,20,"Hawford Manor",[event])
+            self.assertEqual(result["multiple_birth_status"],"Twin")
+            for phrase in ("Twin birth","On-time birth","Born at Hawford Manor","Difficult labor","Postpartum hemorrhage","Regional famine"):
+                self.assertIn(phrase,result["summary"])
+            session.rollback()
+
     def test_decade_portrait_prompt_is_unique_and_composite_uses_solid_background(self):
         with SessionLocal() as session:
             workspace=Workspace(name="Portrait decade");session.add(workspace);session.flush()
@@ -207,15 +222,27 @@ class CoreSmokeTests(unittest.TestCase):
             with SessionLocal() as session:
                 save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Legacy Lab {marker}"));save.global_day=20
                 sim=Record(save_id=save.id,kind="sim",label=f"Traveler {marker}",global_day=1,data={"birth_global_day":1,"country":"England","sex":"Female","generation":1})
-                session.add(sim);session.commit();save_id,sim_id=save.id,sim.id
+                partner=Record(save_id=save.id,kind="sim",label=f"Partner {marker}",global_day=1,data={"birth_global_day":1,"country":"England","sex":"Male","generation":1})
+                session.add_all([sim,partner]);session.commit();save_id,sim_id,partner_id=save.id,sim.id,partner.id
             selected=client.post("/api/rule-packs",data={"rule_pack":["severaludo","historical_events"]},follow_redirects=False)
             self.assertEqual(selected.status_code,303)
             moved=client.post("/api/migrations",data={"sim_id":sim_id,"move_global_day":"12","to_country":"France","to_location":"Paris","reason":"Immigration"},follow_redirects=False)
             self.assertEqual(moved.status_code,303)
+            relationship_response=client.post("/relationships",data={"partner1_id":sim_id,"partner2_id":partner_id,"relationship_type":"Marriage","status":"Active","start_global_day":"20","legally_married":"on"},follow_redirects=False)
+            household_response=client.post("/households",data={"name":f"Paris House {marker}","head_sim_id":sim_id,"start_global_day":"20","active":"on"},follow_redirects=False)
+            pregnancy_response=client.post("/pregnancies",data={"mother_id":sim_id,"father_id":partner_id,"conception_global_day":"16","due_global_day":"20","babies_expected":"1","status":"Active"},follow_redirects=False)
+            pregnancy_id=pregnancy_response.headers["location"].rsplit("/",1)[-1]
+            newborn_response=client.post(f"/pregnancies/{pregnancy_id}/newborns",data={"first_name":f"ParisBaby{marker}","birth_global_day":"20"},follow_redirects=False)
+            self.assertEqual((relationship_response.status_code,household_response.status_code,pregnancy_response.status_code,newborn_response.status_code),(303,303,303,303))
             with SessionLocal() as session:
                 sim=session.get(Record,sim_id);move=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="migration"))
                 self.assertEqual((sim.data["birth_country"],sim.data["country"]),("England","France"));move_id=move.id
                 self.assertEqual(session.get(ChronicleSave,save_id).settings["selected_rule_packs"],["severaludo","historical_events"])
+                relationship=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="relationship"))
+                household=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="household",Record.label==f"Paris House {marker}"))
+                newborn=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="sim",Record.data["pregnancy_id"].as_string()==pregnancy_id))
+                self.assertEqual((relationship.data["location"],household.data["location"]),("Paris","Paris"))
+                self.assertEqual((newborn.data["birthplace"],newborn.data["birth_country"]),("Paris","France"))
             world=client.get("/p/world?year=1503");lab=client.get("/p/legacy-lab");bios=client.get(f"/exports/{save_id}/biographies.md")
             self.assertEqual((world.status_code,lab.status_code,bios.status_code),(200,200,200))
             self.assertIn("France",world.text);self.assertIn("Safe rule experiment",lab.text);self.assertIn(f"Traveler {marker}",bios.text)
@@ -1127,7 +1154,7 @@ class CoreSmokeTests(unittest.TestCase):
                 session.add(candidate); session.commit(); candidate_id, save_id = candidate.id, save.id
             response = client.post(f"/automation/{candidate_id}/accept", data={
                 "first_name":"Clock", "last_name":"Baby", "birth_global_day":"8",
-                "birth_game_hour":"6", "birth_game_minute":"30",
+                "birth_game_hour":"6", "birth_game_minute":"30", "birthplace":"Hawford Manor", "legitimacy":"Legitimate",
             }, follow_redirects=False)
             self.assertEqual(response.status_code, 303)
             with SessionLocal() as session:
@@ -1136,6 +1163,9 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(newborn.data["historical_birth_date"], "October 25, 1601")
                 self.assertEqual(newborn.data["birth_date_precision"], "exact")
                 self.assertEqual(newborn.data["birth_time_source"], "Clock Sync newborn detection")
+                self.assertEqual(newborn.data["birthplace"], "Hawford Manor")
+                self.assertEqual(newborn.data["legitimacy"], "Legitimate")
+                self.assertIn("Live birth",newborn.data["birth_circumstances"])
                 session.rollback()
 
     def test_accepting_inferred_newborn_links_parents_and_pregnancy(self):
@@ -1246,7 +1276,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.0")
+            self.assertEqual(health.json()["version"], "4.4.1")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1878,7 +1908,7 @@ class CoreSmokeTests(unittest.TestCase):
             pregnancy_response = client.post("/pregnancies", data={"mother_id":mother_id,"father_id":father_id,"conception_global_day":"30","due_global_day":"34","babies_expected":"1","status":"Active","maternal_rolls":"on","newborn_rolls":"on"}, follow_redirects=False)
             self.assertEqual(pregnancy_response.status_code, 303)
             pregnancy_id = pregnancy_response.headers["location"].rsplit("/", 1)[-1]
-            newborn_response = client.post(f"/pregnancies/{pregnancy_id}/newborns", data={"first_name":f"Baby{marker}","last_name":"Test","sex":"Female","birth_global_day":"34"}, follow_redirects=False)
+            newborn_response = client.post(f"/pregnancies/{pregnancy_id}/newborns", data={"first_name":f"Baby{marker}","last_name":"Test","sex":"Female","birth_global_day":"34","birthplace":"Test Family Cottage","legitimacy":"Illegitimate"}, follow_redirects=False)
             self.assertEqual(newborn_response.status_code, 303)
             with SessionLocal() as session:
                 newborn = session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.data["pregnancy_id"].as_string()==pregnancy_id))
@@ -1887,6 +1917,9 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertNotIn(newborn.data["sim_number"], {"SIM-9801","SIM-9802"})
                 self.assertEqual(newborn.data["current_household_id"],household_id)
                 self.assertEqual(newborn.data["mother_id"],mother_id)
+                self.assertEqual(newborn.data["birthplace"],"Test Family Cottage")
+                self.assertEqual(newborn.data["legitimacy"],"Illegitimate")
+                self.assertIn("On-time birth",newborn.data["birth_circumstances"])
                 self.assertEqual(pregnancy.data["status"],"Delivered")
                 self.assertEqual(pregnancy.data["babies_delivered"],1)
             self.assertEqual(client.get(f"/pregnancies/{pregnancy_id}").status_code,200)

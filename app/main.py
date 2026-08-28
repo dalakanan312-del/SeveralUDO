@@ -88,7 +88,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.4.0")
+app = FastAPI(title="Decades Tracker", version="4.4.1")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -154,6 +154,104 @@ def event_calendar_fields(save: ChronicleSave, event: str, global_day: int | Non
     else:
         result[f"{event}_date_precision"]="clock-time-no-calendar-map"
     return result
+
+
+def birth_circumstance_suggestion(session, save: ChronicleSave, pregnancy: Record | None, mother: Record | None,
+                                  birth_day: int | None, birthplace: str = "", events: list[Record] | None = None) -> dict:
+    """Build an explainable, editable birth summary only from facts the tracker knows."""
+    if not save or not bool((save.settings or {}).get("automatic_birth_circumstances", True)):
+        return {"summary": "", "tags": [], "birth_status": "", "multiple_birth_status": ""}
+    day = int_or_none(birth_day) or save.global_day
+    pregnancy_data = dict((pregnancy.data if pregnancy else {}) or {})
+    tags = ["Live birth"]
+    expected = max(1, int_or_none(pregnancy_data.get("babies_delivered")) or int_or_none(pregnancy_data.get("babies_expected")) or 1)
+    multiple_names = {1: "Singleton", 2: "Twin", 3: "Triplet", 4: "Quadruplet", 5: "Quintuplet"}
+    multiple_status = multiple_names.get(expected, f"{expected}-baby multiple")
+    tags.append(f"{multiple_status} birth")
+    due = int_or_none(pregnancy_data.get("actual_due_global_day")) or int_or_none(pregnancy_data.get("due_global_day"))
+    conception = int_or_none(pregnancy_data.get("conception_global_day"))
+    if due is not None:
+        tags.append("Premature birth" if day < due else "Late birth" if day > due else "On-time birth")
+    elif conception is not None:
+        gestation = day - conception
+        tags.append("Premature birth" if gestation < save.pregnancy_days else "Late birth" if gestation > save.pregnancy_days else "On-time birth")
+    place = str(birthplace or "").strip()
+    if place:
+        tags.append(f"Born at {place}")
+    complication = str(pregnancy_data.get("complication") or "").strip()
+    outcome = str(pregnancy_data.get("outcome") or "").strip()
+    if complication:
+        tags.append(f"Maternal complication: {complication}")
+    if outcome and outcome.casefold() not in {"live birth", "delivered", "complete", "completed"}:
+        tags.append(f"Pregnancy outcome: {outcome}")
+    mother_death = int_or_none((mother.data or {}).get("death_global_day")) if mother else None
+    if mother_death is not None and mother_death == day:
+        cause = str((mother.data or {}).get("cause_of_death") or "").strip()
+        tags.append("Mother died during or shortly after childbirth" + (f" ({cause})" if cause else ""))
+    event_rows = events if events is not None else list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "event", Record.deleted.is_(False),
+    )))
+    active_events = []
+    for event in event_rows:
+        data = event.data or {}
+        start = int_or_none(data.get("start_global_day", event.global_day))
+        end = int_or_none(data.get("end_global_day", start))
+        if domain.event_is_ignored(event) or not bool(data.get("active", True)):
+            continue
+        if (start is None or start <= day) and (end is None or end >= day):
+            active_events.append(event.label)
+    if active_events:
+        shown = sorted(set(active_events), key=str.casefold)[:3]
+        tags.append("Born during " + ", ".join(shown) + (f" and {len(set(active_events)) - 3} other active events" if len(set(active_events)) > 3 else ""))
+    return {
+        "summary": "; ".join(tags) + ".",
+        "tags": tags,
+        "birth_status": "Live birth",
+        "multiple_birth_status": multiple_status,
+    }
+
+
+def historical_sim_location(session, save: ChronicleSave, sim: Record | None, day_value: int | None) -> dict:
+    """Resolve where a Sim lived on a historical day without applying later moves."""
+    if not sim:
+        return {"place": "", "country": "", "source": "No Sim selected"}
+    day=int_or_none(day_value) or save.global_day
+    data=dict(sim.data or {})
+    country=str(data.get("birth_country") or data.get("country") or "").strip()
+    place=str(data.get("birthplace") or country).strip()
+    moves=list(session.scalars(select(Record).where(
+        Record.save_id==save.id,Record.kind=="migration",Record.deleted.is_(False),
+        Record.data["sim_id"].as_string()==sim.id,
+    )))
+    moves.sort(key=lambda move:(int_or_none((move.data or {}).get("move_global_day",move.global_day)) or 10**9,move.created_at))
+    if moves and not str(data.get("birth_country") or "").strip():
+        earliest_origin=str((moves[0].data or {}).get("from_country") or "").strip()
+        if earliest_origin:
+            country=earliest_origin
+            if not str(data.get("birthplace") or "").strip(): place=earliest_origin
+    applied=None
+    for move in moves:
+        move_data=move.data or {};move_day=int_or_none(move_data.get("move_global_day",move.global_day))
+        if move_day is None or move_day>day: continue
+        country=str(move_data.get("to_country") or country).strip()
+        place=str(move_data.get("to_location") or country or place).strip()
+        applied=move
+    if applied:
+        return {"place":place or country,"country":country,"source":f"{sim.label}'s migration on GD {int_or_none((applied.data or {}).get('move_global_day',applied.global_day))}"}
+    # If no dated route exists at all, the current tracker location is the best
+    # available evidence.  Never use it when a later migration would rewrite history.
+    if not moves:
+        current_place=str(data.get("current_location") or "").strip()
+        current_country=str(data.get("current_country") or data.get("country") or "").strip()
+        if current_place or current_country:
+            return {"place":current_place or current_country,"country":current_country or country,"source":f"{sim.label}'s current tracker location"}
+        household_id=str(data.get("current_household_id") or "")
+        household=session.get(Record,household_id) if household_id else None
+        if household and household.kind=="household" and household.save_id==save.id and not household.deleted:
+            household_place=str((household.data or {}).get("location") or "").strip()
+            if household_place:
+                return {"place":household_place,"country":country,"source":f"{sim.label}'s household location"}
+    return {"place":place or country,"country":country,"source":f"{sim.label}'s recorded birth location" if (place or country) else f"{sim.label}'s location is not recorded"}
 
 
 def birth_calendar_fields(save: ChronicleSave, global_day: int | None, hour, minute, second=None) -> dict:
@@ -1661,6 +1759,25 @@ def feature_page(request: Request, page: str):
                 item.id:clock.estimate_new_sim_birth(session,save,item.data.get("payload") or item.data,item.global_day)
                 for item in records if item.data.get("action") == "new_sim"
             }
+            birth_events=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="event",Record.deleted.is_(False))))
+            birth_suggestions={};location_suggestions={}
+            for candidate in (item for item in records if (item.data or {}).get("action")=="new_baby"):
+                payload=(candidate.data or {}).get("payload") or candidate.data or {}
+                pregnancy=session.get(Record,str(payload.get("pregnancy_id") or "")) if payload.get("pregnancy_id") else None
+                if pregnancy and (pregnancy.kind!="pregnancy" or pregnancy.save_id!=save.id or pregnancy.deleted): pregnancy=None
+                mother=session.get(Record,str(payload.get("inferred_mother_id") or "")) if payload.get("inferred_mother_id") else None
+                maternal_location=historical_sim_location(session,save,mother,candidate.global_day)
+                birthplace=payload.get("birthplace") or payload.get("lot_name") or payload.get("world_name") or maternal_location["place"]
+                location_suggestions[candidate.id]={**maternal_location,"place":birthplace}
+                birth_suggestions[candidate.id]=birth_circumstance_suggestion(session,save,pregnancy,mother,candidate.global_day,birthplace,birth_events)
+            for candidate in (item for item in records if (item.data or {}).get("action") in {"relationship_change","household_change"}):
+                primary=session.get(Record,str((candidate.data or {}).get("sim_id") or ""))
+                payload=(candidate.data or {}).get("payload") or candidate.data or {}
+                known_place=payload.get("lot_name") or payload.get("world_name") or ""
+                historical=historical_sim_location(session,save,primary,candidate.global_day)
+                location_suggestions[candidate.id]={**historical,"place":known_place or historical["place"],"source":"Clock Sync detected lot/world" if known_place else historical["source"]}
+            ctx["birth_circumstance_suggestions"]=birth_suggestions
+            ctx["historical_location_suggestions"]=location_suggestions
             ctx["journals"] = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "session_journal", Record.deleted.is_(False)).order_by(Record.global_day.desc()).limit(30)))
             ctx["legacy_detections"] = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="detection_candidate",Record.deleted.is_(False)).order_by(Record.created_at.desc()).limit(50)))
             digest_rows=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending").order_by(Record.created_at.asc())))
@@ -1840,7 +1957,7 @@ async def add_sim(request: Request):
         name = " ".join(part for part in (title,first_name,last_name,suffix) if part)
         birth,birth_fields=resolve_birth_input(save,form.get("birth_global_day"),form.get("birth_year"),form.get("birth_game_hour"),form.get("birth_game_minute"));death=int_or_none(form.get("death_global_day"))
         birth_surname=str(form.get("surname_at_birth") or form.get("maiden_name") or last_name).strip();married_surname=str(form.get("married_surname") or form.get("married_name") or "").strip()
-        sim_data={"sim_number":sim_number,"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":int_or_none(form.get("generation")),"birth_global_day":birth,"death_global_day":death,"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":"include_in_family_tree" not in form or str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"birthplace":str(form.get("birthplace") or ""),"cause_of_death":str(form.get("cause_of_death") or ""),"death_place":str(form.get("death_place") or ""),"notes":str(form.get("notes") or "")}
+        sim_data={"sim_number":sim_number,"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":int_or_none(form.get("generation")),"birth_global_day":birth,"death_global_day":death,"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"birth_circumstances":str(form.get("birth_circumstances") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":"include_in_family_tree" not in form or str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"birthplace":str(form.get("birthplace") or ""),"cause_of_death":str(form.get("cause_of_death") or ""),"death_place":str(form.get("death_place") or ""),"notes":str(form.get("notes") or "")}
         if sim_data["generation"] is not None: sim_data["generation_source"]="manual"
         sim_data.update(birth_fields);sim_data.update(death_calendar_fields(save,death,form.get("death_game_hour"),form.get("death_game_minute")))
         record = Record(save_id=save.id, kind="sim", label=name, global_day=birth, data=sim_data)
@@ -1866,7 +1983,7 @@ async def edit_sim(request: Request, sim_id: str):
                 linked=session.get(Record,record_id)
                 if not linked or linked.save_id!=save.id or linked.kind!=kind or linked.deleted: raise HTTPException(400,"A selected family or household record is invalid.")
         birth,birth_fields=resolve_birth_input(save,form.get("birth_global_day"),form.get("birth_year"),form.get("birth_game_hour"),form.get("birth_game_minute"))
-        data = dict(record.data or {});previous_generation=data.get("generation");previous_generation_source=str(data.get("generation_source") or "").casefold();submitted_generation=int_or_none(form.get("generation"));birth_surname=str(form.get("surname_at_birth") or form.get("maiden_name") or data.get("surname_at_birth") or data.get("maiden_name") or last_name).strip();married_surname=str(form.get("married_surname") or form.get("married_name") or "").strip();data.update({"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":submitted_generation,"birth_global_day":birth,"death_global_day":int_or_none(form.get("death_global_day")),"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"occult_alignment":str(form.get("occult_alignment") or ""),"dormant_occult_types":detected_form_list(str(form.get("dormant_occult_types") or "")),"occult_water_access":str(form.get("occult_water_access") or "Unknown"),"werewolf_confined":str(form.get("werewolf_confined") or "").casefold() in {"1","true","on","yes"},"occult_notes":str(form.get("occult_notes") or ""),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"cause_of_death":str(form.get("cause_of_death") or ""),"birthplace":str(form.get("birthplace") or ""),"death_place":str(form.get("death_place") or ""),"game_career":str(form.get("game_career") or "").strip(),"game_education":str(form.get("game_education") or "").strip(),"game_traits":detected_form_list(str(form.get("game_traits") or "")),"game_skills":detected_form_list(str(form.get("game_skills") or "")),"game_milestones":detected_form_list(str(form.get("game_milestones") or "")),"notes":str(form.get("notes") or "")})
+        data = dict(record.data or {});previous_generation=data.get("generation");previous_generation_source=str(data.get("generation_source") or "").casefold();submitted_generation=int_or_none(form.get("generation"));birth_surname=str(form.get("surname_at_birth") or form.get("maiden_name") or data.get("surname_at_birth") or data.get("maiden_name") or last_name).strip();married_surname=str(form.get("married_surname") or form.get("married_name") or "").strip();data.update({"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":submitted_generation,"birth_global_day":birth,"death_global_day":int_or_none(form.get("death_global_day")),"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"birth_circumstances":str(form.get("birth_circumstances") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"occult_alignment":str(form.get("occult_alignment") or ""),"dormant_occult_types":detected_form_list(str(form.get("dormant_occult_types") or "")),"occult_water_access":str(form.get("occult_water_access") or "Unknown"),"werewolf_confined":str(form.get("werewolf_confined") or "").casefold() in {"1","true","on","yes"},"occult_notes":str(form.get("occult_notes") or ""),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"cause_of_death":str(form.get("cause_of_death") or ""),"birthplace":str(form.get("birthplace") or ""),"death_place":str(form.get("death_place") or ""),"game_career":str(form.get("game_career") or "").strip(),"game_education":str(form.get("game_education") or "").strip(),"game_traits":detected_form_list(str(form.get("game_traits") or "")),"game_skills":detected_form_list(str(form.get("game_skills") or "")),"game_milestones":detected_form_list(str(form.get("game_milestones") or "")),"notes":str(form.get("notes") or "")})
         if last_name != previous_current_surname or married_surname != previous_married_surname:
             data.pop("married_name_source_relationship_id",None)
         if submitted_generation is None:
@@ -1947,7 +2064,10 @@ def add_sim_spouse(
         start = int_or_none(marriage_global_day)
         if start is None:
             start = save.global_day
-        entered_location = str(location or "").strip()
+        first_location=historical_sim_location(session,save,first,start);second_location=historical_sim_location(session,save,second,start)
+        automatic_location=first_location["place"] or second_location["place"]
+        submitted_location=str(location or "").strip();entered_location=submitted_location or automatic_location
+        location_source="Reviewed manual location" if submitted_location else first_location["source"] if first_location["place"] else second_location["source"]
         entered_notes = str(notes or "").strip()
         if relationship:
             base = relationship.version
@@ -1962,7 +2082,8 @@ def add_sim_spouse(
                 "start_global_day": start,
                 "marriage_global_day": start,
                 "end_global_day": None,
-                "location": entered_location or str(data.get("location") or ""),
+                "location": submitted_location or str(data.get("location") or "") or automatic_location,
+                "location_source": "Reviewed manual location" if submitted_location else str(data.get("location_source") or "") or location_source,
                 "legally_married": True,
                 "surname_rule": surname_rule,
                 "children_count": int_or_none(data.get("children_count")) or 0,
@@ -1988,6 +2109,7 @@ def add_sim_spouse(
                 "marriage_global_day": start,
                 "end_global_day": None,
                 "location": entered_location,
+                "location_source": location_source,
                 "legally_married": True,
                 "surname_rule": surname_rule,
                 "children_count": 0,
@@ -2043,9 +2165,10 @@ def add_relationship(request: Request, partner1_id: str = Form(...), partner2_id
     with db() as session:
         ctx = context(request, session); save = ctx["save"]; first=session.get(Record,partner1_id); second=session.get(Record,partner2_id)
         if not save or not first or not second or first.save_id != save.id or second.save_id != save.id: raise HTTPException(400)
-        married=legally_married in {"1","true","on","yes"} or "marriage" in relationship_type.casefold();start=int_or_none(start_global_day)
+        married=legally_married in {"1","true","on","yes"} or "marriage" in relationship_type.casefold();start=int_or_none(start_global_day);location_day=start or save.global_day
+        first_location=historical_sim_location(session,save,first,location_day);second_location=historical_sim_location(session,save,second,location_day);submitted_location=location.strip();resolved_location=submitted_location or first_location["place"] or second_location["place"];location_source="Reviewed manual location" if submitted_location else first_location["source"] if first_location["place"] else second_location["source"]
         type_folded=relationship_type.strip().casefold();tags=["Family"] if type_folded in {"family","relative","kin"} else ["Friendship"] if type_folded in {"friend","friendship","acquaintance"} else ["Romantic"] if insights.relationship_is_partner({"type":relationship_type,"legally_married":married}) else []
-        data={"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":relationship_type,"status":status,"start_global_day":start,"end_global_day":int_or_none(end_global_day),"location":location,"legally_married":married,"surname_rule":surname_rule,"children_count":int_or_none(children_count) or 0,"notes":notes,"relationship_tags":tags,"relationship_classification_source":"manual"}
+        data={"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":relationship_type,"status":status,"start_global_day":start,"end_global_day":int_or_none(end_global_day),"location":resolved_location,"location_source":location_source,"legally_married":married,"surname_rule":surname_rule,"children_count":int_or_none(children_count) or 0,"notes":notes,"relationship_tags":tags,"relationship_classification_source":"manual"}
         if married:
             data["marriage_global_day"]=start;data.update(marriage_calendar_fields(save,start,marriage_game_hour,marriage_game_minute))
         record=Record(save_id=save.id,kind="relationship",label=f"{first.label} & {second.label}",global_day=data["start_global_day"],data=data);session.add(record);session.flush();name_changes=domain.apply_married_surnames(session,record,first,second,surname_rule);record.label=f"{first.label} & {second.label}";record.data={**record.data,"partner1_name":first.label,"partner2_name":second.label};session.add(Change(save_id=save.id,device_id="local" if settings.local_mode else "web",record_id=record.id,kind=record.kind,operation="upsert",base_version=0,new_version=1,payload=sync.serialize(record)));save.revision+=1+name_changes+domain.sync_generations(session,save);domain.schedule_marriage_rolls(session,save)
@@ -2075,7 +2198,7 @@ def edit_relationship(request: Request, relationship_id: str, partner1_id: str =
         if not relationship or relationship.kind!="relationship": raise HTTPException(404)
         save=owned_save(request,session,relationship.save_id);first=session.get(Record,partner1_id);second=session.get(Record,partner2_id)
         if not first or not second or first.save_id!=save.id or second.save_id!=save.id: raise HTTPException(400)
-        base=relationship.version;data=dict(relationship.data or {});surname_rule=surname_rule or str(data.get("surname_rule") or "automatic");start=int_or_none(start_global_day);married=legally_married in {"1","true","on","yes"} or "marriage" in relationship_type.casefold();type_folded=relationship_type.strip().casefold();tags=["Family"] if type_folded in {"family","relative","kin"} else ["Friendship"] if type_folded in {"friend","friendship","acquaintance"} else ["Romantic"] if insights.relationship_is_partner({"type":relationship_type,"legally_married":married}) else [];data.update({"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":relationship_type,"status":status,"start_global_day":start,"end_global_day":int_or_none(end_global_day),"location":location,"legally_married":married,"surname_rule":surname_rule,"children_count":int_or_none(children_count) or 0,"notes":notes,"relationship_tags":tags,"relationship_classification_source":"manual"})
+        base=relationship.version;data=dict(relationship.data or {});surname_rule=surname_rule or str(data.get("surname_rule") or "automatic");start=int_or_none(start_global_day);married=legally_married in {"1","true","on","yes"} or "marriage" in relationship_type.casefold();type_folded=relationship_type.strip().casefold();tags=["Family"] if type_folded in {"family","relative","kin"} else ["Friendship"] if type_folded in {"friend","friendship","acquaintance"} else ["Romantic"] if insights.relationship_is_partner({"type":relationship_type,"legally_married":married}) else [];submitted_location=location.strip();prior_location=str(data.get("location") or "");auto_location=historical_sim_location(session,save,first,start or save.global_day);resolved_location=submitted_location or prior_location or auto_location["place"];data.update({"partner1_id":first.id,"partner2_id":second.id,"partner1_name":first.label,"partner2_name":second.label,"type":relationship_type,"status":status,"start_global_day":start,"end_global_day":int_or_none(end_global_day),"location":resolved_location,"location_source":"Reviewed manual location" if submitted_location else auto_location["source"] if not prior_location and resolved_location else str(data.get("location_source") or ""),"legally_married":married,"surname_rule":surname_rule,"children_count":int_or_none(children_count) or 0,"notes":notes,"relationship_tags":tags,"relationship_classification_source":"manual"})
         for key in ("marriage_global_day","marriage_game_hour","marriage_game_minute","marriage_time","historical_marriage_date","historical_marriage_date_range","marriage_date_precision"):
             data.pop(key,None)
         if married:
@@ -2094,11 +2217,12 @@ async def add_household(request: Request):
         if not save: raise HTTPException(400)
         name=str(form.get("name") or "").strip()
         if not name: raise HTTPException(400,"Household name is required.")
-        head_id=str(form.get("head_sim_id") or "")
+        head_id=str(form.get("head_sim_id") or "");head=None
         if head_id:
             head=session.get(Record,head_id)
             if not head or head.kind!="sim" or head.save_id!=save.id: raise HTTPException(400,"Invalid household head.")
-        data={"household_name":name,"branch_type":str(form.get("branch_type") or "Main"),"location":str(form.get("location") or ""),"social_class":str(form.get("social_class") or ""),"head_sim_id":head_id or None,"start_global_day":int_or_none(form.get("start_global_day")),"end_global_day":int_or_none(form.get("end_global_day")),"active":form.get("active") in {"1","true","on","yes"},"notes":str(form.get("notes") or "")}
+        start_day=int_or_none(form.get("start_global_day"));submitted_location=str(form.get("location") or "").strip();head_location=historical_sim_location(session,save,head,start_day or save.global_day);resolved_location=submitted_location or head_location["place"]
+        data={"household_name":name,"branch_type":str(form.get("branch_type") or "Main"),"location":resolved_location,"location_source":"Reviewed manual location" if submitted_location else head_location["source"],"social_class":str(form.get("social_class") or ""),"head_sim_id":head_id or None,"start_global_day":start_day,"end_global_day":int_or_none(form.get("end_global_day")),"active":form.get("active") in {"1","true","on","yes"},"notes":str(form.get("notes") or "")}
         record=Record(save_id=save.id,kind="household",label=name,global_day=data["start_global_day"],data=data);session.add(record);session.flush();domain.journal(session,record,"upsert",0);save.revision+=1
         assign_household_members(session,save,record,form.getlist("member_ids"))
     return RedirectResponse(f"/households/{record.id}",status_code=303)
@@ -2129,11 +2253,12 @@ async def edit_household(request: Request, household_id: str):
         if not household or household.kind!="household": raise HTTPException(404)
         save=owned_save(request,session,household.save_id);name=str(form.get("name") or "").strip()
         if not name: raise HTTPException(400,"Household name is required.")
-        head_id=str(form.get("head_sim_id") or "")
+        head_id=str(form.get("head_sim_id") or "");head=None
         if head_id:
             head=session.get(Record,head_id)
             if not head or head.kind!="sim" or head.save_id!=save.id: raise HTTPException(400,"Invalid household head.")
-        base=household.version;data={**(household.data or {}),"household_name":name,"branch_type":str(form.get("branch_type") or "Main"),"location":str(form.get("location") or ""),"social_class":str(form.get("social_class") or ""),"head_sim_id":head_id or None,"start_global_day":int_or_none(form.get("start_global_day")),"end_global_day":int_or_none(form.get("end_global_day")),"active":form.get("active") in {"1","true","on","yes"},"notes":str(form.get("notes") or "")}
+        prior=dict(household.data or {});start_day=int_or_none(form.get("start_global_day"));submitted_location=str(form.get("location") or "").strip();prior_location=str(prior.get("location") or "");head_location=historical_sim_location(session,save,head,start_day or save.global_day);resolved_location=submitted_location or prior_location or head_location["place"]
+        base=household.version;data={**prior,"household_name":name,"branch_type":str(form.get("branch_type") or "Main"),"location":resolved_location,"location_source":"Reviewed manual location" if submitted_location else head_location["source"] if not prior_location and resolved_location else str(prior.get("location_source") or ""),"social_class":str(form.get("social_class") or ""),"head_sim_id":head_id or None,"start_global_day":start_day,"end_global_day":int_or_none(form.get("end_global_day")),"active":form.get("active") in {"1","true","on","yes"},"notes":str(form.get("notes") or "")}
         household.label=name;household.global_day=data["start_global_day"];household.data=data;household.version+=1;domain.journal(session,household,"upsert",base);save.revision+=1
         assign_household_members(session,save,household,form.getlist("member_ids"))
     return RedirectResponse(f"/households/{household_id}",status_code=303)
@@ -2166,7 +2291,11 @@ def pregnancy_profile(request: Request, pregnancy_id: str):
         progress=insights.pregnancy_dashboard(all_records,save)["rows"].get(pregnancy.id,{})
         progress_history=[item for item in all_records if item.kind=="game_history" and (item.data or {}).get("pregnancy_id")==pregnancy.id]
         progress_history.sort(key=lambda item:(item.global_day or 0,item.created_at),reverse=True)
-        ctx=context(request,session,pregnancy=pregnancy,all_sims=sims,children=children,pregnancy_progress=progress,progress_history=progress_history[:30],photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),title=pregnancy.label,page="pregnancies")
+        mother=next((sim for sim in sims if sim.id==(pregnancy.data or {}).get("mother_id")),None)
+        suggested_birth_day=int_or_none((pregnancy.data or {}).get("actual_delivery_global_day")) or int_or_none((pregnancy.data or {}).get("due_global_day")) or save.global_day
+        suggested_birth_location=historical_sim_location(session,save,mother,suggested_birth_day)
+        birth_circumstance=birth_circumstance_suggestion(session,save,pregnancy,mother,suggested_birth_day,suggested_birth_location["place"])
+        ctx=context(request,session,pregnancy=pregnancy,all_sims=sims,children=children,pregnancy_progress=progress,progress_history=progress_history[:30],birth_circumstance=birth_circumstance,suggested_birth_location=suggested_birth_location,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),title=pregnancy.label,page="pregnancies")
         return templates.TemplateResponse(request,"pregnancy_profile.html",ctx)
 
 
@@ -2189,14 +2318,17 @@ def edit_pregnancy(request: Request, pregnancy_id: str, mother_id: str = Form(..
 
 
 @app.post("/pregnancies/{pregnancy_id}/newborns")
-def add_pregnancy_newborn(request: Request, pregnancy_id: str, first_name: str = Form(...), last_name: str = Form(""), sex: str = Form(""), birth_global_day: str = Form(""), notes: str = Form("")):
+def add_pregnancy_newborn(request: Request, pregnancy_id: str, first_name: str = Form(...), last_name: str = Form(""), sex: str = Form(""), birth_global_day: str = Form(""), birthplace: str = Form(""), legitimacy: str = Form(""), birth_circumstances: str = Form(""), birth_circumstances_reviewed: str = Form(""), notes: str = Form("")):
     with db() as session:
         pregnancy=session.get(Record,pregnancy_id)
         if not pregnancy or pregnancy.kind!="pregnancy" or pregnancy.deleted: raise HTTPException(404)
         save=owned_save(request,session,pregnancy.save_id);data=dict(pregnancy.data or {});mother=session.get(Record,data.get("mother_id"));father=session.get(Record,data.get("father_id")) if data.get("father_id") else None
         if not mother: raise HTTPException(400,"The pregnancy needs a valid mother before a newborn can be added.")
         birth=int_or_none(birth_global_day) or int_or_none(data.get("actual_delivery_global_day")) or int_or_none(data.get("due_global_day")) or save.global_day
-        name=" ".join(part.strip() for part in (first_name,last_name) if part.strip());sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first_name.strip(),"last_name":last_name.strip(),"surname_at_birth":last_name.strip(),"maiden_name":last_name.strip(),"sex":sex,"birth_global_day":birth,"death_global_day":None,"mother_id":mother.id,"father_id":father.id if father else None,"current_household_id":mother.data.get("current_household_id"),"species_occult":"Human","pregnancy_id":pregnancy.id,"newborn_rolls_required":bool(data.get("birth_newborn_rolls_required",True)),"notes":notes}
+        maternal_location=historical_sim_location(session,save,mother,birth);resolved_birthplace=birthplace.strip() or maternal_location["place"]
+        suggested=birth_circumstance_suggestion(session,save,pregnancy,mother,birth,resolved_birthplace)
+        reviewed=birth_circumstances_reviewed in {"1","true","on","yes"};circumstances=birth_circumstances.strip() if reviewed else suggested["summary"]
+        name=" ".join(part.strip() for part in (first_name,last_name) if part.strip());sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first_name.strip(),"last_name":last_name.strip(),"surname_at_birth":last_name.strip(),"maiden_name":last_name.strip(),"sex":sex,"birth_global_day":birth,"birthplace":resolved_birthplace,"birth_country":maternal_location["country"],"birth_location_source":maternal_location["source"] if not birthplace.strip() else "Reviewed manual birthplace","legitimacy":legitimacy.strip(),"birth_status":suggested["birth_status"] or "Live birth","multiple_birth_status":suggested["multiple_birth_status"],"birth_circumstances":circumstances,"birth_circumstance_tags":suggested["tags"] if circumstances==suggested["summary"] else [],"birth_circumstances_source":"Reviewed suggestion" if reviewed else "Automatic tracker inference","death_global_day":None,"mother_id":mother.id,"father_id":father.id if father else None,"current_household_id":mother.data.get("current_household_id"),"species_occult":"Human","pregnancy_id":pregnancy.id,"newborn_rolls_required":bool(data.get("birth_newborn_rolls_required",True)),"notes":notes}
         newborn=Record(save_id=save.id,kind="sim",label=name,global_day=birth,data=sim_data);session.add(newborn);session.flush();domain.journal(session,newborn,"upsert",0)
         base=pregnancy.version;delivered=int(data.get("babies_delivered") or 0)+1;expected=max(1,int(data.get("babies_expected") or 1));data.update({"babies_delivered":delivered,"actual_delivery_global_day":birth,"delivery_global_day":birth,"status":"Delivered" if delivered>=expected else "Active","outcome":data.get("outcome") or "Live birth"});pregnancy.data=data;pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=2+domain.sync_generations(session,save)
         if data["status"]=="Delivered": save.revision+=domain.retire_pregnancy_rolls(session,save,pregnancy.id,"Pregnancy delivered")
@@ -2377,7 +2509,12 @@ async def accept_automation(request: Request, candidate_id: str):
             if pregnancy and (pregnancy.kind!="pregnancy" or pregnancy.save_id!=save.id or pregnancy.deleted): pregnancy=None
             accepted_estimate=bool(action=="new_sim" and submitted_birth_year is None and birth_estimate and birth==birth_estimate.get("estimated_birth_global_day"))
             occult=game_metadata.occult_identity(payload);species=str(value("species_occult",occult.get("display") or "Human") or "Human")
-            sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first or name,"last_name":last,"sex":str(value("sex") or ""),"birth_global_day":birth,"mother_id":mother.id if mother else None,"father_id":father.id if father else None,"current_household_id":home.id if home else None,"pregnancy_id":pregnancy.id if pregnancy else None,"game_sim_id":str(payload.get("game_sim_id") or ""),"game_household_id":payload.get("household_id"),"game_household_name":payload.get("household_name"),"game_age_stage":str(value("age_stage") or ""),"game_age_days_at_detection":submitted_age if submitted_age is not None else birth_estimate.get("estimated_age_days"),"game_age_progress_percentage":payload.get("age_progress_percentage"),"game_career":str(value("career") or ""),"game_education":str(value("education") or ""),"game_traits":detected_form_list(value("traits")),"game_skills":detected_form_list(value("skills")),"game_milestones":detected_form_list(value("milestones")),"parent_game_sim_ids":[str(v) for v in (payload.get("parent_game_sim_ids") or []) if v],"game_parents":[row for row in (payload.get("parents") or []) if isinstance(row,dict)],"last_game_world":payload.get("world_name"),"last_game_lot":payload.get("lot_name"),"last_household_funds":payload.get("household_funds")}
+            maternal_location=historical_sim_location(session,save,mother,birth)
+            detected_birthplace=payload.get("birthplace") or payload.get("lot_name") or payload.get("world_name") or maternal_location["place"]
+            resolved_birthplace=str(value("birthplace",detected_birthplace) or "").strip()
+            suggested=birth_circumstance_suggestion(session,save,pregnancy,mother,birth,resolved_birthplace) if action=="new_baby" else {"summary":"","tags":[],"birth_status":"","multiple_birth_status":""}
+            circumstances=str(value("birth_circumstances",suggested["summary"]) or "").strip()
+            sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first or name,"last_name":last,"sex":str(value("sex") or ""),"birth_global_day":birth,"birthplace":resolved_birthplace,"birth_country":maternal_location["country"] if action=="new_baby" else str(payload.get("birth_country") or ""),"birth_location_source":("Clock Sync detected lot/world" if (payload.get("birthplace") or payload.get("lot_name") or payload.get("world_name")) else maternal_location["source"]) if action=="new_baby" else "","legitimacy":str(value("legitimacy",payload.get("legitimacy") or "") or "").strip(),"birth_status":suggested["birth_status"] or ("Live birth" if action=="new_baby" else ""),"multiple_birth_status":suggested["multiple_birth_status"],"birth_circumstances":circumstances,"birth_circumstance_tags":suggested["tags"] if circumstances==suggested["summary"] else [],"birth_circumstances_source":"Reviewed Clock Sync suggestion" if action=="new_baby" else "","mother_id":mother.id if mother else None,"father_id":father.id if father else None,"current_household_id":home.id if home else None,"pregnancy_id":pregnancy.id if pregnancy else None,"game_sim_id":str(payload.get("game_sim_id") or ""),"game_household_id":payload.get("household_id"),"game_household_name":payload.get("household_name"),"game_age_stage":str(value("age_stage") or ""),"game_age_days_at_detection":submitted_age if submitted_age is not None else birth_estimate.get("estimated_age_days"),"game_age_progress_percentage":payload.get("age_progress_percentage"),"game_career":str(value("career") or ""),"game_education":str(value("education") or ""),"game_traits":detected_form_list(value("traits")),"game_skills":detected_form_list(value("skills")),"game_milestones":detected_form_list(value("milestones")),"parent_game_sim_ids":[str(v) for v in (payload.get("parent_game_sim_ids") or []) if v],"game_parents":[row for row in (payload.get("parents") or []) if isinstance(row,dict)],"last_game_world":payload.get("world_name"),"last_game_lot":payload.get("lot_name"),"last_household_funds":payload.get("household_funds")}
             sim_data.update({
                 "child_game_sim_ids":[str(v) for v in (payload.get("child_game_sim_ids") or []) if v],
                 "sibling_game_sim_ids":[str(v) for v in (payload.get("sibling_game_sim_ids") or []) if v],
@@ -2483,11 +2620,12 @@ async def accept_automation(request: Request, candidate_id: str):
             other=chosen_sim("other_sim_id") or session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.data["game_sim_id"].as_string()==str(payload.get("other_game_sim_id") or "")))
             if other:
                 category=str(value("relationship_type",payload.get("category") or "Relationship")).title();start=int_or_none(value("start_global_day",payload.get("detected_tracker_global_day"))) or save.global_day;married=checked("legally_married",category.casefold()=="marriage") or "marriage" in category.casefold();marriage_hour=int_or_none(value("marriage_game_hour",payload.get("detected_game_hour"))) if married else None;marriage_minute=int_or_none(value("marriage_game_minute",payload.get("detected_game_minute"))) if married else None;marriage_second=int_or_none(value("marriage_game_second",payload.get("detected_game_second"))) if married else None
+                primary_location=historical_sim_location(session,save,sim,start);secondary_location=historical_sim_location(session,save,other,start);detected_location=payload.get("lot_name") or payload.get("world_name") or primary_location["place"] or secondary_location["place"];relationship_location=str(value("location",detected_location) or "").strip();relationship_location_source="Clock Sync detected lot/world" if (payload.get("lot_name") or payload.get("world_name")) else primary_location["source"] if primary_location["place"] else secondary_location["source"]
                 existing_relationships=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="relationship",Record.deleted.is_(False))))
                 rel=next((record for record in existing_relationships if {str((record.data or {}).get("partner1_id") or ""),str((record.data or {}).get("partner2_id") or "")}=={sim.id,other.id} and (("marriage" in str((record.data or {}).get("type") or "").casefold() or bool((record.data or {}).get("legally_married"))) if married else str((record.data or {}).get("type") or "").casefold()==category.casefold())),None)
                 calendar=marriage_calendar_fields(save,start,marriage_hour,marriage_minute,marriage_second) if married else {}
                 surname_rule=str(value("surname_rule","automatic") or "automatic")
-                rel_data={"partner1_id":sim.id,"partner2_id":other.id,"partner1_name":sim.label,"partner2_name":other.label,"type":category,"status":str(value("relationship_status","Active") or "Active"),"start_global_day":start,"legally_married":married,"surname_rule":surname_rule,"game_detected":True,"source_candidate_id":item.id,"relationship_tags":payload.get("relationship_tags") or [],"relationship_bits":payload.get("relationship_bits") or [],"friendship_score":payload.get("friendship_score"),"romance_score":payload.get("romance_score"),"relationship_classification_source":payload.get("relationship_classification_source"),**calendar}
+                rel_data={"partner1_id":sim.id,"partner2_id":other.id,"partner1_name":sim.label,"partner2_name":other.label,"type":category,"status":str(value("relationship_status","Active") or "Active"),"start_global_day":start,"location":relationship_location,"location_source":relationship_location_source,"legally_married":married,"surname_rule":surname_rule,"game_detected":True,"source_candidate_id":item.id,"relationship_tags":payload.get("relationship_tags") or [],"relationship_bits":payload.get("relationship_bits") or [],"friendship_score":payload.get("friendship_score"),"romance_score":payload.get("romance_score"),"relationship_classification_source":payload.get("relationship_classification_source"),**calendar}
                 if married: rel_data["marriage_global_day"]=start;rel_data["marriage_time_source"]="Clock Sync marriage transition" if marriage_hour is not None and marriage_minute is not None else "Reviewed detection"
                 if rel:
                     rel_base=rel.version;rel.global_day=start;rel.data={**rel.data,**rel_data}
@@ -2646,7 +2784,7 @@ async def update_settings(request: Request):
         if settings_scope=="succession":
             settings_data["succession_require_legitimate"]="succession_require_legitimate" in form
         elif settings_scope=="rules" and "sim_menu_order" not in form:
-            for key in ("maternal_rolls_enabled","automatic_death_causes"):
+            for key in ("maternal_rolls_enabled","automatic_death_causes","automatic_birth_circumstances"):
                 settings_data[key]=key in form
         save.settings=settings_data;save.revision+=1;domain.schedule_rolls(session,save)
     return RedirectResponse(str(form.get("return_to") or "/p/rules"),status_code=303)
@@ -3722,11 +3860,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.4.0-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.4.1-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.0-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.1-Setup.exe"',"Cache-Control":"no-store",
     })
 
 
