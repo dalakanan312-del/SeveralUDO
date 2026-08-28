@@ -143,7 +143,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.4.6")
+app = FastAPI(title="Decades Tracker", version="4.4.7")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -2417,14 +2417,21 @@ def edit_pregnancy(request: Request, pregnancy_id: str, mother_id: str = Form(..
         if not pregnancy or pregnancy.kind!="pregnancy": raise HTTPException(404)
         save=owned_save(request,session,pregnancy.save_id);mother=session.get(Record,mother_id);father=session.get(Record,father_id) if father_id else None
         if not mother or mother.kind!="sim" or mother.save_id!=save.id or (father and (father.kind!="sim" or father.save_id!=save.id)): raise HTTPException(400)
-        domain.retire_pregnancy_rolls(session,save,pregnancy.id,"Pregnancy details changed")
         conception=int_or_none(conception_global_day);due=int_or_none(due_global_day) or ((conception or save.global_day)+save.pregnancy_days);base=pregnancy.version
         expected=max(1,int_or_none(babies_expected) or 1)
         try: domain.validate_multiple_birth_count(session,save,due,expected)
         except ValueError as exc: raise HTTPException(400,str(exc)) from exc
         data={**(pregnancy.data or {}),"mother_id":mother.id,"mother_name":mother.label,"father_id":father.id if father else None,"father_name":father.label if father else "","conception_global_day":conception,"due_global_day":due,"actual_delivery_global_day":int_or_none(actual_delivery_global_day),"babies_expected":expected,"babies_delivered":max(0,int_or_none(babies_delivered) or 0),"status":status,"outcome":outcome,"complication":complication,"maternal_rolls_required":maternal_rolls in {"1","true","on","yes"},"birth_newborn_rolls_required":newborn_rolls in {"1","true","on","yes"},"notes":notes}
+        keeps_maternal=domain.pregnancy_keeps_maternal_roll(status) and data["maternal_rolls_required"]
+        if keeps_maternal:
+            domain.schedule_rolls(session,save)
+        else:
+            save.revision+=domain.retire_pregnancy_rolls(session,save,pregnancy.id,"Pregnancy details changed")
         pregnancy.label=f"{mother.label} pregnancy";pregnancy.global_day=due;pregnancy.data=data;pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=1
-        if str(status).casefold() not in domain.CLOSED_PREGNANCIES and data["maternal_rolls_required"]: domain.schedule_rolls(session,save)
+        if keeps_maternal:
+            save.revision+=domain.preserve_delivery_maternal_rolls(session,save,pregnancy,data.get("actual_delivery_global_day") or due)
+        elif str(status).casefold() not in domain.CLOSED_PREGNANCIES and data["maternal_rolls_required"]:
+            domain.schedule_rolls(session,save)
     return RedirectResponse(f"/pregnancies/{pregnancy_id}",status_code=303)
 
 
@@ -2441,8 +2448,10 @@ def add_pregnancy_newborn(request: Request, pregnancy_id: str, first_name: str =
         reviewed=birth_circumstances_reviewed in {"1","true","on","yes"};circumstances=birth_circumstances.strip() if reviewed else suggested["summary"]
         name=" ".join(part.strip() for part in (first_name,last_name) if part.strip());sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first_name.strip(),"last_name":last_name.strip(),"surname_at_birth":last_name.strip(),"maiden_name":last_name.strip(),"sex":sex,"birth_global_day":birth,"birthplace":resolved_birthplace,"birth_country":maternal_location["country"],"birth_location_source":maternal_location["source"] if not birthplace.strip() else "Reviewed manual birthplace","legitimacy":legitimacy.strip(),"birth_status":suggested["birth_status"] or "Live birth","multiple_birth_status":suggested["multiple_birth_status"],"birth_circumstances":circumstances,"birth_circumstance_tags":suggested["tags"] if circumstances==suggested["summary"] else [],"birth_circumstances_source":"Reviewed suggestion" if reviewed else "Automatic tracker inference","death_global_day":None,"mother_id":mother.id,"father_id":father.id if father else None,"current_household_id":mother.data.get("current_household_id"),"species_occult":"Human","pregnancy_id":pregnancy.id,"newborn_rolls_required":bool(data.get("birth_newborn_rolls_required",True)),"notes":notes}
         newborn=Record(save_id=save.id,kind="sim",label=name,global_day=birth,data=sim_data);session.add(newborn);session.flush();domain.journal(session,newborn,"upsert",0)
-        base=pregnancy.version;delivered=int(data.get("babies_delivered") or 0)+1;expected=max(1,int(data.get("babies_expected") or 1));data.update({"babies_delivered":delivered,"actual_delivery_global_day":birth,"delivery_global_day":birth,"status":"Delivered" if delivered>=expected else "Active","outcome":data.get("outcome") or "Live birth"});pregnancy.data=data;pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=2+domain.sync_generations(session,save)
-        if data["status"]=="Delivered": save.revision+=domain.retire_pregnancy_rolls(session,save,pregnancy.id,"Pregnancy delivered")
+        base=pregnancy.version;delivered=int(data.get("babies_delivered") or 0)+1;expected=max(1,int(data.get("babies_expected") or 1));will_deliver=delivered>=expected
+        if will_deliver and data.get("maternal_rolls_required",True): domain.schedule_rolls(session,save)
+        data.update({"babies_delivered":delivered,"actual_delivery_global_day":birth,"delivery_global_day":birth,"status":"Delivered" if will_deliver else "Active","outcome":data.get("outcome") or "Live birth"});pregnancy.data=data;pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=2+domain.sync_generations(session,save)
+        if data["status"]=="Delivered": save.revision+=domain.preserve_delivery_maternal_rolls(session,save,pregnancy,birth)
         domain.schedule_rolls(session,save)
     return RedirectResponse(f"/pregnancies/{pregnancy_id}",status_code=303)
 
@@ -2725,7 +2734,13 @@ async def accept_automation(request: Request, candidate_id: str):
                 delivery_hour=int_or_none(value("delivery_game_hour",payload.get("detected_game_hour")));delivery_minute=int_or_none(value("delivery_game_minute",payload.get("detected_game_minute")));delivery_second=int_or_none(value("delivery_game_second",payload.get("detected_game_second")));delivery_exact=calendar_utils.exact_historical_label(delivery,delivery_hour,delivery_minute,save.start_year,save.days_per_year) if delivery_hour is not None and delivery_minute is not None else ""
                 delivery_details={"delivery_game_hour":delivery_hour,"delivery_game_minute":delivery_minute,"delivery_time":(f"{delivery_hour:02d}:{delivery_minute:02d}:{delivery_second:02d}" if delivery_second is not None else f"{delivery_hour:02d}:{delivery_minute:02d}") if delivery_hour is not None and delivery_minute is not None else None,"historical_delivery_date":delivery_exact or None}
                 if delivery_second is not None: delivery_details["delivery_game_second"]=delivery_second
-                base=pregnancy.version;pregnancy.data={**pregnancy.data,"status":status,"babies_delivered":delivered,"actual_delivery_global_day":delivery,"delivery_global_day":delivery,"outcome":str(value("outcome",status) or status),"complication":str(value("complication") or "") or None,**delivery_details};pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=domain.retire_pregnancy_rolls(session,save,pregnancy.id,f"Pregnancy reviewed as {status}")
+                keeps_maternal=domain.pregnancy_keeps_maternal_roll(status) and (pregnancy.data or {}).get("maternal_rolls_required",True)
+                if keeps_maternal: domain.schedule_rolls(session,save)
+                base=pregnancy.version;pregnancy.data={**pregnancy.data,"status":status,"babies_delivered":delivered,"actual_delivery_global_day":delivery,"delivery_global_day":delivery,"outcome":str(value("outcome",status) or status),"complication":str(value("complication") or "") or None,**delivery_details};pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base)
+                if keeps_maternal:
+                    save.revision+=domain.preserve_delivery_maternal_rolls(session,save,pregnancy,delivery)
+                elif domain.pregnancy_retires_maternal_roll(status):
+                    save.revision+=domain.retire_pregnancy_rolls(session,save,pregnancy.id,f"Pregnancy reviewed as {status}")
                 resolved_record=pregnancy
         elif action=="relationship_change" and sim:
             other=chosen_sim("other_sim_id") or session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.data["game_sim_id"].as_string()==str(payload.get("other_game_sim_id") or "")))
@@ -3442,8 +3457,13 @@ def resolve_today_pregnancy(request: Request, pregnancy_id: str, status: str = F
     with db() as session:
         record=session.get(Record,pregnancy_id)
         if not record or record.kind!="pregnancy": raise HTTPException(404)
-        save=owned_save(request,session,record.save_id);set_today_undo(request,f"Updated {record.label}",[record]);base=record.version;data=dict(record.data or {});data.update({"status":status,"babies_delivered":max(0,babies_delivered),"actual_delivery_global_day":save.global_day,"delivery_global_day":save.global_day,"outcome":outcome or status,"complication":complication or None});record.data=data;record.version+=1;domain.journal(session,record,"upsert",base);save.revision+=1
-        if str(status).casefold() in domain.CLOSED_PREGNANCIES: save.revision+=domain.retire_pregnancy_rolls(session,save,record.id,f"Pregnancy resolved as {status}")
+        save=owned_save(request,session,record.save_id);set_today_undo(request,f"Updated {record.label}",[record]);keeps_maternal=domain.pregnancy_keeps_maternal_roll(status) and (record.data or {}).get("maternal_rolls_required",True)
+        if keeps_maternal: domain.schedule_rolls(session,save)
+        base=record.version;data=dict(record.data or {});data.update({"status":status,"babies_delivered":max(0,babies_delivered),"actual_delivery_global_day":save.global_day,"delivery_global_day":save.global_day,"outcome":outcome or status,"complication":complication or None});record.data=data;record.version+=1;domain.journal(session,record,"upsert",base);save.revision+=1
+        if keeps_maternal:
+            save.revision+=domain.preserve_delivery_maternal_rolls(session,save,record,save.global_day)
+        elif domain.pregnancy_retires_maternal_roll(status):
+            save.revision+=domain.retire_pregnancy_rolls(session,save,record.id,f"Pregnancy resolved as {status}")
         domain.schedule_rolls(session,save)
     return RedirectResponse("/p/today?task=pregnancies",status_code=303)
 
@@ -4013,11 +4033,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.4.6-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.4.7-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.6-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.7-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

@@ -94,6 +94,8 @@ DEFAULT_PLANNER_RULES = [
 ]
 
 CLOSED_PREGNANCIES = {"delivered", "complete", "completed", "miscarriage", "stillbirth", "cancelled", "canceled", "closed"}
+DELIVERY_PREGNANCIES = {"delivered", "complete", "completed", "stillbirth", "closed"}
+MATERNAL_ROLL_RETIRE_PREGNANCIES = {"miscarriage", "cancelled", "canceled"}
 CLOSED_ILLNESSES = {"recovered", "resolved", "deceased", "ended", "closed"}
 EVENT_CATALOG_VERSION = "recovered-655-v5-complete-source-roll-tables"
 
@@ -1132,7 +1134,12 @@ def end_illnesses_for_death(session: Session, save: ChronicleSave, sim: Record, 
 
 
 def retire_pregnancy_rolls(session: Session, save: ChronicleSave, pregnancy_id: str, reason: str = "Pregnancy closed") -> int:
-    """Archive unfinished maternal rolls when a pregnancy no longer needs them."""
+    """Archive unfinished maternal rolls after a loss, cancellation, or deletion.
+
+    A completed delivery still needs its maternal roll.  Delivery handlers use
+    ``preserve_delivery_maternal_rolls`` instead so accepting the delivery does
+    not make the obligation disappear before the player rolls it.
+    """
     rolls = list(session.scalars(select(Record).where(
         Record.save_id == save.id,
         Record.kind == "roll",
@@ -1153,6 +1160,117 @@ def retire_pregnancy_rolls(session: Session, save: ChronicleSave, pregnancy_id: 
         journal(session, roll, "delete", base)
         changed += 1
     return changed
+
+
+def pregnancy_keeps_maternal_roll(status: object) -> bool:
+    return str(status or "").strip().casefold() in DELIVERY_PREGNANCIES
+
+
+def pregnancy_retires_maternal_roll(status: object) -> bool:
+    return str(status or "").strip().casefold() in MATERNAL_ROLL_RETIRE_PREGNANCIES
+
+
+def _delivery_retirement_reason(reason: object) -> bool:
+    text = str(reason or "").strip().casefold()
+    return any(token in text for token in (
+        "deliver", "stillbirth", "reviewed as complete", "resolved as complete",
+    ))
+
+
+def preserve_delivery_maternal_rolls(
+    session: Session,
+    save: ChronicleSave,
+    pregnancy: Record,
+    delivery_day: int | None = None,
+    *,
+    restore_retired: bool = False,
+) -> int:
+    """Keep unfinished maternal obligations visible after delivery acceptance.
+
+    Existing pending rolls are re-anchored to the confirmed delivery day.  The
+    optional repair mode revives only rolls that older versions explicitly
+    retired as a delivery; rolls retired for a miscarriage, cancellation,
+    archive, or ruleset change remain retired.
+    """
+    pregnancy_data = dict(pregnancy.data or {})
+    if not pregnancy_data.get("maternal_rolls_required", True):
+        return 0
+    day = int(
+        delivery_day
+        or pregnancy_data.get("actual_delivery_global_day")
+        or pregnancy_data.get("delivery_global_day")
+        or pregnancy_data.get("due_global_day")
+        or pregnancy.global_day
+        or save.global_day
+    )
+    mother = session.get(Record, str(pregnancy_data.get("mother_id") or ""))
+    rolls = list(session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "roll",
+    )))
+    source_prefix = f"maternal:{pregnancy.id}:"
+    matching_rolls = [
+        roll for roll in rolls
+        if not (roll.data or {}).get("completed") and (
+            (roll.data or {}).get("source_id") == pregnancy.id
+            or str((roll.data or {}).get("source") or "").startswith(source_prefix)
+        )
+    ]
+    active_rolls = [roll for roll in matching_rolls if not roll.deleted]
+    restorable_id = None
+    if restore_retired and not active_rolls:
+        retired_by_delivery = [
+            roll for roll in matching_rolls
+            if roll.deleted and _delivery_retirement_reason((roll.data or {}).get("retired_reason"))
+        ]
+        if retired_by_delivery:
+            restorable_id = max(
+                retired_by_delivery,
+                key=lambda item: (item.updated_at, item.version, item.id),
+            ).id
+    changed = 0
+    for roll in matching_rolls:
+        data = dict(roll.data or {})
+        if roll.deleted and roll.id != restorable_id:
+            continue
+        updates = {
+            "source_id": pregnancy.id,
+            "due_global_day": day,
+            "delivery_global_day": day,
+            "delivery_confirmed": True,
+            "maternal_roll_preserved_after_delivery": True,
+        }
+        if mother:
+            updates.update({"sim_id": mother.id, "sim_name": mother.label})
+        new_data = {**data, **updates}
+        new_data.pop("retired_reason", None)
+        new_data.pop("retired_global_day", None)
+        new_label = f"{mother.label} — {data.get('roll_type')}" if mother and data.get("roll_type") else roll.label
+        if not roll.deleted and roll.global_day == day and roll.label == new_label and new_data == data:
+            continue
+        base = roll.version
+        roll.deleted = False
+        roll.global_day = day
+        roll.label = new_label
+        roll.data = new_data
+        roll.version += 1
+        journal(session, roll, "upsert", base)
+        changed += 1
+    return changed
+
+
+def restore_delivery_maternal_rolls(session: Session, save: ChronicleSave) -> int:
+    """Repair maternal rolls hidden by pre-4.4.7 delivery acceptance."""
+    pregnancies = list(session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind == "pregnancy",
+        Record.deleted.is_(False),
+    )))
+    return sum(
+        preserve_delivery_maternal_rolls(session, save, pregnancy, restore_retired=True)
+        for pregnancy in pregnancies
+        if pregnancy_keeps_maternal_roll((pregnancy.data or {}).get("status"))
+    )
 
 
 def retire_dead_sim_rolls(session: Session, save: ChronicleSave, sims: list[Record] | None = None) -> int:
@@ -1787,6 +1905,7 @@ def refresh_pending_rolls(session: Session, save: ChronicleSave) -> dict[str, in
     counts = {
         "event": repair_pending_event_rolls(session, save),
         "aging": repair_default_aging_tables(session, save),
+        "maternal": restore_delivery_maternal_rolls(session, save),
         "occult": 0,
         "planner": 0,
         "campaign": 0,
@@ -1815,7 +1934,7 @@ def refresh_pending_rolls(session: Session, save: ChronicleSave) -> dict[str, in
                     "core_ruleset_id": rule_data.get("core_ruleset_id"),
                     "core_source_rule_id": rule_data.get("source_rule_id"),
                 }
-                category = "aging"
+                category = "maternal" if source.startswith("maternal:") else "aging"
 
         occult_rule_id = str(data.get("occult_rule_id") or "")
         if occult_rule_id:

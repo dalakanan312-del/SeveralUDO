@@ -1311,7 +1311,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.6")
+            self.assertEqual(health.json()["version"], "4.4.7")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -2031,6 +2031,32 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(roll.data["source_id"],active.id)
                 self.assertIn("Maternal",roll.data["roll_type"])
                 session.rollback()
+
+    def test_roll_refresh_restores_only_maternal_rolls_hidden_by_delivery(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Maternal delivery repair");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Maternal delivery repair",global_day=30,start_year=1550,days_per_year=4)
+            session.add(save);session.flush()
+            mother=Record(save_id=save.id,kind="sim",label="Delivery Parent",global_day=1,data={"birth_global_day":1})
+            session.add(mother);session.flush()
+            delivered=Record(save_id=save.id,kind="pregnancy",label="Delivered pregnancy",global_day=34,data={"mother_id":mother.id,"status":"Delivered","actual_delivery_global_day":30,"maternal_rolls_required":True})
+            delivered_with_replacement=Record(save_id=save.id,kind="pregnancy",label="Delivered with replacement",global_day=30,data={"mother_id":mother.id,"status":"Delivered","actual_delivery_global_day":30,"maternal_rolls_required":True})
+            miscarriage=Record(save_id=save.id,kind="pregnancy",label="Miscarriage",global_day=28,data={"mother_id":mother.id,"status":"Miscarriage","maternal_rolls_required":True})
+            session.add_all([delivered,delivered_with_replacement,miscarriage]);session.flush()
+            delivery_roll=Record(save_id=save.id,kind="roll",label="Hidden delivery roll",global_day=34,deleted=True,data={"sim_id":mother.id,"source_id":delivered.id,"source":f"maternal:{delivered.id}:rule","roll_type":"Maternal — Adult","completed":False,"retired_reason":"Pregnancy reviewed as Delivered","retired_global_day":30})
+            active_replacement=Record(save_id=save.id,kind="roll",label="Delivery Parent — Maternal — Adult",global_day=30,data={"sim_id":mother.id,"sim_name":mother.label,"source_id":delivered_with_replacement.id,"source":f"maternal:{delivered_with_replacement.id}:rule","roll_type":"Maternal — Adult","completed":False,"due_global_day":30,"delivery_global_day":30,"delivery_confirmed":True,"maternal_roll_preserved_after_delivery":True})
+            replaced_old_roll=Record(save_id=save.id,kind="roll",label="Older hidden duplicate",global_day=34,deleted=True,data={"sim_id":mother.id,"source_id":delivered_with_replacement.id,"source":f"maternal:{delivered_with_replacement.id}:rule","roll_type":"Maternal — Adult","completed":False,"retired_reason":"Pregnancy resolved as Delivered","retired_global_day":30})
+            loss_roll=Record(save_id=save.id,kind="roll",label="Hidden loss roll",global_day=28,deleted=True,data={"sim_id":mother.id,"source_id":miscarriage.id,"source":f"maternal:{miscarriage.id}:rule","roll_type":"Maternal — Adult","completed":False,"retired_reason":"Pregnancy reviewed as Miscarriage","retired_global_day":28})
+            session.add_all([delivery_roll,active_replacement,replaced_old_roll,loss_roll]);session.flush()
+            result=refresh_pending_rolls(session,save)
+            self.assertEqual(result["maternal"],1)
+            self.assertFalse(delivery_roll.deleted)
+            self.assertEqual((delivery_roll.global_day,delivery_roll.data["due_global_day"]),(30,30))
+            self.assertNotIn("retired_reason",delivery_roll.data)
+            self.assertFalse(active_replacement.deleted)
+            self.assertTrue(replaced_old_roll.deleted)
+            self.assertTrue(loss_roll.deleted)
+            session.rollback()
 
     def test_household_membership_and_pregnancy_newborn_workflows(self):
         marker = uuid.uuid4().hex[:8]
@@ -3610,18 +3636,24 @@ class CoreSmokeTests(unittest.TestCase):
                 session.add(mother);session.flush()
                 pregnancy=Record(save_id=save.id,kind="pregnancy",label="Twin pregnancy",global_day=save.global_day,data={"mother_id":mother.id,"mother_name":mother.label,"status":"Active","babies_expected":2,"babies_delivered":0})
                 session.add(pregnancy);session.flush()
+                maternal=Record(save_id=save.id,kind="roll",label="Twin Parent — Maternal — Adult",global_day=save.global_day+4,data={"sim_id":mother.id,"sim_name":mother.label,"source_id":pregnancy.id,"source":f"maternal:{pregnancy.id}:test-rule","roll_type":"Maternal — Adult","die":"d20","bad_results":"3 9 20","completed":False})
+                session.add(maternal);session.flush()
                 made=reconcile_sim(session,save,mother,{"is_pregnant":False})
                 self.assertEqual(made[0].data["payload"]["babies_delivered"],2)
-                candidate_id=made[0].id;pregnancy_id=pregnancy.id;mother_id=mother.id
+                candidate_id=made[0].id;pregnancy_id=pregnancy.id;mother_id=mother.id;maternal_id=maternal.id
                 session.commit()
             response=client.post(f"/automation/{candidate_id}/accept",data={"status":"Delivered","babies_delivered":"2","delivery_global_day":"42","outcome":"Healthy twins","complication":""},follow_redirects=False)
             self.assertEqual(response.status_code,303)
             with SessionLocal() as session:
-                pregnancy=session.get(Record,pregnancy_id);candidate=session.get(Record,candidate_id)
+                pregnancy=session.get(Record,pregnancy_id);candidate=session.get(Record,candidate_id);maternal=session.get(Record,maternal_id)
                 self.assertEqual(pregnancy.data["babies_delivered"],2)
                 self.assertEqual(pregnancy.data["actual_delivery_global_day"],42)
                 self.assertEqual(candidate.data["status"],"accepted")
-                session.execute(delete(Record).where(Record.id.in_([candidate_id,pregnancy_id,mother_id])));session.commit()
+                self.assertFalse(maternal.deleted)
+                self.assertFalse(maternal.data["completed"])
+                self.assertEqual((maternal.global_day,maternal.data["due_global_day"]),(42,42))
+                self.assertTrue(maternal.data["maternal_roll_preserved_after_delivery"])
+                session.execute(delete(Record).where(Record.id.in_([candidate_id,pregnancy_id,mother_id,maternal_id])));session.commit()
 
     def test_detected_game_details_render_on_sim_profile(self):
         with TestClient(app) as client:
