@@ -80,6 +80,585 @@ DEFAULT_PLANNER_RULES = [
 
 CLOSED_PREGNANCIES = {"delivered", "complete", "completed", "miscarriage", "stillbirth", "cancelled", "canceled", "closed"}
 CLOSED_ILLNESSES = {"recovered", "resolved", "deceased", "ended", "closed"}
+EVENT_CATALOG_VERSION = "recovered-655-v5-complete-source-roll-tables"
+
+# These catalog rows change money, MCCC limits, or available technology.  An
+# early import marked them as rolls even though their source instructions do
+# not ask the player to roll anything.
+NON_ROLL_CATALOG_IDS = {
+    "EVT-0169", "EVT-0506", "EVT-0518", "EVT-0520", "EVT-0621", "EVT-0646",
+}
+
+# A handful of recovered catalog rows kept only a "see the source page" note.
+# Their rolls therefore cannot be inferred from the compressed catalog itself.
+# These values are transcribed from the linked SeveralUDO era pages so fresh and
+# existing saves receive the same editable rules.
+ORIGINAL_EVENT_ROLL_OVERRIDES: dict[str, dict] = {
+    "EVT-0143": {
+        "location": "Spain",
+        "affected_class": "Male Sims age 16+ in Spain",
+        "configured_die": "d12",
+        "configured_bad_results": "6: Enlisted in the Siege of Seville",
+        "followup_enabled": True,
+        "followup_trigger_results": "6",
+        "followup_delay_days": 0,
+        "followup_label": "Siege of Seville casualty roll",
+        "followup_die": "d12",
+        "followup_bad_results": "5: Dies in the Siege of Seville",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": "Spanish men age 16+ roll D12; 6 means enlisted. Enlisted Sims roll D12 and die on 5.",
+    },
+    "EVT-0157": {
+        "location": "Bulgaria, Italy, Latin Empire",
+        "affected_class": "Male Sims age 16+ in the participating regions",
+        "configured_die": "d12",
+        "configured_bad_results": "6: Enlisted in the Battle of Adrianople",
+        "followup_enabled": True,
+        "followup_trigger_results": "6",
+        "followup_delay_days": 0,
+        "followup_label": "Battle of Adrianople casualty roll",
+        "followup_die": "d8",
+        "followup_bad_results": "2: Dies in the Battle of Adrianople",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": "Eligible men roll D12; 6 means enlisted. Enlisted Sims roll D8 and die on 2.",
+    },
+    "EVT-0264": {
+        "location": "France",
+        "affected_class": "All Sims in France, including side households",
+        "configured_die": "d12",
+        "configured_bad_results": "3: Dies of famine",
+        "original_roll_instructions": "Roll a D12 for all Sims in France; 3 means they die of famine.",
+    },
+    "EVT-0484": {
+        "location": "United States, Massachusetts",
+        "affected_class": "Women and men in colonial Massachusetts",
+        "configured_die": "d4",
+        "configured_bad_results": "1: Accused of witchcraft; 4: Accused of witchcraft",
+        "die_by_sex": {"female": "d4", "male": "d6"},
+        "result_rules_by_sex": {
+            "female": "1: Accused of witchcraft; 4: Accused of witchcraft",
+            "male": "1: Accused of witchcraft; 6: Accused of witchcraft",
+        },
+        "followup_enabled": True,
+        "followup_delay_days": 0,
+        "followup_label": "Witch-trial verdict",
+        "followup_die": "d2",
+        "followup_bad_results": "1: Dies after the witch trial",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": (
+            "Women roll D4 and are accused on 1 or 4; men roll D6 and are accused on 1 or 6. "
+            "Each accused Sim flips a coin: Heads means death and Tails means they walk away."
+        ),
+    },
+    "EVT-0485": {
+        "location": "The Americas",
+        "affected_class": "All Sims living in the Americas",
+        "configured_die": "d20",
+        "configured_bad_results": "1: Dies of influenza",
+        "original_roll_instructions": "Roll a D20 for every Sim living in America; 1 means the Sim dies.",
+    },
+    "EVT-0486": {
+        "location": "North America",
+        "affected_class": "Male Sims living in North America",
+        "configured_die": "d2",
+        "configured_bad_results": "2: Tails — enlisted",
+        "followup_enabled": True,
+        "followup_trigger_results": "2",
+        "followup_delay_days": 0,
+        "followup_label": "Queen Anne's War casualty roll",
+        "followup_die": "d10",
+        "followup_bad_results": "3: Dies in Queen Anne's War; 5: Dies in Queen Anne's War",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": (
+            "Male Sims in North America flip a coin; Tails means enlisted. "
+            "Enlisted Sims roll D10 and die on 3 or 5."
+        ),
+    },
+    "EVT-0488": {
+        "location": "Europe",
+        "affected_class": "All Sims in Europe",
+        "configured_die": "d2",
+        "configured_bad_results": "1: Heads — no fireplace heat; 2: Tails — heat available",
+        "followup_enabled": True,
+        "followup_delay_days": 0,
+        "followup_label": "Great Frost survival roll",
+        "followup_branches": {
+            "1": {
+                "label": "Great Frost — no heat",
+                "die": "d10",
+                "result_rules": "7: Starves during the Great Frost; 10: Freezes to death",
+                "failure_is_lethal": True,
+            },
+            "2": {
+                "label": "Great Frost — heat available",
+                "die": "d20",
+                "result_rules": "2: Starves during the Great Frost; 3: Freezes to death",
+                "failure_is_lethal": True,
+            },
+        },
+        "original_roll_instructions": (
+            "Flip a coin for fireplace heat. Heads means no heat: roll D10, where 7 starves and 10 freezes. "
+            "Otherwise roll D20, where 2 starves and 3 freezes."
+        ),
+    },
+    "EVT-0494": {
+        "location": "North America, Spain",
+        "affected_class": "Male Sims age 16+ in North America or Spain",
+        "configured_die": "d20",
+        "configured_bad_results": "4: Enlisted in the Villasur Expedition",
+        "followup_enabled": True,
+        "followup_trigger_results": "4",
+        "followup_delay_days": 0,
+        "followup_label": "Villasur Expedition casualty roll",
+        "followup_die": "d6",
+        "followup_bad_results": "3: Dies in the Villasur Expedition",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": "Eligible men roll D20; 4 means enlisted. Enlisted Sims roll D6 and die on 3.",
+    },
+    "EVT-0501": {
+        "location": "United States, Massachusetts",
+        "affected_class": "Babies, toddlers, children, and pregnant Sims in Boston",
+        "eligible_life_stages": ["newborn", "infant", "baby", "toddler", "child"],
+        "include_pregnant": True,
+        "configured_die": "d10",
+        "configured_bad_results": "10: Dies of measles",
+        "original_roll_instructions": "Babies, toddlers, children, and pregnant Sims roll D10; 10 means death.",
+    },
+    "EVT-0529": {
+        "location": "Spain, Morocco, England, Scotland, Wales",
+        "affected_class": "Male Sims age 16+ in the participating regions",
+        "configured_die": "d12",
+        "configured_bad_results": "4: Enlisted in the Siege of Melilla",
+        "followup_enabled": True,
+        "followup_trigger_results": "4",
+        "followup_delay_days": 0,
+        "followup_label": "Siege of Melilla casualty roll",
+        "followup_die": "d20",
+        "followup_bad_results": "3: Dies in the Siege of Melilla",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": "Eligible men roll D12; 4 means enlisted. Enlisted Sims roll D20 and die on 3.",
+    },
+    "EVT-0269": {
+        "affected_class": "Male Teen–Adult Sims in all households",
+        "configured_die": "d4",
+        "configured_bad_results": "4: Enlisted in the Hundred Years' War",
+        "followup_enabled": True,
+        "followup_trigger_results": "4",
+        "followup_delay_years": 5,
+        "followup_label": "Hundred Years' War casualty and return roll",
+        "followup_die": "d20",
+        "followup_bad_results": "20: Dies in the Hundred Years' War",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": "Draft phases use D4 and enlist on 4; the later casualty/return roll uses D20 and kills on 20.",
+    },
+    "EVT-0491": {
+        "location": "United States, North Carolina, South Carolina",
+        "affected_class": "Male Sims age 16+ in the Carolinas, including Native Sims",
+        "configured_die": "d20",
+        "configured_bad_results": "4: Enlisted in the Tuscarora War",
+        "followup_enabled": True,
+        "followup_trigger_results": "4",
+        "followup_delay_days": 0,
+        "followup_label": "Tuscarora War casualty roll",
+        "followup_die": "d12",
+        "followup_bad_results": "8: Dies in the Tuscarora War",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": "Eligible men roll D20; 4 enlists. Enlisted Sims roll D12; 8 means death.",
+    },
+    "EVT-0492": {
+        "location": "North America",
+        "affected_class": "Babies through children in main and side households",
+        "eligible_life_stages": ["newborn", "infant", "baby", "toddler", "child"],
+        "configured_die": "d10",
+        "configured_bad_results": "5: Dies of measles; 7: Dies of measles; 10: Dies of measles",
+        "original_roll_instructions": "Every baby through child rolls D10; 5, 7, or 10 means death.",
+    },
+    "EVT-0493": {
+        "location": "United States, South Carolina",
+        "affected_class": "Traders and unemployed Sims in South Carolina",
+        "configured_die": "d10",
+        "configured_bad_results": "1-8: Dies in the Yamasee War; 10: Dies in the Yamasee War",
+        "original_roll_instructions": "Eligible Sims roll D10; only 9 survives.",
+    },
+    "EVT-0496": {
+        "location": "United States, Massachusetts, Boston",
+        "affected_class": "Babies, toddlers, children, and pregnant Sims in Boston",
+        "eligible_life_stages": ["newborn", "infant", "baby", "toddler", "child"],
+        "include_pregnant": True,
+        "configured_die": "d10",
+        "configured_bad_results": "10: Dies of measles",
+        "original_roll_instructions": "Babies, toddlers, children, and pregnant Sims roll D10; 10 means death.",
+    },
+    "EVT-0497": {
+        "location": "United States, Thirteen Colonies",
+        "affected_class": "Every Sim in main and side households in the Thirteen Colonies",
+        "configured_die": "d8",
+        "configured_bad_results": "3: Dies of influenza",
+        "original_roll_instructions": "Every Sim in main and side households rolls D8; 3 means death.",
+    },
+    "EVT-0499": {
+        "location": "United States, New England, New Hampshire",
+        "affected_class": "All Sims in New England, using an age-specific table",
+        "configured_die": "d20",
+        "configured_bad_results": "3: Dies of diphtheria",
+        "source_roll_plan": [
+            {"index": 0, "die": "d20", "bad_results": "3", "result_rules": "3: Dies of diphtheria", "context": "Teen through Adult Sims", "parent_index": None, "trigger_results": "", "eligible_life_stages": ["teen", "young adult", "adult"]},
+            {"index": 1, "die": "d8", "bad_results": "4", "result_rules": "4: Dies of diphtheria", "context": "Infant through Child and Elder Sims", "parent_index": None, "trigger_results": "", "eligible_life_stages": ["newborn", "infant", "baby", "toddler", "child", "elder"]},
+        ],
+        "original_roll_instructions": "Teen through Adult Sims roll D20 and die on 3; Infant through Child and Elder Sims roll D8 and die on 4.",
+    },
+    "EVT-0500": {
+        "location": "United States, England, Spain, Caribbean",
+        "affected_class": "Eligible male Sims in participating regions",
+        "configured_die": "d4",
+        "configured_bad_results": "3: Enlisted in the War of Jenkins' Ear",
+        "followup_enabled": True,
+        "followup_trigger_results": "3",
+        "followup_delay_days": 0,
+        "followup_label": "War of Jenkins' Ear casualty roll",
+        "followup_die": "d10",
+        "followup_bad_results": "1: Dies in the War of Jenkins' Ear; 3: Dies in the War of Jenkins' Ear; 4: Dies in the War of Jenkins' Ear; 5: Dies in the War of Jenkins' Ear",
+        "followup_failure_is_lethal": True,
+        "original_roll_instructions": "Eligible men roll D4; 3 enlists. Enlisted soldiers roll D10 and die on 1, 3, 4, or 5.",
+    },
+    "EVT-0522": {
+        "location": "United States, Thirteen Colonies",
+        "affected_class": "Main household in the Thirteen Colonies",
+        "configured_die": "d4",
+        "configured_bad_results": "1-4: House that many soldiers",
+        "original_roll_instructions": "The main household rolls D4 and must house, feed, and support that many soldiers.",
+    },
+    "EVT-0629": {
+        "location": "United States, Alaska, St. Lawrence Island",
+        "affected_class": "All households and Sims on St. Lawrence Island",
+        "configured_die": "d2",
+        "configured_bad_results": "1: Heads — crops fail",
+        "source_roll_plan": [
+            {"index": 0, "die": "d2", "bad_results": "1", "result_rules": "1: Heads — crops fail; 2: Tails — crops survive", "context": "Household crop-loss check", "parent_index": None, "trigger_results": ""},
+            {"index": 1, "die": "d4", "bad_results": "3", "result_rules": "3: Dies of famine", "context": "Every Sim in main and side households", "parent_index": None, "trigger_results": ""},
+        ],
+        "original_roll_instructions": "Flip for household crop loss, then every Sim rolls D4; 3 means famine death.",
+    },
+}
+
+# The source prose for these events interleaves several regional or household
+# tables.  A plain "next die is the follow-up" rule cannot represent that
+# topology, so keep the small amount of source-defined branching explicit.
+SOURCE_PLAN_RELATION_OVERRIDES: dict[str, dict[int, dict]] = {
+    "EVT-0070": {1:{"parent_indices":[0], "trigger_results":"1-3"}, 2:{"parent_indices":[], "trigger_results":""}},
+    "EVT-0228": {
+        1:{"parent_indices":[0], "trigger_results":"1"},
+        2:{"parent_indices":[1], "trigger_results":"39-45"},
+        3:{"parent_indices":[0], "trigger_results":"1"},
+        4:{"parent_indices":[0], "trigger_results":"2"},
+        5:{"parent_indices":[4], "trigger_results":"1", "bad_results":"1", "result_rules":"1: One Sim is injured; 2-20: No injury"},
+    },
+    "EVT-0230": {
+        1:{"parent_indices":[], "trigger_results":""},
+        2:{"parent_indices":[0], "trigger_results":"1-3"},
+        3:{"parent_indices":[1], "trigger_results":"1"},
+        4:{"parent_indices":[], "trigger_results":""},
+    },
+    "EVT-0261": {1:{"parent_indices":[], "trigger_results":""}, 2:{"parent_indices":[0,1], "trigger_results":""}},
+    "EVT-0336": {1:{"parent_indices":[], "trigger_results":""}, 2:{"parent_indices":[0,1], "trigger_results":""}},
+    "EVT-0452": {
+        1:{"parent_indices":[0], "trigger_results":"3"},
+        2:{"parent_indices":[], "trigger_results":""},
+        3:{"parent_indices":[2], "trigger_results":"7"},
+        4:{"parent_indices":[], "trigger_results":""},
+    },
+    "EVT-0539": {1:{"parent_indices":[0], "trigger_results":"4"}, 2:{"parent_indices":[], "trigger_results":""}},
+    "EVT-0614": {1:{"parent_indices":[0], "trigger_results":"7"}, 2:{"parent_indices":[], "trigger_results":""}},
+    "EVT-0625": {
+        1:{"parent_indices":[0], "trigger_results":"1-11"},
+        2:{"parent_indices":[], "trigger_results":""},
+        3:{"parent_indices":[0], "trigger_results":"1-11"},
+    },
+    "EVT-0653": {1:{"parent_indices":[0], "trigger_results":"1-12"}, 2:{"parent_indices":[], "trigger_results":""}},
+    "EVT-0654": {
+        1:{"parent_indices":[0], "trigger_results":"1-8"},
+        2:{"parent_indices":[], "trigger_results":""},
+        3:{"parent_indices":[2], "trigger_results":"1-6"},
+    },
+}
+
+
+def source_event_requires_roll(notes: object) -> bool:
+    """Recognize explicit dice instructions in the approved SeveralUDO source.
+
+    A late section of the recovered catalog retained its original dice prose but
+    lost the separate ``roll_required`` flag. Keep this deliberately narrow:
+    ordinary historical prose is not actionable unless it actually says to roll
+    or names one of the dice used by the ruleset.
+    """
+    text = str(notes or "")
+    return bool(
+        re.search(r"\broll(?:s|ed|ing)?\b", text, re.I)
+        or re.search(r"\b(?:\d+\s*)?d\s*(?:4|6|8|10|12|20|100)\b", text, re.I)
+        or re.search(r"\b(?:flip|toss)(?:\s+\w+){0,3}\s+coin\b|\bflip\s+(?:for|per)\b", text, re.I)
+    )
+
+
+_SOURCE_ROLL_MARKER = re.compile(
+    r"(?P<coin>\b(?:flip|toss)(?:\s+(?:a|the))?\s+coin\b|\bcoin\s+(?:flip|toss|assigns|for)\b|\bflip\s+(?:for|per)\b)"
+    r"|(?P<coin_result>\bcoin\b(?=[^.;]{0,80}\b(?:heads?|tails?)\b))"
+    r"|(?P<die>(?<!\w)(?:1\s*)?d\s*(?P<sides>2|4|6|8|10|12|20|100)\b)",
+    re.I,
+)
+_SOURCE_SUCCESS = re.compile(
+    r"\b(?:avoid|unaffected|unharmed|unscathed|spared|surviv(?:e|es|ed|or)|"
+    r"return(?:s|ed)?\s+(?:home\s+)?safely|survival|no\s+(?:major\s+)?effect|not\s+involved|"
+    r"do(?:es)?\s+not\s+participate|thriv(?:e|es|ed)|remain(?:s)?\s+intact)\b",
+    re.I,
+)
+_SOURCE_DEPENDENT = re.compile(
+    r"\b(?:enlisted|conscripted|drafted|arrested|accused|infected|affected|involved|"
+    r"participants?|soldiers?|those\s+who|whose\s+(?:house|home)|missing|remaining|"
+    r"directly\s+affected|house\s+burns|house\s+was\s+destroyed)\b",
+    re.I,
+)
+
+
+def _source_result_left(value: str) -> str:
+    normalized = str(value or "").replace("–", "-").replace("—", "-")
+    normalized = re.sub(r"\b(?:or|and)\b|[&/]", ",", normalized, flags=re.I)
+    pieces = re.findall(r"\d+\s*-\s*\d+|\d+", normalized)
+    return ",".join(dict.fromkeys(piece.replace(" ", "") for piece in pieces))
+
+
+def _source_complement(sides: int, safe_values: str) -> str:
+    safe: set[int] = set()
+    for token in re.findall(r"\d+\s*-\s*\d+|\d+", safe_values.replace("–", "-").replace("—", "-")):
+        if "-" in token:
+            first, last = (int(value.strip()) for value in token.split("-", 1))
+            safe.update(range(min(first, last), max(first, last) + 1))
+        else:
+            safe.add(int(token))
+    bad = [value for value in range(1, sides + 1) if value not in safe]
+    if not bad:
+        return ""
+    ranges: list[str] = []
+    start = previous = bad[0]
+    for value in bad[1:]:
+        if value == previous + 1:
+            previous = value
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = value
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
+def _source_outcome_is_success(outcome: object) -> bool:
+    text = str(outcome or "")
+    if re.search(r"\b(?:does?|did|will)?\s*not\s+(?:survive|return|participate|remain)|\bfails?\s+to\s+survive", text, re.I):
+        return False
+    return bool(_SOURCE_SUCCESS.search(text))
+
+
+def _source_step_rules(segment: str, sides: int, *, coin: bool = False) -> tuple[str, str]:
+    """Parse the result table belonging to one source die/coin instruction."""
+    cleaned = str(segment or "").replace("�", " ").replace("•", " ").replace("*", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .;:")
+    clauses: list[tuple[str, str]] = []
+    if coin:
+        for label, outcome in re.findall(
+            r"\b(heads?|tails?)\b\s*(?:means?|=|:)?\s*([^;.]+)", cleaned, re.I
+        ):
+            clauses.append(("1" if label.casefold().startswith("head") else "2", outcome.strip()))
+
+    numeric_left = (
+        r"\d+(?:\s*[-–—]\s*\d+)?"
+        r"(?:\s*(?:(?:,|/|&)\s*(?:(?:or|and)\s+)?|(?:or|and)\s+)"
+        r"\d+(?:\s*[-–—]\s*\d+)?)*"
+    )
+    numeric = re.compile(
+        rf"(?<!\d)({numeric_left})"
+        r"\s*(?:means?|=|:)\s*([^;.]+)",
+        re.I,
+    )
+    for left, outcome in numeric.findall(cleaned):
+        clauses.append((_source_result_left(left), outcome.strip()))
+
+    # Compact recovered summaries often read "D12: 3 thirst, 7 hunger, 10
+    # pestilence death" without repeating a colon after every number.
+    if not clauses:
+        compact = cleaned.split(":", 1)[-1]
+        for part in re.split(r",\s*(?=\d)|;", compact):
+            match = re.match(rf"\s*({numeric_left})\s+(.+?)\s*$", part, re.I)
+            if match:
+                clauses.append((_source_result_left(match.group(1)), match.group(2).strip()))
+
+    only_survives = re.search(
+        r"\bonly\s+([\d\s,orand/&\-–—]+?)\s+surviv(?:e|es)\b", cleaned, re.I
+    )
+    if only_survives:
+        bad = _source_complement(sides, only_survives.group(1))
+        if bad:
+            clauses.append((bad, "Dies"))
+    other_death = re.search(r"\ball\s+(?:other|remaining)\s+results?\s+(?:mean\s+)?(?:die|death)", cleaned, re.I)
+    if other_death:
+        named = ",".join(left for left, outcome in clauses if _source_outcome_is_success(outcome))
+        bad = _source_complement(sides, named)
+        if bad:
+            clauses.append((bad, "Dies"))
+
+    # Some compact source entries name the sole safe result (for example,
+    # "D12 for enlisted; 3 means survival") instead of spelling out the
+    # losing values.  Store the complement so the follow-up remains playable.
+    if clauses and all(_source_outcome_is_success(outcome) for _left, outcome in clauses):
+        safe_values = ",".join(left for left, _outcome in clauses)
+        complement = _source_complement(sides, safe_values)
+        if complement:
+            clauses.append((complement, "Dies"))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for left, outcome in clauses:
+        key = (left, outcome.casefold())
+        if left and outcome and key not in seen:
+            seen.add(key); deduped.append((left, outcome))
+    result_rules = "; ".join(f"{left}: {outcome}" for left, outcome in deduped)
+    adverse = [left for left, outcome in deduped if not _source_outcome_is_success(outcome)]
+    if not adverse and deduped:
+        # Some source tables are choices rather than pass/fail checks.  They
+        # still need actionable result values in the tracker.
+        adverse = [left for left, _outcome in deduped]
+    return result_rules, " ".join(dict.fromkeys(adverse))
+
+
+def source_event_roll_plan(notes: object) -> list[dict]:
+    """Return every actionable die/coin table recoverable from source prose.
+
+    Each entry has a concrete die and bad/trigger result.  Dependent tables
+    (casualty after enlistment, death after infection, etc.) point to their
+    parent so completing the first roll can create the correct follow-up.
+    """
+    text = str(notes or "").replace("\r", " ").replace("\n", "; ")
+    candidates = list(_SOURCE_ROLL_MARKER.finditer(text))
+    usable = []
+    for marker in candidates:
+        tail = text[marker.end():marker.end() + 24]
+        prefix = text[max(0, marker.start() - 18):marker.start()]
+        if marker.group("die") and re.match(r"\s*(?:days?|weeks?|months?|years?|objects?|simoleons?)\b", tail, re.I) and not re.search(r"\broll\b", prefix, re.I):
+            continue
+        usable.append(marker)
+    plan: list[dict] = []
+    for index, marker in enumerate(usable):
+        end = usable[index + 1].start() if index + 1 < len(usable) else len(text)
+        segment = text[marker.end():end]
+        context_start = max(text.rfind(";", 0, marker.start()), text.rfind(".", 0, marker.start())) + 1
+        context = re.sub(r"\s+", " ", text[context_start:end]).strip(" ;.")
+        coin = bool(marker.group("coin") or marker.group("coin_result")); sides = 2 if coin else int(marker.group("sides"))
+        result_rules, bad_results = _source_step_rules(segment, sides, coin=coin)
+        if not bad_results:
+            # A compact coin instruction can put Heads/Tails just before the
+            # next punctuation boundary included in the context.
+            result_rules, bad_results = _source_step_rules(context, sides, coin=coin)
+        if not bad_results:
+            continue
+        prefix_start = max(text.rfind(";", 0, marker.start()), text.rfind(".", 0, marker.start())) + 1
+        prefix = re.sub(r"\s+", " ", text[prefix_start:marker.start()]).strip()
+        subject = segment[:120]
+        dependent_terms = "enlisted|conscripted|drafted|arrested|accused|infected|affected|involved|participants?|soldiers?|missing|convicts?|directly affected|indirect|aftershock injury"
+        selector = re.sub(r"\s+", " ", f"{prefix} {subject.split(':', 1)[0]}").strip()[:220]
+        dependent = bool(plan and (
+            re.search(rf"\b(?:{dependent_terms})\b", prefix, re.I)
+            or re.search(rf"\b(?:for|per)\b[^:;.]{{0,90}}\b(?:{dependent_terms})\b", subject, re.I)
+            or re.search(rf"^\s*(?:for\s+)?(?:{dependent_terms})\b", subject, re.I)
+            or (
+                coin and len(prefix.split()) <= 2
+                and re.search(r"\b(?:enlist|conscript|draft|join(?:s|ed)?|involved)\b", str(plan[-1].get("result_rules") or ""), re.I)
+            )
+        ))
+        parent_indices: list[int] = []
+        if dependent:
+            activation_words = {
+                value.casefold() for value in re.findall(
+                    rf"\b(?:{dependent_terms})\b", f"{prefix} {subject[:90]}", re.I
+                )
+            }
+            group_stop = {
+                "roll", "for", "per", "each", "every", "all", "only", "the", "a", "an", "of", "in",
+                "sims", "sim", "men", "women", "male", "female", "eligible", "household", "households",
+                "enlisted", "conscripted", "drafted", "arrested", "accused", "infected", "affected",
+                "involved", "participant", "participants", "soldier", "soldiers", "missing", "directly",
+                "indirect", "aftershock", "injury",
+            }
+            group_words = {
+                value.casefold() for value in re.findall(r"\b[A-Za-z][A-Za-z'-]{2,}\b", prefix)
+                if value.casefold() not in group_stop
+            }
+            candidates = []
+            for prior in plan:
+                prior_rules = str(prior.get("result_rules") or "")
+                prior_text = f"{prior.get('selector','')} {prior_rules}".casefold()
+                activation_match = not activation_words or any(word in prior_text for word in activation_words)
+                shared = sum(word in prior_text for word in group_words)
+                if activation_match:
+                    candidates.append((shared, int(prior.get("index") or 0)))
+            if candidates:
+                best_shared = max(shared for shared, _index in candidates)
+                if best_shared:
+                    parent_indices = [index for shared, index in candidates if shared == best_shared]
+                else:
+                    # A shared follow-up such as "Enlisted D20" applies to
+                    # every preceding enlistment root, while a chained state
+                    # such as "missing" should follow only the nearest match.
+                    roots = [index for _shared, index in candidates if not plan[index].get("parent_indices")]
+                    parent_indices = roots or [candidates[-1][1]]
+                    if activation_words - {"enlisted", "conscripted", "drafted", "soldiers", "soldier"}:
+                        parent_indices = [candidates[-1][1]]
+            if not parent_indices:
+                parent_indices = [len(plan) - 1]
+        parent_index = parent_indices[0] if parent_indices else None
+        plan.append({
+            "index": len(plan), "die": f"d{sides}", "bad_results": bad_results,
+            "result_rules": result_rules or f"{bad_results}: Source-defined adverse result",
+            "context": context[:500], "parent_index": parent_index,
+            "parent_indices": parent_indices,
+            "selector": selector,
+            "trigger_results": plan[parent_index]["bad_results"] if parent_index is not None else "",
+        })
+    return plan
+
+
+def event_source_roll_plan(notes: object, override: dict | None = None, catalog_id: str = "") -> list[dict]:
+    """Return the authoritative editable plan for one catalog event."""
+    override = override or {}
+    if isinstance(override.get("source_roll_plan"), list):
+        return [dict(step) for step in override["source_roll_plan"] if isinstance(step, dict)]
+    if override.get("configured_die") and override.get("configured_bad_results"):
+        primary_rules = str(override["configured_bad_results"])
+        primary = {
+            "index": 0, "die": str(override["configured_die"]),
+            "bad_results": _result_numbers(primary_rules) if ":" in primary_rules else primary_rules,
+            "result_rules": primary_rules, "context": str(override.get("affected_class") or "Applicable Sims"),
+            "parent_index": None, "trigger_results": "",
+        }
+        plan = [primary]
+        if override.get("followup_enabled") and override.get("followup_die") and override.get("followup_bad_results"):
+            followup_rules = str(override["followup_bad_results"])
+            plan.append({
+                "index": 1, "die": str(override["followup_die"]),
+                "bad_results": _result_numbers(followup_rules) if ":" in followup_rules else followup_rules,
+                "result_rules": followup_rules, "context": str(override.get("followup_label") or "Source follow-up"),
+                "parent_index": 0,
+                "trigger_results": str(override.get("followup_trigger_results") or primary["bad_results"]),
+                "delay_days": int(override.get("followup_delay_days") or 0),
+                "delay_years": int(override.get("followup_delay_years") or 0),
+                "failure_is_lethal": bool(override.get("followup_failure_is_lethal")),
+            })
+        return plan
+    plan = source_event_roll_plan(notes)
+    for index, changes in SOURCE_PLAN_RELATION_OVERRIDES.get(catalog_id, {}).items():
+        if not (0 <= index < len(plan)):
+            continue
+        plan[index].update(changes)
+        parents = [int(value) for value in plan[index].get("parent_indices") or []]
+        plan[index]["parent_indices"] = parents
+        plan[index]["parent_index"] = parents[0] if parents else None
+    return plan
 
 
 def due_on_today(record: Record, global_day: int) -> bool:
@@ -779,16 +1358,97 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
     """
     marker = str((save.settings or {}).get("event_catalog_version") or "")
     rows = json.loads(gzip.decompress(base64.b64decode(EVENT_LIBRARY_GZIP_BASE64)).decode("utf-8"))
-    existing_ids = {str(item.data.get("catalog_id") or item.data.get("event_id") or "") for item in session.scalars(
-        select(Record).where(Record.save_id == save.id, Record.kind == "event")
-    )}
+    existing_by_id: dict[str, list[Record]] = defaultdict(list)
+    for item in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "event",
+    )):
+        stable_id = str(item.data.get("catalog_id") or item.data.get("event_id") or "")
+        if stable_id:
+            existing_by_id[stable_id].append(item)
+    existing_ids = set(existing_by_id)
     approved_ids={str(row.get("event_id") or "") for row in rows}
-    if marker == "recovered-655-v2-integrity" and approved_ids.issubset(existing_ids) and not force:
+    if marker == EVENT_CATALOG_VERSION and approved_ids.issubset(existing_ids) and not force:
         return 0
-    created = 0
+    changed = 0
     for row in rows:
         catalog_id = str(row.get("event_id") or "")
+        notes = str(row.get("notes") or "")
+        override = ORIGINAL_EVENT_ROLL_OVERRIDES.get(catalog_id, {})
+        roll_plan = event_source_roll_plan(notes, override, catalog_id)
+        original_roll_required = catalog_id not in NON_ROLL_CATALOG_IDS and bool(
+            roll_plan or source_event_requires_roll(notes) or override
+        )
+        primary = next((step for step in roll_plan if step.get("parent_index") is None), roll_plan[0] if roll_plan else {})
+        first_followup = next((step for step in roll_plan if step.get("parent_index") == primary.get("index", 0)), None)
+        source_defaults = {
+            "source_roll_plan": roll_plan,
+            "source_roll_plan_version": 2,
+            "configured_die": primary.get("die") or "",
+            "configured_bad_results": primary.get("bad_results") or "",
+            "configured_result_rules": primary.get("result_rules") or "",
+            "die": primary.get("die") or "",
+            "bad_results": primary.get("bad_results") or "",
+        }
+        if first_followup:
+            source_defaults.update({
+                "followup_enabled": True,
+                "followup_trigger_results": first_followup.get("trigger_results") or primary.get("bad_results") or "",
+                "followup_delay_days": int(first_followup.get("delay_days") or 0),
+                "followup_delay_years": int(first_followup.get("delay_years") or 0),
+                "followup_label": first_followup.get("label") or f"{row.get('event_name') or catalog_id} follow-up",
+                "followup_die": first_followup.get("die") or "",
+                "followup_bad_results": first_followup.get("result_rules") or first_followup.get("bad_results") or "",
+                "followup_failure_is_lethal": bool(first_followup.get("failure_is_lethal")) or _lethal_outcome(first_followup.get("result_rules") or ""),
+            })
         if catalog_id in existing_ids:
+            # Repair only during this catalog-version migration. Once the marker
+            # is current, a player may still turn an individual event roll off.
+            for record in existing_by_id[catalog_id]:
+                if record.deleted:
+                    continue
+                base = record.version
+                data = dict(record.data or {})
+                before = dict(data)
+                if (
+                    catalog_id in NON_ROLL_CATALOG_IDS
+                    and bool(data.get("original_roll_required"))
+                    and not data.get("configured_bad_results")
+                    and not data.get("source_roll_plan")
+                ):
+                    data.update({
+                        "roll_required": False,
+                        "original_roll_required": False,
+                        "roll_required_source": "",
+                        "die": "",
+                        "bad_results": "",
+                    })
+                if original_roll_required and not bool(data.get("roll_required")):
+                    data.update({
+                        "roll_required": True,
+                        "original_roll_required": True,
+                        "roll_required_source": "Original SeveralUDO event rules",
+                    })
+                if original_roll_required:
+                    if int(data.get("source_roll_plan_version") or 0) < 2:
+                        data["source_roll_plan"] = roll_plan
+                        data["source_roll_plan_version"] = 2
+                    for key, value in source_defaults.items():
+                        if value not in (None, "", [], {}) and data.get(key) in (None, "", [], {}):
+                            data[key] = value
+                for key, value in override.items():
+                    # Replace only untouched recovered placeholders. Explicit
+                    # player edits and imported 3.x configurations still win.
+                    if key in {"location", "affected_class"}:
+                        old_catalog_value = row.get(key)
+                        if data.get(key) in (None, "", old_catalog_value):
+                            data[key] = value
+                    elif data.get(key) in (None, "", [], {}):
+                        data[key] = value
+                if data != before:
+                    record.data = data
+                    record.version += 1
+                    journal(session, record, "upsert", base)
+                    changed += 1
             continue
         def rebase(value):
             if value is None: return None
@@ -801,15 +1461,20 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
         data = {
             "catalog_id": catalog_id, "start_global_day": start, "end_global_day": end,
             "scope": row.get("scope") or "Historical event", "location": row.get("location") or "Global",
-            "roll_required": bool(row.get("roll_required")), "affected_class": row.get("affected_class") or "All applicable Sims",
+            "roll_required": original_roll_required, "affected_class": row.get("affected_class") or "All applicable Sims",
             "active": bool(row.get("active", 1)), "source": row.get("source") or "Recovered approved catalog",
-            "notes": row.get("notes") or "", "die": "d20" if row.get("roll_required") else "", "bad_results": "",
+            "notes": notes,
+            "original_roll_required": original_roll_required,
+            "roll_required_source": "Original SeveralUDO event rules" if original_roll_required else "",
         }
+        if original_roll_required:
+            data.update(source_defaults)
+        data.update(override)
         record = Record(save_id=save.id, kind="event", label=str(row.get("event_name") or catalog_id), global_day=start, data=data)
-        session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
-    settings_data = dict(save.settings or {}); settings_data["event_catalog_version"] = "recovered-655-v2-integrity"
-    save.settings = settings_data; save.revision += created
-    return created
+        session.add(record); session.flush(); journal(session, record, "upsert", 0); changed += 1
+    settings_data = dict(save.settings or {}); settings_data["event_catalog_version"] = EVENT_CATALOG_VERSION
+    save.settings = settings_data; save.revision += changed
+    return changed
 
 
 def event_roll_spec(notes: str) -> dict:
@@ -893,11 +1558,15 @@ def event_roll_configuration(event: Record, rule_data: dict | None = None) -> di
     data = event.data or {}
     rule = rule_data or {}
     prose = event_roll_spec(data.get("notes") or "")
+    configured_bad = str(data.get("configured_bad_results") or "").strip()
     result_rules = str(
-        data.get("configured_bad_results") or rule.get("bad_results") or data.get("result_rules")
-        or data.get("bad_results") or ""
+        data.get("configured_result_rules") or rule.get("result_rules") or rule.get("bad_results")
+        or data.get("result_rules") or (configured_bad if ":" in configured_bad else "")
+        or ""
     ).strip()
-    bad_results = _result_numbers(result_rules) if ":" in result_rules else result_rules
+    bad_results = configured_bad if configured_bad and ":" not in configured_bad else ""
+    if not bad_results:
+        bad_results = _result_numbers(configured_bad or result_rules) if ":" in (configured_bad or result_rules) else (configured_bad or result_rules)
     if not bad_results:
         bad_results = str(prose.get("bad_results") or "")
     outcome_text = " ".join(part.split(":", 1)[-1] for part in re.split(r"[;\n]+", result_rules))
@@ -937,6 +1606,17 @@ _EVENT_LOCATION_GROUPS = {
         "belarus", "lithuania", "latvia", "estonia", "moldova", "russia", "persia",
         "holy roman empire", "ottoman empire",
     },
+    "north america": {
+        "north america", "canada", "united states", "united states of america", "usa", "us",
+        "mexico", "greenland", "bermuda", "saint pierre and miquelon",
+    },
+    "the americas": {
+        "the americas", "americas", "america", "north america", "south america", "central america",
+        "canada", "united states", "united states of america", "usa", "us", "mexico",
+        "belize", "costa rica", "el salvador", "guatemala", "honduras", "nicaragua", "panama",
+        "argentina", "bolivia", "brazil", "chile", "colombia", "ecuador", "guyana", "paraguay",
+        "peru", "suriname", "uruguay", "venezuela", "caribbean", "west indies",
+    },
 }
 
 _EVENT_LOCATION_ALIASES = {
@@ -947,6 +1627,11 @@ _EVENT_LOCATION_ALIASES = {
     "uk": "britain",
     "british isles": "britain",
     "holland": "netherlands",
+    "america": "the americas",
+    "americas": "the americas",
+    "united states of america": "united states",
+    "usa": "united states",
+    "us": "united states",
 }
 
 
@@ -1178,7 +1863,7 @@ def repair_duplicate_events(session: Session, save: ChronicleSave) -> dict:
 
 def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None = None,
                    household: Record | None = None, save: ChronicleSave | None = None,
-                   fallback_location: str = "") -> bool:
+                   fallback_location: str = "", pregnancies: list[Record] | None = None) -> bool:
     data, original = event.data or {}, sim.data or {}
     household_data = household.data if household else {}
     # Household and challenge defaults fill gaps but never replace explicit Sim data.
@@ -1195,8 +1880,11 @@ def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None 
     explicit_sexes = rule.get("eligible_sexes")
     sex_rule = " ".join(map(str, explicit_sexes)) if isinstance(explicit_sexes, (list, tuple, set)) else str(explicit_sexes or "")
     sex_rule = sex_rule.casefold()
-    male_only = bool(re.search(r"\b(?:male|males|men|man|boys?)\b", f"{sex_rule} {text}")) and not bool(re.search(r"\b(?:female|females|women|woman|girls?)\b", f"{sex_rule} {text}"))
-    female_only = bool(re.search(r"\b(?:female|females|women|woman|girls?)\b", f"{sex_rule} {text}")) and not male_only
+    sex_text = f"{sex_rule} {text}"
+    mentions_male = bool(re.search(r"\b(?:male|males|men|man|boys?)\b", sex_text))
+    mentions_female = bool(re.search(r"\b(?:female|females|women|woman|girls?)\b", sex_text))
+    male_only = mentions_male and not mentions_female
+    female_only = mentions_female and not mentions_male
     sim_is_male = bool(re.search(r"\b(?:male|man|boy)\b", sex)) and not bool(re.search(r"\bfemale\b", sex))
     sim_is_female = bool(re.search(r"\b(?:female|woman|girl)\b", sex))
     if male_only and not sim_is_male:
@@ -1215,6 +1903,38 @@ def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None 
         age_match = re.search(r"\b(\d+)\s*\+", text)
         if age_match and age < int(age_match.group(1)):
             return False
+        eligible_stages = {
+            str(value or "").strip().casefold()
+            for value in (data.get("eligible_life_stages") or rule.get("eligible_life_stages") or [])
+            if str(value or "").strip()
+        }
+        if eligible_stages:
+            inferred_stage = DEFAULT_STAGES[0][0].casefold()
+            for stage_name, minimum, _die, _bad in DEFAULT_STAGES:
+                if age >= minimum:
+                    inferred_stage = stage_name.casefold()
+            stage_matches = inferred_stage in eligible_stages or (
+                inferred_stage in {"being born", "newborn", "infant"} and "baby" in eligible_stages
+            )
+            pregnant_at_event = False
+            if data.get("include_pregnant"):
+                for pregnancy in pregnancies or []:
+                    pregnancy_data = pregnancy.data or {}
+                    if str(pregnancy_data.get("mother_id") or "") != sim.id:
+                        continue
+                    try:
+                        conception = int(pregnancy_data.get("conception_global_day", pregnancy.global_day))
+                        finished = int(
+                            pregnancy_data.get("actual_delivery_global_day")
+                            or pregnancy_data.get("due_global_day") or due
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                    if conception <= due <= finished:
+                        pregnant_at_event = True
+                        break
+            if not stage_matches and not pregnant_at_event:
+                return False
     if _event_is_global(event):
         return True
     target = str(data.get("location") or "").casefold()
@@ -2343,6 +3063,9 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
             Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
         ))
     }
+    pregnancies = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "pregnancy", Record.deleted.is_(False),
+    )))
     household_locations = {
         _normalized_location(value)
         for household in households.values()
@@ -2363,6 +3086,8 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
         due = int((event.data or {}).get("start_global_day", event.global_day))
         rule_data = event_rules.get(event_key(event), {})
         spec = event_roll_configuration(event, rule_data)
+        source_plan = [dict(step) for step in ((event.data or {}).get("source_roll_plan") or []) if isinstance(step, dict)]
+        root_steps = [step for step in source_plan if not (step.get("parent_indices") or []) and step.get("parent_index") is None]
         event_words = f"{event.label} {(event.data or {}).get('scope','')} {(event.data or {}).get('notes','')}".casefold()
         classic_war = core_rulesets.selected_core(save) == core_rulesets.CLASSIC_2023 and any(
             word in event_words for word in ("war", "battle", "military", "draft")
@@ -2371,42 +3096,82 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
             spec = {**spec, "die":"d6", "bad_results":"1,3,5",
                     "result_rules":"1,3,5: Dies in the war; 2,4,6: Returns home",
                     "failure_outcome":"Dies in the war", "failure_is_lethal":True}
+            root_steps = []
         equivalent_event_ids = {
             equivalent.id for equivalent in event_groups[_event_occurrence_key(event)]
         }
         for sim in sims:
-            source = f"event:{event.id}:{sim.id}"
             death = (sim.data or {}).get("death_global_day")
             household = households.get(str((sim.data or {}).get("current_household_id") or ""))
             event_text = f"{event.label} {(event.data or {}).get('scope','')} {(event.data or {}).get('notes','')}".casefold()
             servo_exempt = "Servo" in occult_rules.sim_occult_types(sim.data) and any(
                 word in event_text for word in ("disease", "illness", "plague", "epidemic", "pandemic", "famine", "starvation", "drown")
             )
-            equivalent_source_exists = any(
-                f"event:{event_id}:{sim.id}" in existing_event_sources
-                for event_id in equivalent_event_ids
-            )
             if (
                 bool((sim.data or {}).get("game_was_dead"))
                 or (death is not None and int(death) <= save.global_day)
-                or equivalent_source_exists
                 or servo_exempt
-                or not _event_applies(event, sim, due, rule_data, household, save, fallback_location)
+                or not _event_applies(event, sim, due, rule_data, household, save, fallback_location, pregnancies)
             ):
                 continue
-            roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {sim.label}", global_day=due, data={
-                "event_id": event.id, "source_id": event.id, "sim_id": sim.id, "sim_name": sim.label,
-                "roll_type": f"Event — {event.label}", "die": spec["die"], "bad_results": spec["bad_results"],
-                "result_rules": spec["result_rules"], "failure_outcome": spec["failure_outcome"],
-                "failure_is_lethal": spec["failure_is_lethal"], "nonlethal": not spec["failure_is_lethal"],
-                "event_rule_id": spec["event_rule_id"], "source": source, "due_global_day": due, "completed": False,
-                "core_ruleset_id":core_rulesets.CLASSIC_2023 if classic_war else None,
-            })
-            session.add(roll)
-            session.flush()
-            journal(session, roll, "upsert", 0)
-            existing_event_sources.add(source)
-            created += 1
+            steps = root_steps or [None]
+            for root_position, step in enumerate(steps):
+                step = dict(step or {})
+                eligible_stages = {str(value).strip().casefold() for value in step.get("eligible_life_stages") or []}
+                if eligible_stages:
+                    birth = (sim.data or {}).get("birth_global_day", sim.global_day)
+                    if birth is None:
+                        continue
+                    age = due - int(birth); inferred_stage = DEFAULT_STAGES[0][0].casefold()
+                    for stage_name, minimum, _die, _bad in DEFAULT_STAGES:
+                        if age >= minimum: inferred_stage = stage_name.casefold()
+                    if inferred_stage not in eligible_stages and not (inferred_stage in {"being born", "newborn", "infant"} and "baby" in eligible_stages):
+                        continue
+                step_index = int(step.get("index") or 0)
+                source = f"event:{event.id}:{sim.id}" if root_position == 0 else f"event:{event.id}:{sim.id}:step:{step_index}"
+                equivalent_source_exists = any(
+                    (f"event:{event_id}:{sim.id}" if root_position == 0 else f"event:{event_id}:{sim.id}:step:{step_index}") in existing_event_sources
+                    for event_id in equivalent_event_ids
+                )
+                if equivalent_source_exists:
+                    continue
+                sim_spec = dict(spec)
+                if step:
+                    result_rules = str(step.get("result_rules") or "")
+                    bad_results = str(step.get("bad_results") or "")
+                    sim_spec.update({
+                        "die": str(step.get("die") or sim_spec["die"]), "bad_results": bad_results,
+                        "result_rules": result_rules,
+                        "failure_outcome": _mapped_roll_outcome(int(re.findall(r"\d+", bad_results)[0]), result_rules) if bad_results and result_rules else "",
+                        "failure_is_lethal": _lethal_outcome(result_rules),
+                    })
+                sex = str((sim.data or {}).get("sex") or "").casefold()
+                sex_key = "female" if re.search(r"\b(?:female|woman|girl)\b", sex) else "male" if re.search(r"\b(?:male|man|boy)\b", sex) else ""
+                die_by_sex = (event.data or {}).get("die_by_sex") or {}
+                rules_by_sex = (event.data or {}).get("result_rules_by_sex") or {}
+                if root_position == 0 and sex_key and (sex_key in die_by_sex or sex_key in rules_by_sex):
+                    result_rules = str(rules_by_sex.get(sex_key) or sim_spec["result_rules"] or "")
+                    bad_results = _result_numbers(result_rules) if ":" in result_rules else result_rules
+                    sim_spec.update({
+                        "die": str(die_by_sex.get(sex_key) or sim_spec["die"]), "bad_results": bad_results,
+                        "result_rules": result_rules,
+                        "failure_outcome": _mapped_roll_outcome(int(re.findall(r"\d+", bad_results)[0]), result_rules) if bad_results and result_rules else "",
+                        "failure_is_lethal": _lethal_outcome(result_rules),
+                    })
+                context_label = str(step.get("context") or "").split(";")[0].strip()
+                roll_type = f"Event — {event.label}" + (f" — {context_label[:80]}" if root_position else "")
+                roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {sim.label}", global_day=due, data={
+                    "event_id": event.id, "source_id": event.id, "sim_id": sim.id, "sim_name": sim.label,
+                    "roll_type": roll_type, "die": sim_spec["die"], "bad_results": sim_spec["bad_results"],
+                    "result_rules": sim_spec["result_rules"], "failure_outcome": sim_spec["failure_outcome"],
+                    "failure_is_lethal": sim_spec["failure_is_lethal"], "nonlethal": not sim_spec["failure_is_lethal"],
+                    "event_rule_id": sim_spec["event_rule_id"], "source": source, "due_global_day": due, "completed": False,
+                    "source_roll_plan_index": step_index if step else None,
+                    "source_roll_plan_root": bool(step),
+                    "core_ruleset_id":core_rulesets.CLASSIC_2023 if classic_war else None,
+                })
+                session.add(roll); session.flush(); journal(session, roll, "upsert", 0)
+                existing_event_sources.add(source); created += 1
     return created
 
 
@@ -2472,9 +3237,68 @@ def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Reco
     source_record = session.get(Record, source_id) if source_id else None
     if not source_record or source_record.deleted: return 0
     config = source_record.data or {}
+    source_plan = [dict(step) for step in (config.get("source_roll_plan") or []) if isinstance(step, dict)]
+    plan_index = data.get("source_roll_plan_index")
+    if source_plan and plan_index is not None:
+        try: plan_index = int(plan_index)
+        except (TypeError, ValueError): plan_index = None
+        children = [
+            step for step in source_plan
+            if plan_index in [int(value) for value in (step.get("parent_indices") or [])]
+            or (not step.get("parent_indices") and step.get("parent_index") == plan_index)
+        ]
+        created = 0
+        for child in children:
+            trigger = str(child.get("trigger_results") or next(
+                (step.get("bad_results") for step in source_plan if int(step.get("index") or 0) == plan_index),
+                data.get("bad_results") or "",
+            ))
+            if trigger and not failed(actual, trigger):
+                continue
+            child_index = int(child.get("index") or 0)
+            source = f"conditional-followup:{origin.id}:step:{child_index}"
+            if session.scalar(select(Record.id).where(
+                Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+                Record.data["source"].as_string() == source,
+            ).limit(1)):
+                continue
+            sim_id = str(data.get("sim_id") or ""); sim = session.get(Record, sim_id) if sim_id else None
+            if not sim or sim.deleted:
+                continue
+            result_rules = str(child.get("result_rules") or "")
+            bad_results = str(child.get("bad_results") or "")
+            delay = max(0, int(child.get("delay_days") or 0))
+            delay += max(0, int(child.get("delay_years") or 0)) * max(1, int(save.days_per_year or 1))
+            due = save.global_day + delay
+            label = str(child.get("label") or child.get("context") or f"{source_record.label} follow-up")[:160]
+            lethal = bool(child.get("failure_is_lethal")) or _lethal_outcome(result_rules)
+            followup = Record(save_id=save.id, kind="roll", label=f"{sim.label} — {label}", global_day=due, data={
+                "sim_id":sim.id, "sim_name":sim.label, "event_id":data.get("event_id"),
+                "origin_roll_id":origin.id, "roll_type":label, "die":str(child.get("die") or "d20"),
+                "bad_results":bad_results, "result_rules":result_rules,
+                "failure_is_lethal":lethal, "nonlethal":not lethal,
+                "source":source, "due_global_day":due, "completed":False, "automatic_followup":True,
+                "source_roll_plan_index":child_index,
+            })
+            session.add(followup); session.flush(); journal(session, followup, "upsert", 0); created += 1
+        if created or children:
+            origin.data = {**origin.data, "event_followup_processed":True}
+            return created
+        if data.get("automatic_followup"):
+            return 0
     if not bool(config.get("followup_enabled")): return 0
-    trigger = str(config.get("followup_trigger_results") or data.get("bad_results") or "")
-    if trigger and not failed(actual, trigger): return 0
+    branches = config.get("followup_branches") if isinstance(config.get("followup_branches"), dict) else {}
+    branch = next(
+        (dict(payload) for trigger, payload in branches.items()
+         if isinstance(payload, dict) and failed(actual, str(trigger))),
+        None,
+    )
+    if branches and branch is None:
+        return 0
+    if not branches:
+        trigger = str(config.get("followup_trigger_results") or data.get("bad_results") or "")
+        if trigger and not failed(actual, trigger): return 0
+    branch = branch or {}
     sim_id = str(data.get("sim_id") or ""); sim = session.get(Record, sim_id) if sim_id else None
     if not sim or sim.deleted: return 0
     source = f"conditional-followup:{origin.id}"
@@ -2483,15 +3307,22 @@ def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Reco
         Record.data["source"].as_string() == source,
     ).limit(1))
     if exists: return 0
-    due = save.global_day + max(0, int(config.get("followup_delay_days") or 0)); label = str(config.get("followup_label") or f"{source_record.label} follow-up")
-    result_rules = str(config.get("followup_result_rules") or config.get("followup_bad_results") or "")
+    delay = max(0, int(branch.get("delay_days", config.get("followup_delay_days")) or 0))
+    delay += max(0, int(branch.get("delay_years", config.get("followup_delay_years")) or 0)) * max(1, int(save.days_per_year or 1))
+    due = save.global_day + delay
+    label = str(branch.get("label") or config.get("followup_label") or f"{source_record.label} follow-up")
+    result_rules = str(
+        branch.get("result_rules") or branch.get("bad_results")
+        or config.get("followup_result_rules") or config.get("followup_bad_results") or ""
+    )
     bad_results = _result_numbers(result_rules) if ":" in result_rules else result_rules
-    lethal = bool(config.get("followup_failure_is_lethal")) or _lethal_outcome(result_rules)
+    lethal = bool(branch.get("failure_is_lethal", config.get("followup_failure_is_lethal"))) or _lethal_outcome(result_rules)
     followup = Record(save_id=save.id,kind="roll",label=f"{sim.label} — {label}",global_day=due,data={
         "sim_id":sim.id,"sim_name":sim.label,"event_id":data.get("event_id"),"campaign_id":data.get("campaign_id"),
-        "origin_roll_id":origin.id,"roll_type":label,"die":config.get("followup_die") or "d20",
+        "origin_roll_id":origin.id,"roll_type":label,"die":branch.get("die") or config.get("followup_die") or "d20",
         "bad_results":bad_results,"result_rules":result_rules,"failure_is_lethal":lethal,"nonlethal":not lethal,
         "source":source,"due_global_day":due,"completed":False,"automatic_followup":True,
+        "followup_branch_result":actual if branches else None,
     })
     session.add(followup);session.flush();journal(session,followup,"upsert",0)
     origin.data={**origin.data,"event_followup_roll_id":followup.id,"event_followup_processed":True}

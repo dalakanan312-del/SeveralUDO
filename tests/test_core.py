@@ -1276,7 +1276,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.4")
+            self.assertEqual(health.json()["version"], "4.4.5")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1356,7 +1356,7 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertEqual(page.status_code,200);self.assertIn("English Plague",page.text);self.assertNotIn("French Festival",page.text);self.assertNotIn("Current War",page.text)
             page=client.get("/p/events?status=active")
             self.assertIn("Current War",page.text);self.assertNotIn("French Festival",page.text)
-            page=client.get("/p/events?rolls=reference")
+            page=client.get("/p/events?rolls=reference&q=French+Festival")
             self.assertIn("French Festival",page.text);self.assertNotIn("English Plague",page.text)
             hidden=client.post(f"/api/events/{current_war_id}/interest",data={"hidden":"true","return_to":"/p/events"})
             self.assertEqual(hidden.status_code,200);self.assertNotIn("<strong>Current War</strong>",hidden.text)
@@ -1657,7 +1657,10 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertEqual(page.status_code,200);self.assertIn(f"Eligible {marker}",page.text);self.assertIn("Non-Heir Marriage Eligibility",page.text);self.assertIn("Roll d8",page.text)
             self.assertNotIn(f"<h3>Heir {marker}</h3>",page.text);self.assertNotIn(f"<h3>Married {marker}</h3>",page.text);self.assertNotIn(f"<h3>Future {marker}</h3>",page.text);self.assertNotIn(f"<h3>Before tracking {marker}</h3>",page.text)
             with SessionLocal() as session:
-                save=session.get(ChronicleSave,save_id);roll=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="roll",Record.data["sim_id"].as_string()==eligible_id))
+                save=session.get(ChronicleSave,save_id);roll=session.scalar(select(Record).where(
+                    Record.save_id==save_id,Record.kind=="roll",Record.data["sim_id"].as_string()==eligible_id,
+                    Record.data["roll_type"].as_string()=="Non-Heir Marriage Eligibility",
+                ))
                 self.assertEqual(roll.global_day,68);self.assertEqual(roll.data["bad_results"],"1");self.assertTrue(roll.data["nonlethal"])
                 self.assertEqual(schedule_rolls(session,save),0);result=complete_roll(session,save,roll,1);session.commit();roll_id=roll.id
                 self.assertEqual(result["outcome"],"Does not marry")
@@ -2154,6 +2157,66 @@ class CoreSmokeTests(unittest.TestCase):
                 session.add_all([sim,event]);session.flush();self.assertEqual(schedule_event_rolls(session,save),1)
                 origin=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["event_id"].as_string()==event.id))
                 self.assertEqual(complete_roll(session,save,origin,1)["automatic_followups"],0)
+                session.rollback()
+
+    def test_source_event_plan_schedules_every_root_and_its_conditional_followups(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Source plan chains",global_day=20,start_year=1500,days_per_year=4)
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label="Campaign Sim",global_day=1,data={"birth_global_day":1,"country":"England"})
+                plan=[
+                    {"index":0,"die":"d4","bad_results":"4","result_rules":"4: Enlisted","context":"First army enlistment","parent_index":None,"parent_indices":[],"trigger_results":""},
+                    {"index":1,"die":"d6","bad_results":"2","result_rules":"2: Enlisted","context":"Second army enlistment","parent_index":None,"parent_indices":[],"trigger_results":""},
+                    {"index":2,"die":"d12","bad_results":"8","result_rules":"8: Dies in battle","context":"Casualty roll","parent_index":0,"parent_indices":[0,1],"trigger_results":"","failure_is_lethal":True},
+                ]
+                event=Record(save_id=save.id,kind="event",label="Two-army campaign",global_day=20,data={"start_global_day":20,"end_global_day":20,"scope":"Global","location":"Global","roll_required":True,"active":True,"source_roll_plan":plan,"configured_die":"d4","configured_bad_results":"4"})
+                session.add_all([sim,event]);session.flush()
+                self.assertEqual(schedule_event_rolls(session,save,[sim]),2)
+                roots=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["event_id"].as_string()==event.id).order_by(Record.data["source_roll_plan_index"].as_integer())))
+                self.assertEqual([(item.data["die"],item.data["bad_results"]) for item in roots],[("d4","4"),("d6","2")])
+                self.assertEqual(complete_roll(session,save,roots[0],4)["automatic_followups"],1)
+                child=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==roots[0].id))
+                self.assertEqual((child.data["die"],child.data["bad_results"],child.data["source_roll_plan_index"]),("d12","8",2))
+                self.assertEqual(complete_roll(session,save,roots[1],1)["automatic_followups"],0)
+                self.assertEqual(complete_roll(session,save,child,8)["automatic_followups"],0)
+                session.rollback()
+
+    def test_original_witch_trial_and_great_frost_roll_sequences(self):
+        with TestClient(app):
+            from app import domain as domain_module
+
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Original event sequences",global_day=20,start_year=1690,days_per_year=4)
+                session.add(save);session.flush()
+                woman=Record(save_id=save.id,kind="sim",label="Accused Woman",data={"birth_global_day":1,"sex":"Female","country":"United States"})
+                man=Record(save_id=save.id,kind="sim",label="Accused Man",data={"birth_global_day":1,"sex":"Male","country":"United States"})
+                french_one=Record(save_id=save.id,kind="sim",label="French One",data={"birth_global_day":1,"sex":"Female","country":"France"})
+                french_two=Record(save_id=save.id,kind="sim",label="French Two",data={"birth_global_day":1,"sex":"Male","country":"France"})
+                witch_data={"catalog_id":"EVT-0484","start_global_day":20,"end_global_day":20,"scope":"Historical / Era","roll_required":True,"active":True,**domain_module.ORIGINAL_EVENT_ROLL_OVERRIDES["EVT-0484"]}
+                frost_data={"catalog_id":"EVT-0488","start_global_day":20,"end_global_day":20,"scope":"Disaster / Climate","roll_required":True,"active":True,**domain_module.ORIGINAL_EVENT_ROLL_OVERRIDES["EVT-0488"]}
+                witch=Record(save_id=save.id,kind="event",label="Witch Trials",global_day=20,data=witch_data)
+                frost=Record(save_id=save.id,kind="event",label="Great Frost",global_day=20,data=frost_data)
+                session.add_all([woman,man,french_one,french_two,witch,frost]);session.flush()
+
+                self.assertEqual(schedule_event_rolls(session,save),4)
+                rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False))))
+                by_sim={item.data["sim_id"]:item for item in rolls}
+                self.assertEqual((by_sim[woman.id].data["die"],by_sim[woman.id].data["bad_results"]),("d4","1 4"))
+                self.assertEqual((by_sim[man.id].data["die"],by_sim[man.id].data["bad_results"]),("d6","1 6"))
+                self.assertEqual(complete_roll(session,save,by_sim[woman.id],1)["automatic_followups"],1)
+                verdict=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==by_sim[woman.id].id))
+                self.assertEqual((verdict.data["die"],verdict.data["bad_results"],verdict.data["failure_is_lethal"]),("d2","1",True))
+                self.assertEqual(complete_roll(session,save,by_sim[man.id],2)["automatic_followups"],0)
+
+                self.assertEqual(complete_roll(session,save,by_sim[french_one.id],1)["automatic_followups"],1)
+                no_heat=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==by_sim[french_one.id].id))
+                self.assertEqual((no_heat.data["die"],no_heat.data["bad_results"],no_heat.data["followup_branch_result"]),("d10","7 10",1))
+                self.assertEqual(complete_roll(session,save,by_sim[french_two.id],2)["automatic_followups"],1)
+                has_heat=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==by_sim[french_two.id].id))
+                self.assertEqual((has_heat.data["die"],has_heat.data["bad_results"],has_heat.data["followup_branch_result"]),("d20","2 3",2))
                 session.rollback()
 
     def test_global_event_backfill_needs_no_location_and_uses_editable_start_day(self):
@@ -3558,6 +3621,76 @@ class CoreSmokeTests(unittest.TestCase):
                 repaired=__import__('app.domain',fromlist=['seed_event_catalog']).seed_event_catalog(session,save)
                 self.assertEqual(repaired,1)
                 self.assertEqual(session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="event")),655)
+                session.rollback()
+
+    def test_approved_event_catalog_restores_every_explicit_original_roll(self):
+        with TestClient(app):
+            from app import domain as domain_module
+            from app.event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
+            import base64
+            import gzip
+
+            rows=json.loads(gzip.decompress(base64.b64decode(EVENT_LIBRARY_GZIP_BASE64)).decode("utf-8"))
+            inferred=[row for row in rows if not row.get("roll_required") and domain_module.source_event_requires_roll(row.get("notes"))]
+            self.assertEqual(len(inferred),85)
+            hidden_source_ids=set(domain_module.ORIGINAL_EVENT_ROLL_OVERRIDES)
+            self.assertEqual(hidden_source_ids,{
+                "EVT-0143","EVT-0157","EVT-0264","EVT-0269","EVT-0484","EVT-0485","EVT-0486","EVT-0488",
+                "EVT-0491","EVT-0492","EVT-0493","EVT-0494","EVT-0496","EVT-0497","EVT-0499","EVT-0500",
+                "EVT-0501","EVT-0522","EVT-0529","EVT-0629",
+            })
+
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Original event roll coverage",start_year=1200,days_per_year=4)
+                session.add(save);session.flush()
+                self.assertEqual(domain_module.seed_event_catalog(session,save),655)
+                events=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="event")))
+                by_catalog={item.data.get("catalog_id"):item for item in events}
+                roll_events=[item for item in events if bool((item.data or {}).get("roll_required"))]
+                self.assertEqual(len(roll_events),500)
+                plans=[step for item in roll_events for step in (item.data or {}).get("source_roll_plan",[])]
+                self.assertEqual((len(plans),sum(bool(step.get("parent_indices")) or step.get("parent_index") is not None for step in plans)),(876,264))
+                for item in roll_events:
+                    data=item.data or {}
+                    self.assertTrue(data.get("configured_die"),item.data.get("catalog_id"))
+                    self.assertTrue(data.get("configured_bad_results"),item.data.get("catalog_id"))
+                    self.assertTrue(data.get("source_roll_plan"),item.data.get("catalog_id"))
+                    for step in data["source_roll_plan"]:
+                        self.assertTrue(step.get("die"),(data.get("catalog_id"),step.get("index")))
+                        self.assertTrue(step.get("bad_results"),(data.get("catalog_id"),step.get("index")))
+                        if (step.get("parent_indices") or step.get("parent_index") is not None) and len(step.get("parent_indices") or []) < 2:
+                            self.assertTrue(step.get("trigger_results"),(data.get("catalog_id"),step.get("index")))
+                for catalog_id in domain_module.NON_ROLL_CATALOG_IDS:
+                    self.assertFalse(by_catalog[catalog_id].data["roll_required"])
+                self.assertEqual((by_catalog["EVT-0295"].data["die"],by_catalog["EVT-0295"].data["roll_required"]),("d12",True))
+                self.assertEqual((by_catalog["EVT-0347"].data["die"],by_catalog["EVT-0347"].data["roll_required"]),("d20",True))
+                self.assertEqual((by_catalog["EVT-0639"].data["die"],by_catalog["EVT-0639"].data["roll_required"]),("d20",True))
+                self.assertEqual((by_catalog["EVT-0143"].data["configured_die"],by_catalog["EVT-0143"].data["followup_die"]),("d12","d12"))
+                self.assertEqual((by_catalog["EVT-0157"].data["configured_die"],by_catalog["EVT-0157"].data["followup_die"]),("d12","d8"))
+                self.assertEqual((by_catalog["EVT-0264"].data["configured_die"],by_catalog["EVT-0264"].data["configured_bad_results"]),("d12","3: Dies of famine"))
+                self.assertEqual((by_catalog["EVT-0485"].data["configured_die"],by_catalog["EVT-0485"].data["configured_bad_results"]),("d20","1: Dies of influenza"))
+                self.assertEqual((by_catalog["EVT-0486"].data["configured_die"],by_catalog["EVT-0486"].data["followup_die"]),("d2","d10"))
+                self.assertEqual((by_catalog["EVT-0488"].data["followup_branches"]["1"]["die"],by_catalog["EVT-0488"].data["followup_branches"]["2"]["die"]),("d10","d20"))
+                self.assertEqual((by_catalog["EVT-0494"].data["configured_die"],by_catalog["EVT-0494"].data["followup_die"]),("d20","d6"))
+                self.assertEqual((by_catalog["EVT-0501"].data["configured_die"],by_catalog["EVT-0501"].data["configured_bad_results"]),("d10","10: Dies of measles"))
+                self.assertEqual((by_catalog["EVT-0529"].data["configured_die"],by_catalog["EVT-0529"].data["followup_die"]),("d12","d20"))
+                self.assertEqual((by_catalog["EVT-0491"].data["configured_die"],by_catalog["EVT-0491"].data["followup_die"]),("d20","d12"))
+                self.assertEqual((by_catalog["EVT-0499"].data["source_roll_plan"][1]["die"],by_catalog["EVT-0499"].data["source_roll_plan"][1]["bad_results"]),("d8","4"))
+                self.assertEqual((by_catalog["EVT-0629"].data["source_roll_plan"][1]["die"],by_catalog["EVT-0629"].data["source_roll_plan"][1]["bad_results"]),("d4","3"))
+
+                repaired=by_catalog["EVT-0295"]
+                repaired.data={**repaired.data,"roll_required":False,"die":""}
+                save.settings={**(save.settings or {}),"event_catalog_version":"recovered-655-v2-integrity"}
+                self.assertEqual(domain_module.seed_event_catalog(session,save),1)
+                self.assertTrue(repaired.data["roll_required"])
+                self.assertEqual(repaired.data["die"],"d12")
+
+                # Once the migration marker is current, event-level controls
+                # remain editable and an intentional opt-out stays disabled.
+                repaired.data={**repaired.data,"roll_required":False}
+                self.assertEqual(domain_module.seed_event_catalog(session,save),0)
+                self.assertFalse(repaired.data["roll_required"])
                 session.rollback()
 
     def test_backup_exports_notifications_and_story_generation_are_grounded(self):

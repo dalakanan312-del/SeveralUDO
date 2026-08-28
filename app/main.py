@@ -143,7 +143,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.4.4")
+app = FastAPI(title="Decades Tracker", version="4.4.5")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -711,6 +711,8 @@ def context(request: Request, session, **extra):
         active = next((item for item in saves if item.id == requested), saves[0] if saves else None)
         if active:
             request.session["save_id"] = active.id
+            if str((active.settings or {}).get("event_catalog_version") or "") != domain.EVENT_CATALOG_VERSION:
+                domain.seed_event_catalog(session, active)
     last_roll = request.session.pop("last_roll", None)
     current_page = extra.get("page")
     return {"request": request, "user": user, "saves": saves, "save": active,
@@ -3927,11 +3929,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.4.4-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.4.5-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.4-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.5-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

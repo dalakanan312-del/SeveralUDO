@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.4.4` reorganizes the rule center into focused Setup, Roll Tables, Historical Guidance, and Occult Rules pages. It adds an automatic, era-editable remarriage eligibility roll after widowhood, divorce, annulment, separation, or another recorded marriage ending; the default is 1 on a D6. It retains the corrected occult follow-up chains from 4.4.3 and the task-based navigation introduced in 4.4.2.
+`4.4.5` restores every approved historical-event roll table and its conditional follow-up chain. All 500 roll-bearing events now carry source-defined dice and adverse results, including separate regional enlistment paths, multi-stage casualty checks, and branched disaster outcomes. Existing saves receive the repair automatically while player-edited rule fields remain intact.
 
 `4.3.0` adds optional Kemzima Responsible Pregnancy compatibility. Clock Sync 2.2.7 detects selected active pregnancy exposures, risks, maternal conditions, and newborn complications without treating them as ordinary illnesses. Current states appear on Sim and pregnancy profiles, state changes enter the chronicle once, and repeated reports do not create duplicate inbox work. Players without the mod continue to use the tracker normally.
 
