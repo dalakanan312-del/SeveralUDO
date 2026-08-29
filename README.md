@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.4.9` repairs stale Clock Sync anchors automatically, adds a save-wide master automation switch, and adds editable manual rolls. A manual Global Day change can no longer strand the game clock behind the tracker, while a persistent game-day high watermark still prevents an older Sims save from advancing the chronicle. Pausing automation preserves existing data and keeps the private link healthy; resuming starts from the current alignment without a catch-up burst.
+
 `4.4.8` restores repeating historical-event obligations. Source instructions such as “each year,” “annually,” and “every ten years” now create one durable roll per reached historical interval, anchored to the event's start day. Existing first-year and completed rolls are recognized so refreshes cannot duplicate history, and custom events can set an editable repeat interval from the Events page.
 
 `4.4.7` keeps maternal rolls pending when a delivery is accepted through Clock Sync, Today, a newborn record, or the pregnancy editor. The roll moves to the confirmed delivery day instead of disappearing, while miscarriages and cancellations still retire it. Today’s pending-roll refresh can safely restore delivery-hidden maternal rolls from older builds without reviving duplicates or completed history.

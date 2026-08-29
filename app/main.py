@@ -143,7 +143,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.4.8")
+app = FastAPI(title="Decades Tracker", version="4.4.9")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -214,7 +214,8 @@ def event_calendar_fields(save: ChronicleSave, event: str, global_day: int | Non
 def birth_circumstance_suggestion(session, save: ChronicleSave, pregnancy: Record | None, mother: Record | None,
                                   birth_day: int | None, birthplace: str = "", events: list[Record] | None = None) -> dict:
     """Build an explainable, editable birth summary only from facts the tracker knows."""
-    if not save or not bool((save.settings or {}).get("automatic_birth_circumstances", True)):
+    if (not save or not domain.automation_enabled(save)
+            or not bool((save.settings or {}).get("automatic_birth_circumstances", True))):
         return {"summary": "", "tags": [], "birth_status": "", "multiple_birth_status": ""}
     day = int_or_none(birth_day) or save.global_day
     pregnancy_data = dict((pregnancy.data if pregnancy else {}) or {})
@@ -724,6 +725,8 @@ def context(request: Request, session, **extra):
             "navigation_group": navigation_group_for(current_page),
             "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "last_roll": last_roll,
             "occult_notice": request.session.pop("occult_notice", None),
+            "master_automation_notice": request.session.pop("master_automation_notice", None),
+            "manual_roll_notice": request.session.pop("manual_roll_notice", None),
             "app_version": app.version, "static_version":_STATIC_VERSION,
             "notification_cursor": datetime.now(timezone.utc).isoformat(), **extra}
 
@@ -3270,6 +3273,39 @@ def toggle_occult_rolls(request: Request, enabled: str = Form(""), return_to: st
     return RedirectResponse(destination,status_code=303)
 
 
+@app.post("/api/automation/toggle")
+def toggle_master_automation(request: Request, enabled: str = Form(""), return_to: str = Form("")):
+    """Pause or resume every save-level automatic mutation from one control."""
+    turn_on = enabled.casefold() in {"1", "true", "on", "yes"}
+    with db() as session:
+        ctx = context(request, session); save = ctx["save"]
+        if not save:
+            raise HTTPException(400, "Open a save first.")
+        values = dict(save.settings or {})
+        values["automation_enabled"] = turn_on
+        values["automation_toggled_global_day"] = save.global_day
+        link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id))
+        if link and link.last_game_day is not None:
+            link.game_anchor_day = int(link.last_game_day)
+            link.tracker_anchor_day = int(save.global_day)
+            values["clock_game_day_high_watermark"] = max(
+                int(values.get("clock_game_day_high_watermark") or link.last_game_day),
+                int(link.last_game_day),
+            )
+        save.settings = values
+        save.revision += 1
+        created = domain.schedule_rolls(session, save) if turn_on else 0
+        request.session["master_automation_notice"] = (
+            f"Automation is on. Clock Sync, detections, scheduled obligations, automatic outcomes and storyline updates can run again. {created} missing roll{'s were' if created != 1 else ' was'} added."
+            if turn_on else
+            "Automation is paused for this save. Clock reports may still show the live connection, but Global Day, detections, scheduled obligations and automatic outcomes will not change until you resume. Existing records were kept."
+        )
+    destination = return_to.strip()
+    if not destination.startswith("/") or destination.startswith("//"):
+        destination = "/p/today"
+    return RedirectResponse(destination, status_code=303)
+
+
 @app.post("/api/rolls/refresh")
 def refresh_scheduled_rolls(request: Request, return_to: str = Form("/p/today?task=rolls")):
     with db() as session:
@@ -3296,6 +3332,40 @@ def refresh_scheduled_rolls(request: Request, return_to: str = Form("/p/today?ta
     if not destination.startswith("/") or destination.startswith("//"):
         destination = "/p/today?task=rolls"
     return RedirectResponse(destination, status_code=303)
+
+
+@app.post("/rolls/manual")
+async def create_manual_roll(request: Request):
+    form = await request.form()
+    with db() as session:
+        ctx = context(request, session); save = ctx["save"]
+        if not save:
+            raise HTTPException(400, "Open a save first.")
+        roll_type = str(form.get("roll_type") or "Custom roll").strip()[:160] or "Custom roll"
+        due = max(1, min(20000, int_or_none(form.get("global_day")) or save.global_day))
+        sim_id = str(form.get("sim_id") or "").strip()
+        sim = session.get(Record, sim_id) if sim_id else None
+        if sim_id and (not sim or sim.save_id != save.id or sim.kind != "sim" or sim.deleted):
+            raise HTTPException(400, "Choose a valid Sim from this save.")
+        lethal = str(form.get("failure_is_lethal") or "").casefold() in {"1", "true", "on", "yes"}
+        data = {
+            "roll_type":roll_type, "sim_id":sim.id if sim else None,
+            "sim_name":sim.label if sim else "", "die":str(form.get("die") or "d20").strip()[:30] or "d20",
+            "bad_results":str(form.get("bad_results") or "").strip()[:500],
+            "result_rules":str(form.get("result_rules") or "").strip()[:1000],
+            "notes":str(form.get("notes") or "").strip()[:4000],
+            "failure_is_lethal":lethal, "nonlethal":not lethal,
+            "manual_roll":True, "completed":False, "due_global_day":due,
+            "created_global_day":save.global_day, "source":"manual",
+        }
+        label = f"{sim.label} — {roll_type}" if sim else roll_type
+        roll = Record(save_id=save.id, kind="roll", label=label, global_day=due, data=data)
+        session.add(roll); session.flush()
+        roll.data = {**roll.data, "source":f"manual:{roll.id}"}
+        domain.journal(session, roll, "upsert", 0)
+        save.revision += 1
+        request.session["manual_roll_notice"] = f"Added {label} for Global Day {due}."
+    return RedirectResponse("/p/rolls?record_status=pending", status_code=303)
 
 
 @app.post("/api/occult-rolls/create")
@@ -4034,11 +4104,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.4.8-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.4.9-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.8-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.4.9-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

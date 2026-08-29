@@ -41,6 +41,14 @@ LEGACY_INCORRECT_STAGES = {
 
 AGING_STAGE_OFFSETS = {stage.casefold(): age for stage, age, _die, _bad in DEFAULT_STAGES}
 
+
+def automation_enabled(save: ChronicleSave) -> bool:
+    """Return the save-wide master automation state; existing saves default on."""
+    value = (save.settings or {}).get("automation_enabled", True)
+    if isinstance(value, str):
+        return value.strip().casefold() not in {"0", "false", "off", "no", "paused"}
+    return value is not False
+
 DEFAULT_DEATH_CAUSES = {
     "birth": ["Complications of childbirth", "Childbed fever", "Hemorrhage"],
     "infant": ["Infant fever", "Respiratory infection", "Unknown childhood illness"],
@@ -4053,6 +4061,8 @@ def retire_inactive_core_rolls(session: Session, save: ChronicleSave) -> int:
 
 
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
+    if not automation_enabled(save):
+        return 0
     save.revision += apply_due_migrations(session,save)
     rules = [item for item in session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False)
@@ -4254,6 +4264,7 @@ def _retire_rolls_after_death(session: Session, save: ChronicleSave, sim_id: str
 
 def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: int, outcome_override: str = "") -> dict:
     if roll.kind != "roll" or roll.deleted: raise ValueError("That roll is unavailable.")
+    automate = automation_enabled(save)
     base = roll.version
     pregnancy_count = None
     death_age_rng = bool(roll.data.get("death_age_rng"))
@@ -4286,7 +4297,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         roll.data = {**roll.data, "pregnancy_count":pregnancy_count}
         sim_id = roll.data.get("sim_id")
         allowance_sim = session.get(Record, sim_id) if sim_id else None
-        if allowance_sim and allowance_sim.kind == "sim" and not allowance_sim.deleted:
+        if automate and allowance_sim and allowance_sim.kind == "sim" and not allowance_sim.deleted:
             year = int(roll.data.get("planner_year") or (save.start_year + (save.global_day - 1) // max(1, save.days_per_year)))
             sim_data = dict(allowance_sim.data or {}); allowances = dict(sim_data.get("pregnancy_allowances") or {})
             allowances[str(year)] = {"allowed":pregnancy_count, "roll_id":roll.id, "recorded_global_day":save.global_day, "actual":actual}
@@ -4300,7 +4311,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             family_plan, family_plan_changed, family_plan_created = sync_family_plan_from_pregnancy_roll(
                 session, save, roll, allowance_sim, pregnancy_count,
             )
-    if _marriage_roll(roll):
+    if automate and _marriage_roll(roll):
         marriage_updates = {"nonlethal":True}
         outcome_text = str(roll.data.get("outcome") or "").casefold()
         if ("may marry" in outcome_text or "may remarry" in outcome_text) and roll.data.get("suggested_marriage_global_day") in (None, ""):
@@ -4313,15 +4324,16 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 "suggested_marriage_date_source": "Generated after successful marriage eligibility roll",
             })
         roll.data = {**roll.data, **marriage_updates}
-    occult_changed = apply_occult_roll_result(session, roll, actual)
-    automatic_followups = _schedule_automatic_occult_followup(session, save, roll)
-    automatic_followups += _schedule_event_followup(session, save, roll, actual)
-    service_changed = _record_campaign_service(session, save, roll)
+    occult_changed = apply_occult_roll_result(session, roll, actual) if automate else 0
+    automatic_followups = _schedule_automatic_occult_followup(session, save, roll) if automate else 0
+    if automate:
+        automatic_followups += _schedule_event_followup(session, save, roll, actual)
+    service_changed = _record_campaign_service(session, save, roll) if automate else False
     roll.version += 1; journal(session, roll, "upsert", base)
     death = None
     death_created = False
     death_changed = False
-    if death_age_rng:
+    if automate and death_age_rng:
         sim_id = roll.data.get("sim_id"); sim = session.get(Record, sim_id) if sim_id else None
         if sim and not sim.deleted and not bool((sim.data or {}).get("death_confirmed")):
             birth_day = (sim.data or {}).get("birth_global_day", sim.global_day)
@@ -4351,7 +4363,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 sim_base=sim.version;sim.data={**(sim.data or {}),"death_global_day":death_day,"cause_of_death":cause,"death_confirmed":False,"death_source_roll_id":roll.id,**fields};sim.version+=1;journal(session,sim,"upsert",sim_base)
                 death_changed=True
             save.revision += _retire_rolls_after_death(session,save,sim.id,death_day,roll.id)
-    if is_bad and not bool(roll.data.get("nonlethal")):
+    if automate and is_bad and not bool(roll.data.get("nonlethal")):
         sim_id = roll.data.get("sim_id")
         sim = session.get(Record, sim_id) if sim_id else None
         if sim and not sim.deleted and not bool((sim.data or {}).get("death_confirmed")):

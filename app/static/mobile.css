@@ -21,9 +21,10 @@
   .mobile-menu-copy strong{overflow:hidden;max-width:115px;color:var(--ink);font-size:.76rem;text-overflow:ellipsis;white-space:nowrap}
   .app-sidebar.mobile-menu-open .mobile-menu-icon{background:rgba(199,154,77,.16)}
 
-  .app-sidebar .save-switcher,.app-sidebar .occult-quick-control,.app-sidebar .app-nav,.app-sidebar .sidebar-footer{display:none}
+  .app-sidebar .save-switcher,.app-sidebar .automation-master-control,.app-sidebar .occult-quick-control,.app-sidebar .app-nav,.app-sidebar .sidebar-footer{display:none}
   .app-sidebar.mobile-menu-open{overflow-y:auto}
   .app-sidebar.mobile-menu-open .save-switcher{display:block;margin:10px 0 7px}
+  .app-sidebar.mobile-menu-open .automation-master-control{display:grid;margin:7px 0}
   .app-sidebar.mobile-menu-open .occult-quick-control{display:grid;margin:7px 0}
   .app-sidebar.mobile-menu-open .app-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px;max-height:55dvh;margin:8px 0 0;padding:6px;overflow-y:auto;border:1px solid var(--line);border-radius:12px;background:#111318;overscroll-behavior:contain;scrollbar-width:thin}
   .app-nav h3{display:flex;grid-column:1/-1;margin:11px 7px 3px}

@@ -976,6 +976,115 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(link.last_game_day, 500)
                 session.rollback()
 
+    def test_clock_self_repairs_a_stale_anchor_then_advances_on_the_next_game_day(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Stale clock anchor", global_day=72)
+                session.add(save); session.flush()
+                link = ClockLink(save_id=save.id, token_hash=uuid.uuid4().hex,
+                                 game_anchor_day=0, tracker_anchor_day=1, last_game_day=37)
+                session.add(link); session.flush()
+                repaired = receive_clock(session, link, {"game_day":37,"hour":8,"minute":0,"household_members":[]})
+                self.assertTrue(repaired["clock_anchor_repaired"])
+                self.assertEqual((link.game_anchor_day, link.tracker_anchor_day, save.global_day), (37, 72, 72))
+                advanced = receive_clock(session, link, {"game_day":38,"hour":0,"minute":1,"household_members":[]})
+                self.assertEqual(advanced["tracker_global_day"], 73)
+                self.assertEqual(save.global_day, 73)
+                session.rollback()
+
+    def test_clock_high_watermark_does_not_reanchor_an_older_game_save(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Older clock save", global_day=72,
+                                     settings={"clock_game_day_high_watermark":38})
+                session.add(save); session.flush()
+                link = ClockLink(save_id=save.id, token_hash=uuid.uuid4().hex,
+                                 game_anchor_day=37, tracker_anchor_day=72, last_game_day=38)
+                session.add(link); session.flush()
+                old = receive_clock(session, link, {"game_day":20,"hour":8,"minute":0,"household_members":[]})
+                self.assertFalse(old["clock_anchor_repaired"])
+                self.assertEqual(save.global_day, 72)
+                still_old = receive_clock(session, link, {"game_day":21,"hour":8,"minute":0,"household_members":[]})
+                self.assertFalse(still_old["clock_anchor_repaired"])
+                self.assertEqual((link.game_anchor_day, link.tracker_anchor_day, save.global_day), (37, 72, 72))
+                session.rollback()
+
+    def test_master_automation_pauses_clock_and_automatic_roll_consequences(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Paused automation", global_day=20,
+                                     settings={"automation_enabled":False})
+                session.add(save); session.flush()
+                sim = Record(save_id=save.id, kind="sim", label="Paused Sim", global_day=1,
+                             data={"birth_global_day":1})
+                session.add(sim); session.flush()
+                roll = Record(save_id=save.id, kind="roll", label="Paused lethal roll", global_day=20,
+                              data={"sim_id":sim.id,"roll_type":"Custom","die":"d6","bad_results":"1",
+                                    "failure_is_lethal":True,"completed":False})
+                link = ClockLink(save_id=save.id, token_hash=uuid.uuid4().hex,
+                                 game_anchor_day=100, tracker_anchor_day=20, last_game_day=100)
+                session.add_all([roll, link]); session.flush()
+                paused = receive_clock(session, link, {"game_day":101,"hour":9,"minute":0,"household_members":[]})
+                self.assertTrue(paused["automation_paused"])
+                self.assertEqual(save.global_day, 20)
+                self.assertEqual((link.game_anchor_day, link.tracker_anchor_day), (101, 20))
+                result = complete_roll(session, save, roll, 1)
+                self.assertEqual(result["outcome"], "Failed")
+                self.assertFalse(result["death_changed"])
+                self.assertNotIn("death_global_day", sim.data)
+                self.assertEqual(schedule_rolls(session, save), 0)
+                save.settings = {**save.settings, "automation_enabled":True}
+                resumed = receive_clock(session, link, {"game_day":102,"hour":0,"minute":1,"household_members":[]})
+                self.assertEqual(resumed["tracker_global_day"], 21)
+                session.rollback()
+
+    def test_manual_roll_form_creates_an_editable_pending_roll(self):
+        marker = uuid.uuid4().hex
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                original = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=original.workspace_id, name="Manual roll form " + marker, global_day=33)
+                session.add(save); session.flush()
+                sim = Record(save_id=save.id, kind="sim", label="Manual Roller", global_day=1,
+                             data={"birth_global_day":1})
+                session.add(sim); session.commit()
+                save_id, sim_id, original_id = save.id, sim.id, original.id
+            client.post("/saves/select", data={"save_id":save_id})
+            self.assertIn("Add a manual roll", client.get("/p/rolls").text)
+            response = client.post("/rolls/manual", data={
+                "roll_type":"Harvest fortune", "sim_id":sim_id, "global_day":"35",
+                "die":"d12", "bad_results":"1-2", "result_rules":"12: exceptional harvest",
+                "notes":"Player-created obligation", "failure_is_lethal":"on",
+            }, follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            with SessionLocal() as session:
+                roll = session.scalar(select(Record).where(
+                    Record.save_id==save_id, Record.kind=="roll",
+                    Record.data["manual_roll"].as_boolean().is_(True),
+                ))
+                self.assertIsNotNone(roll)
+                self.assertEqual((roll.global_day, roll.data["die"], roll.data["bad_results"]), (35, "d12", "1-2"))
+                self.assertEqual(roll.data["sim_id"], sim_id)
+                self.assertTrue(roll.data["failure_is_lethal"])
+                self.assertTrue(str(roll.data["source"]).startswith("manual:"))
+            paused = client.post("/api/automation/toggle", data={"enabled":"false","return_to":"/p/rules"},
+                                 follow_redirects=False)
+            self.assertEqual(paused.status_code, 303)
+            self.assertIn("App automation is paused", client.get("/p/rules").text)
+            with SessionLocal() as session:
+                self.assertFalse(session.get(ChronicleSave, save_id).settings["automation_enabled"])
+            resumed = client.post("/api/automation/toggle", data={"enabled":"true","return_to":"/p/rules"},
+                                  follow_redirects=False)
+            self.assertEqual(resumed.status_code, 303)
+            client.post("/saves/select", data={"save_id":original_id})
+            with SessionLocal() as session:
+                session.execute(delete(Record).where(Record.save_id==save_id))
+                session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id))
+                session.commit()
+
     def test_read_only_save_comparison_identifies_changed_new_and_missing_sims(self):
         with TestClient(app):
             with SessionLocal() as session:
@@ -1311,7 +1420,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.8")
+            self.assertEqual(health.json()["version"], "4.4.9")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)

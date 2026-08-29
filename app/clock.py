@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import ChronicleSave, ClockLink, Portrait, Record
-from .domain import AGING_STAGE_OFFSETS, CLOSED_ILLNESSES, journal, schedule_rolls, sync_generations
+from .domain import AGING_STAGE_OFFSETS, CLOSED_ILLNESSES, automation_enabled, journal, schedule_rolls, sync_generations
 from . import automation, game_metadata, telemetry, sync, notifications, portraits, storyline
 
 
@@ -1006,10 +1006,60 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     hour = max(0, min(23, int(report.get("hour", report.get("game_hour", 0)))))
     minute = max(0, min(59, int(report.get("minute", report.get("game_minute", 0)))))
     second = max(0, min(59, int(report.get("second", report.get("game_second", 0)))))
-    if link.game_anchor_day is None:
+    settings_data = dict(save.settings or {})
+    try:
+        high_watermark = int(settings_data.get("clock_game_day_high_watermark"))
+    except (TypeError, ValueError):
+        high_watermark = int(link.last_game_day if link.last_game_day is not None else game_day)
+    prior_game_day = int(link.last_game_day) if link.last_game_day is not None else None
+    game_day_regressed = game_day < high_watermark
+    if link.game_anchor_day is None or link.tracker_anchor_day is None:
         link.game_anchor_day = game_day
         link.tracker_anchor_day = save.global_day
     target = int(link.tracker_anchor_day + max(0, game_day - link.game_anchor_day))
+    anchor_repaired = False
+    # A manual Global Day change can leave the old anchor permanently behind
+    # the tracker. Re-anchor on a same-or-newer game report, but retain a high
+    # watermark so loading an older Sims save can never advance this chronicle.
+    if (target < save.global_day and not game_day_regressed
+            and (prior_game_day is None or game_day >= prior_game_day)):
+        link.game_anchor_day = game_day
+        link.tracker_anchor_day = save.global_day
+        target = save.global_day
+        anchor_repaired = True
+    new_high_watermark = max(high_watermark, game_day)
+    if settings_data.get("clock_game_day_high_watermark") != new_high_watermark:
+        settings_data["clock_game_day_high_watermark"] = new_high_watermark
+        save.settings = settings_data
+    if not automation_enabled(save):
+        # Keep the private link healthy while paused, but make the current game
+        # time the next safe anchor so resuming cannot create a catch-up burst.
+        link.game_anchor_day = game_day
+        link.tracker_anchor_day = save.global_day
+        link.last_game_day, link.last_game_hour, link.last_game_minute = game_day, hour, minute
+        link.last_seen_at = datetime.now(timezone.utc)
+        members = list(report.get("household_members", report.get("household_sims", [])) or [])
+        diagnostic_updated = _update_clock_diagnostic(session, save, members, game_day, hour, minute, report)
+        sync.sync_clock_state(session, save, link)
+        if protocol_result:
+            _commit_protocol_state(session, save, protocol_state, protocol_prior, protocol_result, report)
+        session.flush()
+        response = {
+            "status":"paused", "ok":True, "automation_paused":True,
+            "tracker_global_day":save.global_day,
+            "game_time":{"day":game_day,"hour":hour,"minute":minute,"second":second},
+            "new_candidates":0,"illnesses_created":0,"illnesses_ended":0,
+            "event_results_created":0,"rolls_created":0,"households_created":0,
+            "households_updated":0,"household_members_linked":0,
+            "parent_links_updated":0,"generations_updated":0,"population_updates":0,
+            "portraits_updated":0,"diagnostics_updated":bool(diagnostic_updated),
+            "journal_updated":False,"clock_anchor_repaired":anchor_repaired,
+        }
+        if protocol_result:
+            response.update(report_sequence=protocol_result["sequence"],report_checksum=protocol_result["checksum"],
+                            sequence_gap=protocol_result.get("sequence_gap"),
+                            chain_mismatch=bool(protocol_result.get("chain_mismatch")))
+        return response
     day_advanced = target > save.global_day
     if target > save.global_day:
         save.global_day = target
@@ -1199,7 +1249,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         "parent_links_updated": parent_link_updates, "generations_updated": generation_updates,
         "population_updates": population_updates,
         "portraits_updated": portrait_updates, "diagnostics_updated": bool(diagnostic_updated),
-        "journal_updated": bool(journal_record),
+        "journal_updated": bool(journal_record), "clock_anchor_repaired": anchor_repaired,
     }
     if protocol_result:
         response.update(
