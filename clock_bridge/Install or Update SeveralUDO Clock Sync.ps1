@@ -40,7 +40,11 @@ if (-not $sourceIsTarget) {
     if (Test-Path -LiteralPath $target -PathType Container) {
         New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
         Get-ChildItem -LiteralPath $target -File | ForEach-Object {
-            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $backupRoot $_.Name) -Force
+            # Relay status files can be replaced between enumeration and copy.
+            # Preserve every stable file while allowing those transient files to vanish safely.
+            if (Test-Path -LiteralPath $_.FullName -PathType Leaf) {
+                Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $backupRoot $_.Name) -Force -ErrorAction SilentlyContinue
+            }
         }
     }
     New-Item -ItemType Directory -Path $target -Force | Out-Null
