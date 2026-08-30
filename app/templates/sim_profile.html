@@ -2,7 +2,7 @@
 {% block title %}{{sim.label}} · Decades Tracker{% endblock %}
 {% macro person_tile(person, relationship='') %}
 <a class="kin-card" href="/sims/{{person.id}}">
-  <span class="kin-portrait">{% if person.id in photo_record_ids %}<img src="/portraits/{{person.id}}/current" alt="" loading="lazy">{% else %}<b>{{person.label[:1]}}</b>{% endif %}</span>
+  <span class="kin-portrait {{'deceased-portrait' if sim_status(person,save)=='Deceased' else ''}}">{% if person.id in photo_record_ids %}<img src="/portraits/{{person.id}}/current" alt="" loading="lazy">{% else %}<b>{{person.label[:1]}}</b>{% endif %}</span>
   <span><small>{{relationship}}</small><strong>{{person.label}}</strong><em>{{person.data.get('sim_number') or 'Open profile'}}</em></span>
 </a>
 {% endmacro %}
@@ -11,7 +11,7 @@
 <a class="profile-back" href="/p/sims">← All Sims</a>
 
 <header class="sim-dossier-hero {{'is-deceased' if deceased else 'is-living'}}">
-  <div class="dossier-portrait">
+  <div class="dossier-portrait {{'deceased-portrait' if deceased else ''}}">
     <span aria-hidden="true">{{sim.label[:1]}}</span>
     {% if sim.id in photo_record_ids %}<img src="/portraits/{{sim.id}}/current" alt="Portrait of {{sim.label}}">{% endif %}
   </div>
@@ -33,9 +33,11 @@
       <a class="button primary" href="#edit-sim">Edit profile</a>
       <a class="button" href="/p/family-tree?focus={{sim.id}}">View family tree</a>
       <a class="button" href="/p/today?task=rolls">Open Today</a>
+      {% if not deceased %}<form action="/sims/{{sim.id}}/pass-prior-rolls" method="post" onsubmit="return confirm('Create any missing earlier life-stage checks and mark every check through {{profile_summary.life_stage}} as passed?')"><button>Pass earlier life-stage rolls{% if catchup_roll_count %} ({{catchup_roll_count}} waiting){% endif %}</button></form>{% endif %}
     </div>
   </div>
 </header>
+{% if sim_notice %}<div class="notice">{{sim_notice}}</div>{% endif %}
 
 <nav class="profile-jump" aria-label="Profile sections">
   <a href="#overview">Overview</a><a href="#family">Family</a><a href="#health">Health & family planning</a><a href="#game-record">Game record</a><a href="#chronicle">Chronicle</a><a href="#portraits">Portraits</a><a href="#edit-sim">Edit</a>
@@ -66,7 +68,6 @@
 
     <section class="profile-section" id="family">
       <div class="section-heading"><div><p class="eyebrow">HOUSEHOLD & KIN</p><h2>Family connections</h2></div><a href="/p/family-tree?focus={{sim.id}}">Open centered tree →</a></div>
-      {% if sim_notice %}<div class="notice">{{sim_notice}}</div>{% endif %}
       {% if current_household %}<a class="household-banner" href="/households/{{current_household.id}}"><span>⌂</span><div><small>Current household</small><strong>{{current_household.label}}</strong><em>{{current_household.data.get('location') or 'Location not recorded'}}</em></div><b>View household →</b></a>{% endif %}
       <div class="family-groups">
         <div><h3>Parents</h3><div class="kin-grid">{% for person in parents %}{{person_tile(person,'Parent')}}{% else %}<p class="muted">No parents linked.</p>{% endfor %}</div></div>
@@ -130,7 +131,7 @@
   <div class="sim-profile-side">
     <section class="profile-section profile-side-card"><p class="eyebrow">QUICK RECORD</p><h2>Identity</h2><dl class="side-facts"><div><dt>Stable ID</dt><dd>{{sim.data.get('sim_number') or sim.data.get('legacy_id','Not assigned')}}</dd></div><div><dt>Generation</dt><dd>{{sim.data.get('generation') if sim.data.get('generation') is not none else 'Unknown'}}</dd></div><div><dt>Fertility</dt><dd>{{sim.data.get('fertility_status') or 'Not recorded'}}</dd></div><div><dt>Family tree</dt><dd>{{'Included' if sim.data.get('include_in_family_tree',True) else 'Hidden'}}</dd></div><div><dt>Played through</dt><dd>{% if sim.data.get('played_through_global_day') is not none %}GD {{sim.data.get('played_through_global_day')}}{% else %}Not recorded{% endif %}</dd></div>{% if deceased %}<div><dt>Cause of death</dt><dd>{{sim.data.get('cause_of_death') or 'Not recorded'}}</dd></div><div><dt>Place of death</dt><dd>{{sim.data.get('death_place') or 'Not recorded'}}</dd></div>{% endif %}</dl></section>
 
-    <section class="profile-section profile-side-card" id="portraits"><div class="section-heading"><div><p class="eyebrow">PORTRAIT ARCHIVE</p><h2>Life stages</h2></div><strong>{{sim_portraits|length}}</strong></div><p>The tracker automatically shows the portrait matching the current life stage, with Default as a fallback.</p>{% if portrait_notice %}<div class="notice">{{portrait_notice}}</div>{% endif %}{% if local_mode %}<form action="/sims/{{sim.id}}/scan-tray-portrait" method="post" class="portrait-scan-form"><button class="primary">Scan My Library for this portrait</button><small>Reads the Sims 4 Tray folder and imports the newest exact-name individual portrait. Save the household to My Library in game first.</small></form><form action="/sims/{{sim.id}}/scan-portrait" method="post" class="portrait-scan-form"><button>Scan game save instead</button><small>Uses the Clock Sync-linked save when available, otherwise the newest primary save. Only this Sim’s embedded thumbnail is considered.</small></form>{% endif %}<form action="/portraits/{{sim.id}}" method="post" enctype="multipart/form-data" class="portrait-upload"><label>Life stage<select name="stage"><option value="default">Default</option>{% for stage in ['Being Born','Newborn','Infant','Toddler','Child','Preteen','Teen','Young Adult','Adult','Elder'] %}<option>{{stage}}</option>{% endfor %}</select></label><label>Portrait image<input name="image" type="file" accept="image/*" required></label><button>Upload or replace</button></form>{% if sim_portraits %}<div class="portrait-gallery compact">{% for item in sim_portraits %}<article><img src="/portraits/{{sim.id}}/{{item.stage}}" alt="{{item.stage}} portrait" loading="lazy"><strong>{{item.stage|replace('youngadult','Young Adult')|title}}</strong><form action="/portraits/{{sim.id}}/{{item.stage}}/delete" method="post" onsubmit="return confirm('Remove the {{item.stage}} portrait?')"><button>Remove</button></form></article>{% endfor %}</div>{% endif %}</section>
+    <section class="profile-section profile-side-card {{'deceased-portrait' if deceased else ''}}" id="portraits"><div class="section-heading"><div><p class="eyebrow">PORTRAIT ARCHIVE</p><h2>Life stages</h2></div><strong>{{sim_portraits|length}}</strong></div><p>The tracker automatically shows the portrait matching the current life stage, with Default as a fallback.</p>{% if portrait_notice %}<div class="notice">{{portrait_notice}}</div>{% endif %}{% if local_mode %}<form action="/sims/{{sim.id}}/scan-tray-portrait" method="post" class="portrait-scan-form"><button class="primary">Scan My Library for this portrait</button><small>Reads the Sims 4 Tray folder and imports the newest exact-name individual portrait. Save the household to My Library in game first.</small></form><form action="/sims/{{sim.id}}/scan-portrait" method="post" class="portrait-scan-form"><button>Scan game save instead</button><small>Uses the Clock Sync-linked save when available, otherwise the newest primary save. Only this Sim’s embedded thumbnail is considered.</small></form>{% endif %}<form action="/portraits/{{sim.id}}" method="post" enctype="multipart/form-data" class="portrait-upload"><label>Life stage<select name="stage"><option value="default">Default</option>{% for stage in ['Being Born','Newborn','Infant','Toddler','Child','Preteen','Teen','Young Adult','Adult','Elder'] %}<option>{{stage}}</option>{% endfor %}</select></label><label>Portrait image<input name="image" type="file" accept="image/*" required></label><button>Upload or replace</button></form>{% if sim_portraits %}<div class="portrait-gallery compact">{% for item in sim_portraits %}<article><img src="/portraits/{{sim.id}}/{{item.stage}}" alt="{{item.stage}} portrait" loading="lazy"><strong>{{item.stage|replace('youngadult','Young Adult')|title}}</strong><form action="/portraits/{{sim.id}}/{{item.stage}}/delete" method="post" onsubmit="return confirm('Remove the {{item.stage}} portrait?')"><button>Remove</button></form></article>{% endfor %}</div>{% endif %}</section>
   </div>
 </div>
 

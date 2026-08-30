@@ -4060,6 +4060,69 @@ def retire_inactive_core_rolls(session: Session, save: ChronicleSave) -> int:
     return changed
 
 
+def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record,
+                                  rules: list[Record]) -> int:
+    """Create only one Sim's aging obligations, without unrelated automation."""
+    birth = sim.data.get("birth_global_day", sim.global_day)
+    death = sim.data.get("death_global_day")
+    if (bool((sim.data or {}).get("game_was_dead"))
+            or (death is not None and int(death) <= save.global_day)
+            or "Servo" in occult_rules.sim_occult_types(sim.data)
+            or birth is None):
+        return 0
+    created = 0
+    for rule in rules:
+        if not rule.data.get("active", True):
+            continue
+        configured_age = rule.data.get("age_days")
+        if configured_age in (None, ""):
+            configured_age = AGING_STAGE_OFFSETS.get(rule.label.strip().casefold())
+        if configured_age is None:
+            continue
+        if int(configured_age) == 0 and sim.data.get("newborn_rolls_required") is False:
+            continue
+        due = int(birth) + int(configured_age)
+        due_year = save.start_year + (due - 1) // max(1, save.days_per_year)
+        if not int(rule.data.get("start_year", -9999)) <= due_year <= int(rule.data.get("end_year", 9999)):
+            continue
+        if due < 1 or (death is not None and due >= int(death)):
+            continue
+        source = f"aging:{sim.id}:{rule.id}"
+        exists = session.scalar(select(Record.id).where(
+            Record.save_id == save.id,
+            Record.kind == "roll",
+            Record.deleted.is_(False),
+            (Record.data["source"].as_string() == source) |
+            (
+                (Record.data["sim_id"].as_string() == sim.id) &
+                (Record.data["roll_type"].as_string() == rule.label) &
+                (Record.global_day == due)
+            ),
+        ).limit(1))
+        if exists:
+            continue
+        later_ages = sorted(
+            int(item.data.get("age_days")) for item in rules
+            if item.id != rule.id and item.data.get("age_days") not in (None, "")
+            and int(item.data.get("age_days")) > int(configured_age)
+            and str(item.data.get("core_ruleset_id") or "") == str(rule.data.get("core_ruleset_id") or "")
+            and int(item.data.get("start_year", -9999)) <= due_year <= int(item.data.get("end_year", 9999))
+        )
+        payload={
+            "sim_id": sim.id, "roll_type": rule.label, "die": rule.data.get("die"),
+            "bad_results": rule.data.get("bad_results"), "source": source,
+            "due_global_day": due, "completed": False,
+            "core_ruleset_id":rule.data.get("core_ruleset_id"),
+            "core_source_rule_id":rule.data.get("source_rule_id"),
+            "death_age_rng":bool(rule.data.get("death_age_rng")),
+        }
+        if later_ages:
+            payload["death_window_end"]=int(birth)+later_ages[0]-1
+        roll = Record(save_id=save.id, kind="roll", label=f"{sim.label} — {rule.label}", global_day=due, data=payload)
+        session.add(roll); session.flush(); journal(session, roll, "upsert", 0); created += 1
+    return created
+
+
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     if not automation_enabled(save):
         return 0
@@ -4072,61 +4135,7 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     save.revision += retire_dead_sim_rolls(session, save, sims)
     created = 0
     for sim in sims:
-        birth = sim.data.get("birth_global_day", sim.global_day)
-        death = sim.data.get("death_global_day")
-        if bool((sim.data or {}).get("game_was_dead")) or (death is not None and int(death) <= save.global_day): continue
-        # Servos use the dedicated mechanical-failure table instead of ordinary
-        # birth, aging, illness and pregnancy mortality.
-        if "Servo" in occult_rules.sim_occult_types(sim.data): continue
-        if birth is None: continue
-        for rule in rules:
-            if not rule.data.get("active", True): continue
-            configured_age = rule.data.get("age_days")
-            if configured_age in (None, ""):
-                configured_age = AGING_STAGE_OFFSETS.get(rule.label.strip().casefold())
-            # Maternal and other event-driven rules are not lifecycle milestones.
-            if configured_age is None: continue
-            if int(configured_age) == 0 and sim.data.get("newborn_rolls_required") is False:
-                continue
-            due = int(birth) + int(configured_age)
-            due_year = save.start_year + (due - 1) // max(1, save.days_per_year)
-            if not int(rule.data.get("start_year", -9999)) <= due_year <= int(rule.data.get("end_year", 9999)):
-                continue
-            if due < 1 or (death is not None and due >= int(death)): continue
-            source = f"aging:{sim.id}:{rule.id}"
-            # Imported 3.x rolls do not have the 4.0 scheduler source token. Match
-            # their stable identity too, otherwise every app start can create a
-            # second copy of a roll the player may already have completed.
-            exists = session.scalar(select(Record.id).where(
-                Record.save_id == save.id,
-                Record.kind == "roll",
-                Record.deleted.is_(False),
-                (Record.data["source"].as_string() == source) |
-                (
-                    (Record.data["sim_id"].as_string() == sim.id) &
-                    (Record.data["roll_type"].as_string() == rule.label) &
-                    (Record.global_day == due)
-                ),
-            ).limit(1))
-            if exists: continue
-            later_ages = sorted(
-                int(item.data.get("age_days")) for item in rules
-                if item.id != rule.id and item.data.get("age_days") not in (None, "")
-                and int(item.data.get("age_days")) > int(configured_age)
-                and str(item.data.get("core_ruleset_id") or "") == str(rule.data.get("core_ruleset_id") or "")
-                and int(item.data.get("start_year", -9999)) <= due_year <= int(item.data.get("end_year", 9999))
-            )
-            payload={
-                "sim_id": sim.id, "roll_type": rule.label, "die": rule.data.get("die"),
-                "bad_results": rule.data.get("bad_results"), "source": source,
-                "due_global_day": due, "completed": False,
-                "core_ruleset_id":rule.data.get("core_ruleset_id"),
-                "core_source_rule_id":rule.data.get("source_rule_id"),
-                "death_age_rng":bool(rule.data.get("death_age_rng")),
-            }
-            if later_ages: payload["death_window_end"]=int(birth)+later_ages[0]-1
-            roll = Record(save_id=save.id, kind="roll", label=f"{sim.label} — {rule.label}", global_day=due, data=payload)
-            session.add(roll); session.flush(); journal(session, roll, "upsert", 0); created += 1
+        created += _schedule_sim_lifecycle_rolls(session, save, sim, rules)
     if (save.settings or {}).get("maternal_rolls_enabled", True):
         maternal_rules = [rule for rule in rules if "maternal" in rule.label.casefold() and rule.data.get("active", True)]
         pregnancies = list(session.scalars(select(Record).where(
@@ -4191,6 +4200,57 @@ def failed(actual: int, bad_results: str) -> bool:
     singles = re.sub(range_pattern, " ", text)
     if actual in (int(value) for value in re.findall(r"-?\d+", singles)): return True
     return False
+
+
+def prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record) -> list[Record]:
+    """Return unfinished aging checks the Sim has already lived through."""
+    if sim.kind != "sim" or sim.deleted:
+        return []
+    birth = sim.data.get("birth_global_day", sim.global_day)
+    if birth is None:
+        return []
+    death = sim.data.get("death_global_day")
+    lived_through = min(save.global_day, int(death)) if death is not None else save.global_day
+    rows = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["sim_id"].as_string() == sim.id,
+        Record.data["completed"].as_boolean().is_not(True),
+        Record.global_day <= lived_through,
+    ).order_by(Record.global_day, Record.created_at)))
+    return [
+        roll for roll in rows
+        if str((roll.data or {}).get("source") or "").startswith("aging:")
+        and not bool((roll.data or {}).get("death_age_rng"))
+    ]
+
+
+def pass_prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record) -> dict:
+    """Record safe passing results for every earlier life-stage check."""
+    # This is an explicit player action, so it remains useful even while the
+    # save-wide automatic scheduling switch is paused.
+    rules = [item for item in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False)
+    )) if core_rulesets.applies_to_selected_core(save, item)]
+    created = _schedule_sim_lifecycle_rolls(session, save, sim, rules)
+    save.revision += created
+    passed = skipped = 0
+    for roll in prior_lifecycle_rolls(session, save, sim):
+        data = dict(roll.data or {})
+        match = re.search(r"(?:^|\b)d\s*(\d+)(?:\b|$)", str(data.get("die") or ""), re.IGNORECASE)
+        faces = int(match.group(1)) if match else 20
+        safe = next((actual for actual in range(1, max(1, faces) + 1)
+                     if not failed(actual, str(data.get("bad_results") or ""))), None)
+        if safe is None:
+            skipped += 1
+            continue
+        roll.data = {
+            **data, "age_stage_catch_up": True,
+            "age_stage_catch_up_global_day": save.global_day,
+            "age_stage_catch_up_reason": "Sim was added after this life stage",
+        }
+        complete_roll(session, save, roll, safe, "Passed automatically — prior life stage")
+        passed += 1
+    return {"passed": passed, "skipped": skipped}
 
 
 def _event_death_cause(session: Session, roll: Record) -> str | None:

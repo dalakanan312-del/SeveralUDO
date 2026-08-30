@@ -54,6 +54,18 @@ _NON_ACTIVE_WORDS = (
     "pills taken", "death by", "dying from", "suppression", "suppressor",
 )
 
+# Words such as "cold" and "buff" also appear in ordinary temperature,
+# clothing, personality, and interaction tuning.  These phrases are never
+# medical evidence, even when an older Clock Sync build placed them in the
+# illness payload.
+_NON_ILLNESS_CONTEXTS = (
+    "being cold", "feeling cold", "feels cold", "is cold", "cold clothing",
+    "cold weather", "cold temperature", "temperature cold", "cold outfit",
+    "cold weather outfit", "cold resistance", "cold resistant", "freezing",
+    "chilled", "choose painting style", "painting style", "macabre",
+    "has current illness", "current illness marker",
+)
+
 _ILLNESS_ALIASES = (
     (("urinary tract infection", "urinarytractinfection", "uti buff", "uti trait"), "Urinary Tract Infection"),
     (("yeast infection", "yeastinfection"), "Yeast Infection"),
@@ -125,13 +137,46 @@ def canonical_illness_name(value: str) -> str:
     raw = " ".join(str(value or "").replace("_", " ").replace("-", " ").split()).strip()
     folded = raw.casefold()
     compact = re.sub(r"[^a-z0-9]+", "", folded)
-    if not raw or any(word.replace(" ", "") in compact for word in _NON_ACTIVE_WORDS):
+    if (not raw or false_illness_marker(raw)
+            or any(word.replace(" ", "") in compact for word in _NON_ACTIVE_WORDS)):
         return ""
     for aliases, canonical in _ILLNESS_ALIASES:
         for alias in aliases:
             alias_folded = alias.casefold()
             if alias_folded in folded or re.sub(r"[^a-z0-9]+", "", alias_folded) in compact:
                 return canonical
+    return ""
+
+
+def false_illness_marker(value: str) -> bool:
+    """Reject nonmedical tuning that happens to contain a disease word."""
+    raw = " ".join(str(value or "").replace("_", " ").replace("-", " ").split()).casefold()
+    compact = re.sub(r"[^a-z0-9]+", "", raw)
+    return bool(raw and any(
+        marker in raw or re.sub(r"[^a-z0-9]+", "", marker) in compact
+        for marker in _NON_ILLNESS_CONTEXTS
+    ))
+
+
+def confirmed_illness_name(value: str) -> str:
+    """Return a disease name only when the label contains medical evidence.
+
+    Known aliases are canonicalized.  New/custom names are accepted only when
+    they contain an explicit disease term, so traits such as Macabre and
+    ordinary activity buffs cannot become illness episodes.
+    """
+    raw = " ".join(str(value or "").replace("_", " ").replace("-", " ").split()).strip()
+    if not raw or false_illness_marker(raw) or inactive_health_marker(raw):
+        return ""
+    canonical = canonical_illness_name(raw)
+    if canonical:
+        return canonical
+    folded = raw.casefold()
+    for marker in _ILLNESS_WORDS:
+        if re.search(rf"(?<![a-z0-9]){re.escape(marker.casefold())}(?![a-z0-9])", folded):
+            return raw
+    if re.search(r"\b(?:illness|disease|infection|syndrome|fever)\b", folded):
+        return raw
     return ""
 
 
@@ -771,12 +816,11 @@ def illness_name_from_localized_label(label: str, localizations: dict[int, str] 
     labels = localizations if localizations is not None else healthcare_localizations()
     name = _healthcare_trait_name(label, labels)
     folded = name.casefold()
-    if not name or any(word in folded for word in _NON_ACTIVE_WORDS):
+    if not name or false_illness_marker(name) or any(word in folded for word in _NON_ACTIVE_WORDS):
         return None
-    canonical = canonical_illness_name(name)
-    if not canonical and not any(word in folded for word in _ILLNESS_WORDS):
+    canonical = confirmed_illness_name(name)
+    if not canonical:
         return None
-    canonical = canonical or name
     stable_key = re.sub(r"[^a-z0-9]+", "-", canonical.casefold()).strip("-")
     return stable_key, canonical
 
@@ -838,8 +882,8 @@ def unclassified_health_traits(snapshot: dict, localizations: dict[int, str] | N
         folded = readable.casefold()
         match = _HASH_LABEL.match(source)
         belongs_to_health_package = bool(match and int(match.group(1)) in labels) or folded in known_values
-        illness_like = any(word in folded for word in _ILLNESS_WORDS)
-        if not (belongs_to_health_package or illness_like) or not readable or any(word in folded for word in _NON_ACTIVE_WORDS):
+        illness_like = bool(confirmed_illness_name(readable))
+        if not (belongs_to_health_package and illness_like) or not readable or any(word in folded for word in _NON_ACTIVE_WORDS):
             continue
         if readable.startswith("Unidentified custom trait"):
             continue
@@ -876,12 +920,19 @@ def enrich_illness_snapshot(snapshot: dict, signatures: list[dict] | None = None
         searchable = " ".join((
             name, str(item.get("source_key") or ""), str(item.get("provider") or ""),
         )).casefold()
-        if not name or inactive_health_marker(searchable):
+        custom_signature = "custom-signature:" in str(item.get("source_key") or "").casefold()
+        if not name or false_illness_marker(searchable) or inactive_health_marker(searchable):
             continue
         canonical = canonical_illness_name(searchable)
         if canonical:
             item = {**item, "raw_name": item.get("raw_name") or name, "name": canonical}
             name = canonical
+        elif not custom_signature:
+            confirmed = confirmed_illness_name(name)
+            if not confirmed:
+                continue
+            item = {**item, "name": confirmed}
+            name = confirmed
         key = str(item.get("source_key") or item.get("name") or "").casefold()
         if key:
             merged[key] = item

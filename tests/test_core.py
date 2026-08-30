@@ -27,8 +27,8 @@ from app.clock import _game_illnesses, _store_game_portrait, attach_game_identit
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pregnancy_count_result, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
-from app.game_metadata import _refpack_decompress, bundled_localizations, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
+from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.game_metadata import _refpack_decompress, bundled_localizations, confirmed_illness_name, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
 from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Portrait, Record, User, Workspace
@@ -1420,7 +1420,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.4.9")
+            self.assertEqual(health.json()["version"], "4.5.0")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1585,7 +1585,7 @@ class CoreSmokeTests(unittest.TestCase):
             ping = client.get("/api/clock/ping", headers={"Authorization": f"Bearer {private_config['sync_token']}"})
             self.assertEqual(ping.status_code, 200)
             self.assertTrue(ping.json()["ok"])
-            self.assertEqual(ping.json()["clock_sync_version"], "2.2.7")
+            self.assertEqual(ping.json()["clock_sync_version"], "2.2.8")
             private_report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {private_config['sync_token']}"}, json={"game_day": 60, "hour": 12, "minute": 0, "household_members": []})
             self.assertEqual(private_report.status_code, 200)
             clock_link = client.post("/api/clock/links").json()
@@ -2797,7 +2797,7 @@ class CoreSmokeTests(unittest.TestCase):
                 sim=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="sim",Record.data["game_sim_id"].as_string()==marker))
                 illness=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="illness",Record.data["sim_id"].as_string()==sim.id))
                 actions={item.data["action"] for item in session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="game_candidate",Record.data["status"].as_string()=="pending"))}
-                self.assertEqual(illness.data["illness_name"],"Malaria")
+                self.assertIsNone(illness)
                 self.assertTrue({"sim_death","pregnancy_discovered","relationship_change","illness_detected"}.issubset(actions))
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
@@ -2811,10 +2811,13 @@ class CoreSmokeTests(unittest.TestCase):
                 detected = {"illness_scan_supported": True, "illnesses": [{"source_key": "base:flu", "name": "Llama Flu", "provider": "buff"}]}
                 self.assertEqual(_game_illnesses(session, save, sim, detected), (1, 0))
                 self.assertEqual(_game_illnesses(session, save, sim, detected), (0, 0))
+                self.assertIsNone(session.scalar(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="illness",Record.data["sim_id"].as_string()==sim.id,
+                )))
                 self.assertEqual(_game_illnesses(session, save, sim, {"illness_scan_supported": True, "illnesses": []}), (0, 0))
                 self.assertEqual(_game_illnesses(session, save, sim, {"illness_scan_supported": True, "illnesses": []}), (0, 0))
                 save.global_day += 1
-                self.assertEqual(_game_illnesses(session, save, sim, {"illness_scan_supported": True, "illnesses": []}), (0, 1))
+                self.assertEqual(_game_illnesses(session, save, sim, {"illness_scan_supported": True, "illnesses": []}), (0, 0))
                 session.rollback()
 
     def test_game_illnesses_deduplicate_sources_and_ignore_uncertain_recovery(self):
@@ -2884,16 +2887,18 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(_game_illnesses(session,save,sim,snapshot),(0,0))
                 illness=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="illness"))
                 detected=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.data["action"].as_string()=="illness_detected")))
+                self.assertIsNone(illness)
                 self.assertEqual(len(detected),1)
-                session.commit();save_id,sim_id,illness_id,candidate_id,original_id=save.id,sim.id,illness.id,detected[0].id,original.id
+                session.commit();save_id,sim_id,candidate_id,original_id=save.id,sim.id,detected[0].id,original.id
             client.post("/saves/select",data={"save_id":save_id},follow_redirects=False)
             inbox=client.get("/p/automation")
             self.assertEqual(inbox.status_code,200);self.assertIn(f"Clock Flu {marker}",inbox.text)
-            self.assertIn("A new illness episode was recorded automatically",inbox.text)
+            self.assertIn("Nothing has been added to the health ledger yet",inbox.text)
             accepted=client.post(f"/automation/{candidate_id}/accept",data={"illness_name":f"Reviewed Flu {marker}","onset_global_day":"30","severity":"Moderate","status":"Active","contagious":"on"},follow_redirects=False)
             self.assertEqual(accepted.status_code,303)
             with SessionLocal() as session:
-                illness=session.get(Record,illness_id)
+                illness=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="illness",Record.data["sim_id"].as_string()==sim_id))
+                illness_id=illness.id
                 self.assertEqual(illness.data["illness_name"],f"Reviewed Flu {marker}");self.assertEqual(illness.data["onset_global_day"],30)
                 self.assertEqual(illness.data["severity"],"Moderate");self.assertTrue(illness.data["contagious"])
                 save=session.get(ChronicleSave,save_id);sim=session.get(Record,sim_id)
@@ -2911,6 +2916,69 @@ class CoreSmokeTests(unittest.TestCase):
             client.post("/saves/select",data={"save_id":original_id},follow_redirects=False)
             with SessionLocal() as session:
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_dismissed_illness_detection_is_not_added_or_recreated(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                original=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=original.workspace_id,name=f"Dismiss illness {marker}",global_day=24)
+                session.add(save);session.flush()
+                sim=Record(save_id=save.id,kind="sim",label=f"Dismiss Patient {marker}",data={"game_sim_id":f"dismiss-{marker}"})
+                session.add(sim);session.flush()
+                snapshot={"illness_scan_supported":True,"illnesses":[{"source_key":f"hcr:malaria:{marker}","name":"Malaria"}]}
+                self.assertEqual(_game_illnesses(session,save,sim,snapshot),(1,0))
+                candidate=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate"))
+                session.commit();save_id,sim_id,candidate_id,original_id=save.id,sim.id,candidate.id,original.id
+            client.post("/saves/select",data={"save_id":save_id},follow_redirects=False)
+            response=client.post(f"/automation/{candidate_id}/dismiss",follow_redirects=False)
+            self.assertEqual(response.status_code,303)
+            with SessionLocal() as session:
+                save=session.get(ChronicleSave,save_id);sim=session.get(Record,sim_id)
+                self.assertIsNone(session.scalar(select(Record).where(
+                    Record.save_id==save_id,Record.kind=="illness",Record.data["sim_id"].as_string()==sim_id,
+                )))
+                self.assertIsNotNone(session.scalar(select(Record).where(
+                    Record.save_id==save_id,Record.kind=="illness_suppression",Record.data["sim_id"].as_string()==sim_id,
+                )))
+                self.assertEqual(_game_illnesses(session,save,sim,snapshot),(0,0))
+                self.assertEqual(session.scalar(select(func.count()).select_from(Record).where(
+                    Record.save_id==save_id,Record.kind=="game_candidate",
+                )),1)
+                session.rollback()
+            client.post("/saves/select",data={"save_id":original_id},follow_redirects=False)
+            with SessionLocal() as session:
+                session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_nonmedical_cold_personality_and_activity_markers_are_not_illnesses(self):
+        snapshot=enrich_illness_snapshot({"illness_scan_supported":True,"illnesses":[
+            {"source_key":"buff:being-cold","name":"Being Cold"},
+            {"source_key":"trait:cold-clothing","name":"Cold Clothing"},
+            {"source_key":"trait:macabre","name":"Macabre"},
+            {"source_key":"buff:choose-painting-style","name":"Choose Painting Style Buff"},
+            {"source_key":"buff:common-cold","name":"Common Cold"},
+        ]})
+        self.assertEqual([item["name"] for item in snapshot["illnesses"]],["Cold"])
+        for value in ("Being Cold","Cold Clothing","Macabre","Choose Painting Style Buff","Has Current Illness"):
+            self.assertEqual(confirmed_illness_name(value),"")
+
+    def test_prior_life_stage_button_creates_and_passes_checks_even_when_automation_paused(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                original=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=original.workspace_id,name="Life-stage catch-up",global_day=100,start_year=1300,days_per_year=4,settings={"automation_enabled":False})
+                session.add(save);session.flush();seed_defaults(session,save)
+                sim=Record(save_id=save.id,kind="sim",label="Imported Young Adult",global_day=1,data={"birth_global_day":1})
+                session.add(sim);session.flush()
+                result=pass_prior_lifecycle_rolls(session,save,sim)
+                self.assertEqual(result,{"passed":8,"skipped":0})
+                rolls=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="roll",Record.data["sim_id"].as_string()==sim.id,
+                )))
+                self.assertEqual(len([roll for roll in rolls if (roll.data or {}).get("age_stage_catch_up")]),8)
+                self.assertTrue(all((roll.data or {}).get("completed") for roll in rolls if str((roll.data or {}).get("source") or "").startswith("aging:") and (roll.global_day or 0)<=save.global_day))
+                self.assertTrue(all(not (roll.data or {}).get("failed") for roll in rolls if (roll.data or {}).get("age_stage_catch_up")))
+                session.rollback()
 
     def test_healthcare_trait_hashes_detect_disease_but_not_immunization(self):
         localizations = {1:"Pneumonia",2:"Meningitis Immunization",3:"Has Current Illness",4:"Malaria",5:"Influenza"}
@@ -3838,12 +3906,14 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             with SessionLocal() as session:
                 save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
-                sim=Record(save_id=save.id,kind="sim",label="Visible Telemetry",data={"first_name":"Visible","last_name":"Telemetry","game_traits":["Bookworm"],"game_skills":["Logic (level 5)"],"game_milestones":["Learned to Walk"]})
+                sim=Record(save_id=save.id,kind="sim",label="Visible Telemetry",data={"first_name":"Visible","last_name":"Telemetry","death_global_day":1,"game_traits":["Bookworm"],"game_skills":["Logic (level 5)"],"game_milestones":["Learned to Walk"]})
                 session.add(sim);session.commit();sim_id=sim.id
             page=client.get(f"/sims/{sim_id}")
             self.assertEqual(page.status_code,200)
             self.assertIn("Bookworm",page.text);self.assertIn("Logic (level 5)",page.text);self.assertIn("Learned to Walk",page.text)
             self.assertIn("LIFE AT A GLANCE",page.text);self.assertIn("Family connections",page.text);self.assertIn("Health & family planning",page.text);self.assertIn("PROFILE EDITOR",page.text)
+            self.assertIn('dossier-portrait deceased-portrait',page.text)
+            self.assertIn('deceased-portrait',client.get("/p/sims").text)
             for field in ("first_name","birth_global_day","mother_id","household_id","game_traits","game_skills","game_milestones","notes"):
                 self.assertIn(f'name="{field}"',page.text)
             with SessionLocal() as session:

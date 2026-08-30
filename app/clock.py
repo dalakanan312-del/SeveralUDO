@@ -377,14 +377,18 @@ def _update_clock_diagnostic(session: Session, save: ChronicleSave, members: lis
     return True
 
 
-def _illness_review_candidate(session: Session, save: ChronicleSave, sim: Record, illness: Record,
+def _illness_review_candidate(session: Session, save: ChronicleSave, sim: Record, illness: Record | None,
                               action: str, payload: dict, candidate_sink: list[Record] | None = None) -> Record | None:
-    label = (f"Illness detected: {sim.label} — {payload.get('illness_name') or illness.label}"
+    illness_label = payload.get("illness_name") or (illness.label if illness else "Possible illness")
+    label = (f"Illness detected: {sim.label} — {illness_label}"
              if action == "illness_detected" else
-             f"Recovery detected: {sim.label} — {payload.get('illness_name') or illness.label}")
-    identity = illness.id
+             f"Recovery detected: {sim.label} — {illness_label}")
+    # Detection identity must survive a dismissal and a later game report.  An
+    # illness record ID is random and previously allowed dismissed conditions
+    # to be recreated under a new ID.
+    identity = str(payload.get("detection_identity") or _illness_identity(illness_label))
     if action == "illness_recovered":
-        identity = f"{illness.id}:{payload.get('recovery_detection_sequence') or payload.get('recovery_global_day')}"
+        identity = f"{illness.id if illness else identity}:{payload.get('recovery_detection_sequence') or payload.get('recovery_global_day')}"
     item = automation.candidate(session, save, action, sim, label, payload, identity)
     if item:
         if candidate_sink is not None:
@@ -398,6 +402,66 @@ def _illness_identity(value: str) -> str:
     text = " ".join(str(value or "").replace("_", " ").replace("-", " ").split()).strip()
     canonical = game_metadata.canonical_illness_name(text) or text
     return re.sub(r"[^a-z0-9]+", "-", canonical.casefold()).strip("-")
+
+
+def illness_detection_identity(value: str) -> str:
+    """Public stable key used by Automation Inbox dismissal controls."""
+    return _illness_identity(value)
+
+
+def _suppressed_illness_identities(session: Session, save: ChronicleSave, sim: Record) -> tuple[set[str], set[str]]:
+    identities: set[str] = set()
+    source_keys: set[str] = set()
+    for row in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "illness_suppression", Record.deleted.is_(False),
+        Record.data["sim_id"].as_string() == sim.id,
+    )):
+        data = row.data or {}
+        if data.get("active", True) is False:
+            continue
+        identity = str(data.get("illness_identity") or "").casefold().strip()
+        if identity:
+            identities.add(identity)
+        source_keys.update(str(value).casefold().strip() for value in data.get("source_keys") or [] if value)
+    return identities, source_keys
+
+
+def _false_automatic_illness(record: Record) -> bool:
+    data = record.data or {}
+    if not _game_managed_illness(record):
+        return False
+    marker = " ".join((
+        str(data.get("illness_name") or record.label),
+        str(data.get("source_key") or ""),
+        " ".join(str(value) for value in data.get("game_source_keys") or []),
+        json.dumps(data.get("health_buffs") or [], ensure_ascii=False, default=str),
+    ))
+    if game_metadata.false_illness_marker(marker):
+        return True
+    custom = "custom-signature:" in marker.casefold()
+    return not custom and not bool(game_metadata.confirmed_illness_name(marker))
+
+
+def _retire_false_automatic_illness(session: Session, save: ChronicleSave, record: Record) -> None:
+    base = record.version
+    record.deleted = True
+    record.data = {
+        **(record.data or {}), "false_detection_repair": True,
+        "retired_reason": "Nonmedical game trait or buff", "retired_global_day": save.global_day,
+    }
+    record.version += 1
+    journal(session, record, "delete", base)
+    for review in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "game_candidate", Record.deleted.is_(False),
+        Record.data["payload"]["illness_record_id"].as_string() == record.id,
+        Record.data["status"].as_string() == "pending",
+    )):
+        review_base = review.version
+        review.data = {**(review.data or {}), "status": "dismissed", "dismissed_reason": "Nonmedical game trait or buff"}
+        review.version += 1
+        journal(session, review, "upsert", review_base)
+        save.revision += 1
+    save.revision += 1
 
 
 def _record_illness_identity(record: Record) -> str:
@@ -483,6 +547,7 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
     """
     if not snapshot.get("illness_scan_supported", False):
         return 0, 0
+    suppressed_identities, suppressed_source_keys = _suppressed_illness_identities(session, save, sim)
     incoming: dict[str, dict] = {}
     for item in snapshot.get("illnesses") or []:
         if not isinstance(item, dict):
@@ -490,13 +555,20 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
         name = str(item.get("name") or "").strip()
         key = str(item.get("source_key") or name).strip().casefold()
         searchable = " ".join((name, key, str(item.get("provider") or "")))
-        if not name or not key or game_metadata.inactive_health_marker(searchable):
+        custom_signature = "custom-signature:" in key
+        if (not name or not key or game_metadata.false_illness_marker(searchable)
+                or game_metadata.inactive_health_marker(searchable)):
             continue
         canonical = game_metadata.canonical_illness_name(searchable)
         if canonical:
             name = canonical
+        elif not custom_signature:
+            confirmed = game_metadata.confirmed_illness_name(name)
+            if not confirmed:
+                continue
+            name = confirmed
         identity = _illness_identity(name)
-        if not identity:
+        if not identity or identity in suppressed_identities or key in suppressed_source_keys:
             continue
         prior = incoming.get(identity)
         source_keys = list(dict.fromkeys((prior or {}).get("source_keys", []) + [key]))
@@ -515,6 +587,10 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
         Record.save_id == save.id, Record.kind == "illness", Record.deleted.is_(False),
         Record.data["sim_id"].as_string() == sim.id,
     )))
+    for record in tracked:
+        if _false_automatic_illness(record):
+            _retire_false_automatic_illness(session, save, record)
+    tracked = [record for record in tracked if not record.deleted]
     active_by_identity: dict[str, list[Record]] = {}
     for record in tracked:
         if str((record.data or {}).get("status") or "active").casefold() in CLOSED_ILLNESSES:
@@ -588,15 +664,18 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
                 }
                 if data["onset_game_hour"] is not None and data["onset_game_minute"] is not None:
                     data["onset_game_time"] = f"{int(data['onset_game_hour']):02d}:{int(data['onset_game_minute']):02d}:{int(data['onset_game_second'] or 0):02d}"
-                record = Record(save_id=save.id, kind="illness", label=f"{sim.label} — {item['name']}", global_day=save.global_day, data=data)
-                session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
-                _illness_review_candidate(session, save, sim, record, "illness_detected", {
-                    **data, "illness_record_id": record.id,
+                candidate = _illness_review_candidate(session, save, sim, None, "illness_detected", {
+                    **data, "detection_identity": identity,
                     "detected_tracker_global_day": save.global_day,
                     "detected_game_hour": snapshot.get("detected_game_hour"),
                     "detected_game_minute": snapshot.get("detected_game_minute"),
                     "detected_game_second": snapshot.get("detected_game_second"),
                 }, candidate_sink)
+                if candidate:
+                    created += 1
+                # A detected illness does not enter the health ledger until the
+                # player accepts its reviewed Automation Inbox details.
+                continue
         old = dict(record.data or {})
         game_source_keys = list(dict.fromkeys(
             list(old.get("game_source_keys") or []) + list(item.get("source_keys") or [])
@@ -609,6 +688,7 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
             "automatic_detection": True, "game_source_keys": game_source_keys,
             "last_detected_global_day": save.global_day,
             "missing_scan_global_days": [], "recovery_pending": False,
+            "recovery_review_pending": False, "recovery_review_suppressed": False,
             "symptoms": item.get("symptoms") or snapshot.get("symptoms") or old.get("symptoms") or [],
             "health_buffs": item.get("health_buffs") or snapshot.get("health_buffs") or old.get("health_buffs") or [],
         }
@@ -644,6 +724,8 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
             data = dict(record.data or {})
             if str(data.get("status") or "active").casefold() == "chronic":
                 continue
+            if bool(data.get("recovery_review_pending")) or bool(data.get("recovery_review_suppressed")):
+                continue
             missing_days = []
             for value in data.get("missing_scan_global_days") or []:
                 try:
@@ -664,23 +746,25 @@ def _game_illnesses(session: Session, save: ChronicleSave, sim: Record, snapshot
                 record.data = data; record.version += 1; journal(session, record, "upsert", base)
                 save.revision += 1
                 continue
-            data.update({"status": "Recovered", "end_global_day": save.global_day,
-                         "outcome": "No longer detected in game", "recovery_pending": False,
-                         "auto_recovery_confirmed": True,
+            data.update({"recovery_pending": False, "recovery_review_pending": True,
+                         "auto_recovery_confirmed": False,
                          "recovery_detection_sequence": int(data.get("recovery_detection_sequence") or 0) + 1,
                          "recovery_game_hour": snapshot.get("detected_game_hour"),
                          "recovery_game_minute": snapshot.get("detected_game_minute"),
                          "recovery_game_second": snapshot.get("detected_game_second")})
             if data["recovery_game_hour"] is not None and data["recovery_game_minute"] is not None:
                 data["recovery_game_time"] = f"{int(data['recovery_game_hour']):02d}:{int(data['recovery_game_minute']):02d}:{int(data['recovery_game_second'] or 0):02d}"
-            record.data = data; record.version += 1; journal(session, record, "upsert", base); ended += 1
-            _illness_review_candidate(session, save, sim, record, "illness_recovered", {
-                **data, "illness_record_id": record.id, "recovery_global_day": save.global_day,
+            record.data = data; record.version += 1; journal(session, record, "upsert", base)
+            candidate = _illness_review_candidate(session, save, sim, record, "illness_recovered", {
+                **data, "status": "Recovered", "outcome": "No longer detected in game",
+                "illness_record_id": record.id, "recovery_global_day": save.global_day,
                 "detected_tracker_global_day": save.global_day,
                 "detected_game_hour": snapshot.get("detected_game_hour"),
                 "detected_game_minute": snapshot.get("detected_game_minute"),
                 "detected_game_second": snapshot.get("detected_game_second"),
             }, candidate_sink)
+            if candidate:
+                ended += 1
     return created, ended
 
 
@@ -1202,8 +1286,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
                 notifications.candidate_event(session,save,item)
             candidates.extend(changes)
             journal_entries.extend(enriched.get("_history_entries") or [])
-            if created: journal_entries.append(f"{existing.label} became ill.")
-            if ended: journal_entries.append(f"{existing.label} recovered from an illness.")
+            if created: journal_entries.append(f"A possible illness for {existing.label} is waiting for review.")
+            if ended: journal_entries.append(f"A possible recovery for {existing.label} is waiting for review.")
             journal_entries.extend(item.label + "." for item in changes)
     if households_created:
         verb = "were" if households_created != 1 else "was"

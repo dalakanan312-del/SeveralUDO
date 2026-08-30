@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.7 reliable, queued life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.8 reliable, queued life-history telemetry for The Sims 4."""
 
 import base64
 import hashlib
@@ -12,7 +12,7 @@ import time
 from . import compat_201 as _compat
 
 
-VERSION = "2.2.7"
+VERSION = "2.2.8"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -503,6 +503,30 @@ def _relationship_category(bits, fallback="Relationship"):
     return fallback or "Relationship"
 
 
+def _scandal_signals(bits):
+    """Return evidence labels, never a final judgment about a Sim.
+
+    Relationship tuning names are the most reliable scandal-adjacent state the
+    game exposes without depending on another mod.  The tracker presents these
+    signals for review so an ordinary enemy or historical divorce is not
+    silently turned into a scandal.
+    """
+    text = " ".join(str(value or "") for value in bits).casefold()
+    rules = (
+        ("infidelity", "Possible infidelity", ("cheat", "affair", "unfaithful", "caught cheating")),
+        ("secret_romance", "Possible secret romance", ("secret romance", "hidden romance", "secret lover")),
+        ("separation", "Separation or divorce", ("divorc", "breakup", "break up", "ex spouse", "ex_spouse")),
+        ("public_feud", "Possible public feud", ("declared enemy", "nemesis", "despised", "enemy")),
+        ("betrayal", "Possible betrayal", ("betray", "backstab", "hurt sentiment")),
+    )
+    signals = []
+    for key, label, markers in rules:
+        matched = [marker for marker in markers if marker in text]
+        if matched:
+            signals.append({"type": key, "label": label, "evidence": matched[0], "review_required": True})
+    return signals
+
+
 def _relationship_details(sim_info, existing):
     tracker = getattr(sim_info, "relationship_tracker", None)
     if tracker is None:
@@ -553,9 +577,71 @@ def _relationship_details(sim_info, existing):
             "relationship_bit_details": bit_details,
             "friendship_score": friendship,
             "romance_score": romance,
+            "scandal_signals": _scandal_signals(bit_labels),
         })
     rows = sorted(by_id.values(), key=lambda row: (str(row.get("category") or ""), str(row.get("name") or "")))
     return {"relationships": rows, "relationship_scan_supported": True}, True
+
+
+def _inventory_object_row(value, scope):
+    definition = _safe_value(value, ("definition", "object_definition", "tuning"), None) or value
+    name = _humanize(definition, ("object_", "object ")) or _humanize(value, ("object_", "object "))
+    definition_id = _tuning_id(definition) or _tuning_id(value)
+    if not name and not definition_id:
+        return None
+    stack_count = _plain_number(_safe_value(value, ("stack_count", "count", "quantity"), None))
+    value_amount = _plain_number(_safe_value(value, ("current_value", "value", "price"), None))
+    return {
+        "name": name or "Inventory object {}".format(definition_id),
+        "definition_id": str(definition_id or ""),
+        "stack_count": stack_count if stack_count is not None else 1,
+        "value": value_amount,
+        "scope": scope,
+    }
+
+
+def _inventory_details(sim_info, household):
+    """Read only inventory metadata exposed by the current game build.
+
+    Object contents are pack- and component-dependent. An unavailable scan is
+    explicitly reported as unsupported so the tracker never erases a manual
+    heirloom or claims that an object disappeared.
+    """
+    sim_instance = _safe_call(sim_info, "get_sim_instance")
+    sources = []
+    for scope, owner in (
+        ("personal", sim_info), ("personal", sim_instance), ("household", household),
+    ):
+        if owner is None:
+            continue
+        for attr in ("inventory_component", "inventory", "household_inventory"):
+            component = getattr(owner, attr, None)
+            if component is not None and all(component is not row[1] for row in sources):
+                sources.append((scope, component))
+    rows = []
+    seen = set()
+    for scope, source in sources:
+        values = _read(source, ("items", "objects", "inventory_items", "_objects", "__iter__"), mapping_keys=False)
+        if not values:
+            try:
+                values = tuple(source)
+            except Exception:
+                values = ()
+        for value in values:
+            row = _inventory_object_row(value, scope)
+            if not row:
+                continue
+            key = (row["scope"], row["definition_id"] or row["name"].casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+            if len(rows) >= 100:
+                break
+        if len(rows) >= 100:
+            break
+    rows.sort(key=lambda row: (row["scope"], row["name"].casefold()))
+    return {"inventory_items": rows, "inventory_scan_supported": bool(sources)}, bool(sources)
 
 
 _HEALTH_WORDS = (
@@ -646,6 +732,14 @@ _INACTIVE_HEALTH_MARKERS = (
     "management", "coretrait", "undetected", "unknown", "undiagnosed",
 )
 
+_NON_ILLNESS_HEALTH_CONTEXTS = (
+    "beingcold", "feelingcold", "feelscold", "coldclothing", "coldweather",
+    "coldtemperature", "temperaturecold", "coldoutfit", "coldweatheroutfit",
+    "coldresistance", "coldresistant", "freezing", "chilled",
+    "choosepaintingstyle", "paintingstyle", "macabre", "hascurrentillness",
+    "currentillnessmarker",
+)
+
 # Healthcare Redux can leave the progression/stage buff active while its
 # disease-specific buff is unavailable.  That state is medically meaningful
 # but must not be guessed as malaria, meningitis or tuberculosis.  Report a
@@ -670,6 +764,8 @@ def _health_condition_name(value, provider=""):
     text = _health_marker_text(value)
     compact = re.sub(r"[^a-z0-9]+", "", text)
     if not compact:
+        return ""
+    if any(marker in compact for marker in _NON_ILLNESS_HEALTH_CONTEXTS):
         return ""
     for aliases, canonical in _PENDING_HEALTH_ALIASES:
         for alias in aliases:
@@ -1115,7 +1211,7 @@ def _environment_diagnostics(capabilities, errors):
         "telemetry_capabilities": capabilities,
         "clock_sync_diagnostics": {
             "version": VERSION,
-            "telemetry_version": 5,
+            "telemetry_version": 6,
             "errors": errors,
             "healthy": not errors,
         },
@@ -1131,7 +1227,7 @@ def _extended_snapshot(sim_info, household):
         "skills_scan_supported": skills_supported,
         "milestones": milestones,
         "milestone_scan_supported": milestones_supported,
-        "telemetry_version": 5,
+        "telemetry_version": 6,
     })
     capabilities = {
         "skills": skills_supported,
@@ -1142,6 +1238,7 @@ def _extended_snapshot(sim_info, household):
         ("pregnancy", lambda: _pregnancy_details(sim_info)),
         ("genealogy", lambda: _genealogy_details(sim_info)),
         ("relationships", lambda: _relationship_details(sim_info, result.get("relationships") or [])),
+        ("inventory", lambda: _inventory_details(sim_info, household)),
         ("health", lambda: _health_details(sim_info)),
         ("responsible_pregnancy", lambda: _responsible_pregnancy_details(sim_info)),
         ("life_stage", lambda: _life_stage_details(sim_info)),
@@ -1434,7 +1531,7 @@ def _protocol_report(game_day, game_hour, game_minute, household_name, members,
     clock_details = _game_time_details()
     report = _json_safe({
         "protocol_version": 2,
-        "telemetry_version": 5,
+        "telemetry_version": 6,
         "clock_sync_version": VERSION,
         "mod_version": VERSION,
         "report_sequence": sequence,

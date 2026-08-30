@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.2.7
+SEVERALUDO CLOCK SYNC 2.2.8
 Complete Windows installation guide
 ===================================
 
@@ -30,7 +30,7 @@ FIRST INSTALLATION - READY-TO-INSTALL PRIVATE KIT
 6. Run Test SeveralUDO Clock Sync.bat. When it passes, double-click Start SeveralUDO Clock Relay.bat. A window may flash and disappear; that is normal because the relay runs hidden.
 7. Start The Sims 4, load a household, enter Live Mode, and let in-game time move for a moment. Changing lots also triggers a fresh report.
 8. Open the tracker Game Clock page. Receiver should show Active and Last game day should stop saying Waiting.
-9. Review new Sims, pregnancy starts and endings, deaths, resurrections, relationships and illnesses in Automation Inbox before accepting them. Skills, milestones, life-stage progress, careers, education, occult progress, aspirations and other safe profile details synchronize directly.
+9. Review new Sims, pregnancy starts and endings, deaths, resurrections, relationships, possible scandals and illnesses in Automation Inbox before accepting them. Skills, milestones, life-stage progress, careers, education, occult progress, aspirations and other safe profile details synchronize directly. When the game exposes object inventories, the tracker can suggest untracked heirlooms and holder changes under Historical Life; it never marks an object as an heirloom without your confirmation.
 
 CLOCK SYNC 2.2 DETAIL
 - The first complete report establishes a played-population baseline. Later unchanged reports are omitted or sent as smaller deltas, with one guarded full population check each game day.

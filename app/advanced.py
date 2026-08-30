@@ -180,7 +180,7 @@ def progress_dashboard(records: Iterable[Record], save: ChronicleSave) -> dict:
 
 def automation_digest(records: Iterable[Record]) -> dict:
     pending = [item for item in records if item.kind == "game_candidate" and not item.deleted and str((item.data or {}).get("status") or "pending") == "pending"]
-    weights = {"sim_death": 100, "new_baby": 95, "pregnancy_outcome": 90, "new_sim": 85, "pregnancy_discovered": 80, "illness_detected": 75, "relationship_change": 60, "household_change": 45, "sim_identity_change": 40, "illness_recovered": 35}
+    weights = {"sim_death": 100, "new_baby": 95, "pregnancy_outcome": 90, "new_sim": 85, "pregnancy_discovered": 80, "illness_detected": 75, "scandal_detected": 70, "relationship_change": 60, "household_change": 45, "sim_identity_change": 40, "illness_recovered": 35}
     groups: dict[str, list[dict]] = defaultdict(list)
     for item in pending:
         data = item.data or {}; payload = data.get("payload") or data

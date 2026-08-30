@@ -72,8 +72,36 @@ class ClockModSourceTests(unittest.TestCase):
         self.assertEqual(result["milestones"], ["First Steps"])
         self.assertTrue(result["skills_scan_supported"])
         self.assertTrue(result["milestone_scan_supported"])
-        self.assertEqual(result["telemetry_version"], 5)
+        self.assertEqual(result["telemetry_version"], 6)
         self.assertEqual(result["stable_tuning_ids"]["skills"]["Logic"], "12345")
+
+    def test_scandal_evidence_and_inventory_are_guarded_telemetry(self):
+        module = self.load_module()
+
+        class RelationshipBit_Caught_Cheating:
+            pass
+
+        class Object_Family_Portrait:
+            guid64 = 44001
+
+        spouse = types.SimpleNamespace(sim_id=33, first_name="Robin", last_name="Doe", gender="Male", age="Adult")
+        relationship_tracker = types.SimpleNamespace(
+            get_target_sim_infos=lambda: (spouse,),
+            get_all_bits=lambda target: (RelationshipBit_Caught_Cheating,),
+            get_friendship_score=lambda target: -20,
+            get_romance_score=lambda target: 40,
+        )
+        portrait = types.SimpleNamespace(definition=Object_Family_Portrait, stack_count=1, current_value=750)
+        sim = types.SimpleNamespace(
+            relationship_tracker=relationship_tracker,
+            inventory_component=types.SimpleNamespace(items=(portrait,)),
+        )
+        result = module._extended_snapshot(sim, None)
+        self.assertEqual(result["relationships"][0]["scandal_signals"][0]["type"], "infidelity")
+        self.assertTrue(result["relationships"][0]["scandal_signals"][0]["review_required"])
+        self.assertTrue(result["inventory_scan_supported"])
+        self.assertEqual(result["inventory_items"][0]["definition_id"], "44001")
+        self.assertEqual(result["inventory_items"][0]["name"], "Family Portrait")
 
     def test_guarded_v4_snapshot_reports_selected_life_history_modules(self):
         module = self.load_module()
@@ -149,8 +177,8 @@ class ClockModSourceTests(unittest.TestCase):
             portrait_bytes=b"portrait" * 20,
         )
         result = module._extended_snapshot(sim, None)
-        self.assertEqual(result["telemetry_version"], 5)
-        self.assertEqual(result["clock_sync_version"], "2.2.7")
+        self.assertEqual(result["telemetry_version"], 6)
+        self.assertEqual(result["clock_sync_version"], "2.2.8")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)

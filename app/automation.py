@@ -73,6 +73,7 @@ _CONSUMED_SIM_TELEMETRY = {
     "child_game_sim_ids", "siblings", "sibling_game_sim_ids", "grandparents",
     "grandparent_game_sim_ids", "grandchildren", "grandchild_game_sim_ids",
     "relationships", "significant_other_game_id", "is_pregnant",
+    "inventory_items",
     "pregnancy_stage", "pregnancy_progress", "pregnancy_progress_percentage",
     "pregnancy_hours_remaining", "is_in_labor", "babies_expected",
     "pregnancy_offspring_count", "offspring_count", "baby_count",
@@ -772,6 +773,8 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         "game_grandchildren": [row for row in (snapshot.get("grandchildren") or []) if isinstance(row, dict)],
         "grandchild_game_sim_ids": [str(value) for value in (snapshot.get("grandchild_game_sim_ids") or []) if value],
         "game_relationships": [row for row in (snapshot.get("relationships") or []) if isinstance(row, dict)],
+        "game_inventory_items": [row for row in (snapshot.get("inventory_items") or []) if isinstance(row, dict)],
+        "game_inventory_scan_supported": snapshot.get("inventory_scan_supported") if "inventory_scan_supported" in snapshot else None,
         "game_health_buffs": [row for row in (snapshot.get("health_buffs") or []) if isinstance(row, dict)],
         "game_symptoms": _detected_list(snapshot.get("symptoms")),
         "game_pregnancy_stage": snapshot.get("pregnancy_stage"),
@@ -845,6 +848,7 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             "personal_development_scan_supported": {"game_aspirations", "game_active_aspiration", "game_completed_aspirations", "game_lifestyles", "game_fears", "game_character_values", "game_preferences"},
             "occult_progress_scan_supported": {"game_occult_progress"},
             "death_scan_supported": {"game_death_type", "game_death_details"},
+            "inventory_scan_supported": {"game_inventory_items"},
         }
         for supported_key, fields in supported_fields.items():
             if snapshot.get(supported_key) is True:
@@ -855,6 +859,8 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         if snapshot.get("milestone_scan_supported") is True:
             clearable.add("game_milestone_details")
         clearable.update({"game_trait_details", "game_degree_details", "game_aspiration_details", "game_stable_tuning_ids"})
+    if telemetry_version >= 6 and snapshot.get("inventory_scan_supported") is True:
+        clearable.update({"game_inventory_items", "game_inventory_scan_supported"})
     updates = {key: value for key, value in telemetry_values.items() if value not in (None, "", []) or key in clearable}
     changed_telemetry = any(data.get(key) != value for key, value in updates.items())
     if changed_telemetry:
@@ -931,6 +937,40 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             }
             item = candidate(session, save, "relationship_change", sim, f"{category.title()} detected for {sim.label}", rel_payload, f"{other}:{category}")
             if item: made.append(item)
+    prior_scandal_keys = set(data.get("game_scandal_signal_keys") or [])
+    scandal_keys = set()
+    for rel in relationships:
+        other = str(rel.get("other_game_sim_id") or "")
+        other_sim = _game_sim(session, save, other)
+        if other_sim and current_game_id and other and current_game_id > other:
+            continue
+        for signal in rel.get("scandal_signals") or []:
+            if not isinstance(signal, dict):
+                continue
+            signal_type = str(signal.get("type") or "possible_scandal").strip().casefold()
+            signal_key = f"{other}:{signal_type}"
+            scandal_keys.add(signal_key)
+            if signal_key in prior_scandal_keys:
+                continue
+            payload = {
+                **signal,
+                "other_game_sim_id": other,
+                "other_sim_id": other_sim.id if other_sim else None,
+                "other_sim_name": other_sim.label if other_sim else "",
+                "relationship_bits": rel.get("relationship_bits") or [],
+                "friendship_score": rel.get("friendship_score"),
+                "romance_score": rel.get("romance_score"),
+                "detected_tracker_global_day": snapshot.get("detected_tracker_global_day", save.global_day),
+                "detected_game_hour": snapshot.get("detected_game_hour"),
+                "detected_game_minute": snapshot.get("detected_game_minute"),
+            }
+            item = candidate(
+                session, save, "scandal_detected", sim,
+                f"{str(signal.get('label') or 'Possible scandal')}: {sim.label}",
+                payload, signal_key,
+            )
+            if item:
+                made.append(item)
     # Save files expose one significant-other ID even when their compact
     # summary does not contain the full relationship collection. Preserve the
     # ID and offer a review instead of guessing that it means marriage.
@@ -1005,7 +1045,8 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             made.append(item)
     state_updates = {"game_was_dead": currently_dead} if has_death_state else {}
     if has_relationship_state:
-        state_updates.update(game_relationship_keys=relationship_keys, game_relationship_end_sequences=end_sequences)
+        state_updates.update(game_relationship_keys=relationship_keys, game_relationship_end_sequences=end_sequences,
+                             game_scandal_signal_keys=sorted(scandal_keys))
     if any(data.get(key) != value for key, value in state_updates.items()):
         base = sim.version; sim.data = {**sim.data, **state_updates}; sim.version += 1; journal(session, sim, "upsert", base)
         data = dict(sim.data or {})

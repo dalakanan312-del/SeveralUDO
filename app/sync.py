@@ -16,6 +16,8 @@ SYNC_KINDS = {
     "task", "source_archive", "death_causes", "planner_rule", "detection_candidate",
     "death", "era_guidance", "game_candidate", "session_journal", "family_plan", "addon_rule",
     "save_metadata", "portrait_blob", "dice_audit_record", "clock_state", "story_entry", "name_entry", "multiple_birth_rule", "illness_signature", "occult_rule", "household_portrait", "decade_snapshot",
+    "era_check", "estate_plan", "economy_entry", "education_plan", "reputation_event",
+    "migration_plan", "memorial", "heirloom", "correspondence",
 }
 
 SECRET_MARKERS = ("password", "secret", "token", "api_key", "apikey", "database_url", "connection_string", "oauth")
