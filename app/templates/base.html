@@ -1,7 +1,8 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" style="{{visual_theme.inline_style}}">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="{{visual_theme.background}}">
   <title>{% block title %}Decades Tracker{% endblock %}</title>
 <link rel="stylesheet" href="/static/app.css?v={{static_version}}">
 <link rel="stylesheet" href="/static/decade_portraits.css?v={{static_version}}">
@@ -14,9 +15,10 @@
 <link rel="stylesheet" href="/static/auth.css?v={{static_version}}">
 <link rel="stylesheet" href="/static/tutorial.css?v={{static_version}}">
 <link rel="stylesheet" href="/static/mobile.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/theme.css?v={{static_version}}">
   <script src="/static/htmx.min.js?v={{static_version}}" defer></script>
 </head>
-<body data-page="{{page or 'home'}}" {% if user and save %}data-notification-feed="/api/notifications" data-notification-cursor="{{notification_cursor}}" data-save-id="{{save.id}}"{% endif %}>
+<body data-page="{{page or 'home'}}" data-theme-mode="{{visual_theme.mode}}" data-theme-density="{{visual_theme.density}}" data-theme-scale="{{visual_theme.text_scale}}" data-heading-style="{{visual_theme.heading_style}}" data-theme-motion="{{'reduce' if visual_theme.reduce_motion else 'full'}}" {% if user and save %}data-notification-feed="/api/notifications" data-notification-cursor="{{notification_cursor}}" data-save-id="{{save.id}}"{% endif %}>
 {% if user %}
 <aside class="app-sidebar">
   <div class="mobile-sidebar-head">

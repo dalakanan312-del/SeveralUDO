@@ -1,0 +1,60 @@
+{% extends "base.html" %}{% block title %}Appearance · Decades Tracker{% endblock %}{% block body %}
+<header class="hero compact appearance-hero"><p class="eyebrow">YOUR ARCHIVE · YOUR STYLE</p><h1>Appearance</h1><p>Choose how this save looks without changing any family data, rules, rolls, or automation.</p></header>
+{% if theme_notice %}<div class="notice" role="status">{{theme_notice}}</div>{% endif %}
+<form action="/appearance" method="post" class="appearance-editor" id="appearance-editor">
+  <section class="panel">
+    <div class="section-heading"><div><p class="eyebrow">STARTING POINT</p><h2>Choose a palette</h2><p>Pick a complete historical palette, then adjust the reading options below.</p></div></div>
+    <div class="theme-preset-grid">
+      {% for preset in theme_presets %}
+      <label class="theme-preset-card {% if visual_theme.preset==preset.id %}selected{% endif %}">
+        <input type="radio" name="theme_preset" value="{{preset.id}}" {% if visual_theme.preset==preset.id %}checked{% endif %}
+          data-accent="{{preset.resolved.accent}}" data-background="{{preset.resolved.background}}"
+          data-surface="{{preset.resolved.surface}}" data-text="{{preset.resolved.text}}" data-muted="{{preset.resolved.muted}}">
+        <span class="theme-swatches" aria-hidden="true"><i style="--swatch:{{preset.resolved.background}}"></i><i style="--swatch:{{preset.resolved.surface}}"></i><i style="--swatch:{{preset.resolved.accent}}"></i><i style="--swatch:{{preset.resolved.text}}"></i></span>
+        <strong>{{preset.name}}</strong><small>{{preset.description}}</small>
+      </label>
+      {% endfor %}
+      <label class="theme-preset-card {% if visual_theme.preset=='custom' %}selected{% endif %}">
+        <input type="radio" name="theme_preset" value="custom" {% if visual_theme.preset=='custom' %}checked{% endif %}>
+        <span class="theme-swatches custom" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <strong>Custom palette</strong><small>Choose each main color yourself. Canvas colors stay dark and text contrast is corrected automatically.</small>
+      </label>
+    </div>
+  </section>
+
+  <section class="appearance-columns">
+    <article class="panel">
+      <div class="section-heading"><div><p class="eyebrow">CUSTOM COLORS</p><h2>Fine tune the palette</h2><p>Changing a color automatically selects Custom palette.</p></div></div>
+      <div class="theme-color-grid">
+        <label>Accent<input type="color" name="theme_accent" value="{{visual_theme.accent}}"><small>Buttons, dates, and highlights</small></label>
+        <label>Page<input type="color" name="theme_background" value="{{visual_theme.background}}"><small>Darkened when needed for full compatibility</small></label>
+        <label>Panels<input type="color" name="theme_surface" value="{{visual_theme.surface}}"><small>Kept dark so older pages remain readable</small></label>
+        <label>Main text<input type="color" name="theme_text" value="{{visual_theme.text}}"><small>Automatically kept readable</small></label>
+        <label>Quiet text<input type="color" name="theme_muted" value="{{visual_theme.muted}}"><small>Captions and supporting details</small></label>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="section-heading"><div><p class="eyebrow">READING COMFORT</p><h2>Shape the interface</h2><p>These settings work on desktop and mobile.</p></div></div>
+      <div class="form-grid theme-reading-options">
+        <label>Spacing<select name="theme_density"><option value="comfortable" {% if visual_theme.density=='comfortable' %}selected{% endif %}>Comfortable</option><option value="compact" {% if visual_theme.density=='compact' %}selected{% endif %}>Compact — more on screen</option></select></label>
+        <label>Text size<select name="theme_text_scale"><option value="small" {% if visual_theme.text_scale=='small' %}selected{% endif %}>Small</option><option value="standard" {% if visual_theme.text_scale=='standard' %}selected{% endif %}>Standard</option><option value="large" {% if visual_theme.text_scale=='large' %}selected{% endif %}>Large</option></select></label>
+        <label>Headings<select name="theme_heading_style"><option value="classic" {% if visual_theme.heading_style=='classic' %}selected{% endif %}>Classic</option><option value="bookish" {% if visual_theme.heading_style=='bookish' %}selected{% endif %}>Bookish</option><option value="modern" {% if visual_theme.heading_style=='modern' %}selected{% endif %}>Modern</option></select></label>
+        <label>Corners<select name="theme_corners"><option value="square" {% if visual_theme.corners=='square' %}selected{% endif %}>Subtle</option><option value="soft" {% if visual_theme.corners=='soft' %}selected{% endif %}>Soft</option><option value="round" {% if visual_theme.corners=='round' %}selected{% endif %}>Rounded</option></select></label>
+        <label class="wide checkbox-line"><input type="checkbox" name="theme_reduce_motion" {% if visual_theme.reduce_motion %}checked{% endif %}> Reduce page and hover motion</label>
+      </div>
+    </article>
+  </section>
+
+  <section class="panel theme-preview-panel">
+    <div class="section-heading"><div><p class="eyebrow">LIVE PREVIEW</p><h2>See it before saving</h2><p>The preview updates as you change colors and reading options.</p></div><span id="theme-contrast-score">Text contrast {{visual_theme.contrast}}:1</span></div>
+    <div class="theme-preview-frame" id="theme-preview" style="{{visual_theme.inline_style}}">
+      <aside><strong>DECΛDES</strong><small>THE LIVING CHRONICLE</small><b>☀ Today</b><span>♟ Family & Life</span><span>✒ History & Story</span></aside>
+      <div><p class="eyebrow">YEAR {{save.start_year + ((save.global_day - 1) // save.days_per_year)}}</p><h2>{{save.name}}</h2><p>Your family chronicle remains the same; only its presentation changes.</p><article><strong>Today’s work</strong><small>3 rolls · 1 family event</small><button type="button">Open the day</button></article></div>
+    </div>
+  </section>
+
+  <div class="appearance-save-bar"><div><strong>Theme changes are save-specific</strong><small>They will appear wherever this save is opened.</small></div><button class="primary">Save appearance</button></div>
+</form>
+<form action="/appearance/reset" method="post" class="appearance-reset" onsubmit="return confirm('Restore the original Heirloom Gold theme?')"><button>Restore original theme</button></form>
+{% endblock %}

@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_scanner, tray_scanner, sync, storyline, telemetry, insights
+from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_scanner, themes, tray_scanner, sync, storyline, telemetry, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -66,6 +66,7 @@ FEATURES = {
     "storyline": ("Storyline", "A living narrative generated from the changing save"),
     "saves": ("Saves & Backups", "Create, rename, duplicate, export and restore chronicles"),
     "account": ("Account & Sharing", "Google sign-in, shared workspaces and notifications"),
+    "appearance": ("Appearance", "Colors, type, spacing and motion for this save"),
     "support": ("About & Support", "Version, help, privacy and project support"),
 }
 
@@ -113,7 +114,7 @@ NAVIGATION_GROUPS = (
         "label": "Settings & Help",
         "description": "Saves, devices, access and guidance",
         "icon": "⚙",
-        "pages": ("saves", "sync", "account", "tutorial", "support"),
+        "pages": ("saves", "sync", "account", "appearance", "tutorial", "support"),
     },
 )
 
@@ -723,14 +724,17 @@ def context(request: Request, session, **extra):
                 domain.seed_event_catalog(session, active)
     last_roll = request.session.pop("last_roll", None)
     current_page = extra.get("page")
+    visual_theme = themes.resolve((active.settings or {}).get("visual_theme") if active else None)
     return {"request": request, "user": user, "saves": saves, "save": active,
             "save_settings": dict(active.settings or {}) if active else {},
+            "visual_theme": visual_theme,
             "features": FEATURES, "navigation_groups": NAVIGATION_GROUPS,
             "navigation_group": navigation_group_for(current_page),
             "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "last_roll": last_roll,
             "occult_notice": request.session.pop("occult_notice", None),
             "master_automation_notice": request.session.pop("master_automation_notice", None),
             "manual_roll_notice": request.session.pop("manual_roll_notice", None),
+            "theme_notice": request.session.pop("theme_notice", None),
             "app_version": app.version, "static_version":_STATIC_VERSION,
             "notification_cursor": datetime.now(timezone.utc).isoformat(), **extra}
 
@@ -1549,6 +1553,9 @@ def feature_page(request: Request, page: str):
                            Record.data["status"].as_string()=="accepted",
                        ).order_by(Record.updated_at.desc()).limit(30)) if (item.data or {}).get("undo_targets")])
             records=[]
+        if page == "appearance" and save:
+            ctx.update(theme_presets=themes.presets_for_ui())
+            records=[]
         if page == "challenge" and save:
             year=insights.current_year(save);challenge_location=str((save.settings or {}).get("challenge_location") or "").casefold();guidance_by_key={}
             for item in sorted((item for item in view_records if item.kind in {"era_guidance","era_rule"}),key=lambda item:item.kind=="era_guidance"):
@@ -1943,7 +1950,7 @@ def feature_page(request: Request, page: str):
             "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "roll-tables":"roll_tables.html", "occult-rules":"occult_rules.html", "historical-guidance":"historical_guidance.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
             "world":"world.html", "legacy-lab":"legacy_lab.html", "historical-life":"historical_life.html", "life-records":"life-records.html",
-            "clock":"clock.html", "sync":"sync.html", "account":"account.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html",
+            "clock":"clock.html", "sync":"sync.html", "account":"account.html", "appearance":"appearance.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html",
         }
         return templates.TemplateResponse(request, dedicated.get(page, "feature.html"), ctx)
 
@@ -3222,6 +3229,41 @@ def update_event_interest(request: Request, event_id: str, hidden: str = Form("t
     destination=return_to.strip()
     if not destination.startswith("/") or destination.startswith("//"): destination="/p/events"
     return RedirectResponse(destination,status_code=303)
+
+
+@app.post("/appearance")
+async def update_appearance(request: Request):
+    form = await request.form()
+    with db() as session:
+        ctx = context(request, session)
+        save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        theme = themes.from_form(form)
+        values = dict(save.settings or {})
+        values["visual_theme"] = theme
+        save.settings = values
+        save.revision += 1
+        resolved = themes.resolve(theme)
+        request.session["theme_notice"] = (
+            f"{resolved['name']} is now applied to {save.name}."
+            if theme["preset"] != "custom" else
+            "Your custom theme is now applied to this save."
+        )
+    return RedirectResponse("/p/appearance", status_code=303)
+
+
+@app.post("/appearance/reset")
+def reset_appearance(request: Request):
+    with db() as session:
+        ctx = context(request, session)
+        save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        values = dict(save.settings or {})
+        values.pop("visual_theme", None)
+        save.settings = values
+        save.revision += 1
+        request.session["theme_notice"] = "The original Heirloom Gold theme has been restored."
+    return RedirectResponse("/p/appearance", status_code=303)
 
 
 @app.post("/settings")
