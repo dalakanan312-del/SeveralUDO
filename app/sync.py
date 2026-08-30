@@ -18,6 +18,9 @@ SYNC_KINDS = {
     "save_metadata", "portrait_blob", "dice_audit_record", "clock_state", "story_entry", "name_entry", "multiple_birth_rule", "illness_signature", "occult_rule", "household_portrait", "decade_snapshot",
     "era_check", "estate_plan", "economy_entry", "education_plan", "reputation_event",
     "migration_plan", "memorial", "heirloom", "correspondence",
+    "dowry_plan", "guardianship", "birth_privilege", "coming_of_age", "dispersal_plan",
+    "social_mobility", "legal_case", "absence", "disability", "mourning", "wellbeing",
+    "medical_treatment", "recovery_restriction", "saved_view", "newspaper",
 }
 
 SECRET_MARKERS = ("password", "secret", "token", "api_key", "apikey", "database_url", "connection_string", "oauth")

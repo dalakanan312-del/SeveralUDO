@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, names, notifications, occult_rules, portraits, save_scanner, tray_scanner, sync, storyline, telemetry, insights
+from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_scanner, tray_scanner, sync, storyline, telemetry, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -42,6 +42,7 @@ FEATURES = {
     "timeline": ("Chronicle", "A narrative history of the save"),
     "planner": ("Play Planner", "Household rotations, family plans and forecasts"),
     "historical-life": ("Historical Life", "Era preparation, estates, education, reputation, service, memorials and family strategy"),
+    "life-records": ("Life Records", "Dowries, guardians, milestones, law, wellbeing and chronicle reliability"),
     "challenge": ("Challenge Management", "Succession, matchmaking and campaigns"),
     "world": ("World & Migration", "Birth countries, moves, historical locations and migration routes"),
     "legacy-lab": ("Legacy Lab", "Progress, biographies, compatibility, consistency and safe rule experiments"),
@@ -84,7 +85,7 @@ NAVIGATION_GROUPS = (
         "label": "Family & Life",
         "description": "People, homes and life events",
         "icon": "♟",
-        "pages": ("sims", "family-tree", "relationships", "households", "pregnancies", "illnesses", "historical-life"),
+        "pages": ("sims", "family-tree", "relationships", "households", "pregnancies", "illnesses", "historical-life", "life-records"),
     },
     {
         "id": "history",
@@ -144,7 +145,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.0")
+app = FastAPI(title="Decades Tracker", version="4.5.1")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -503,12 +504,14 @@ def assign_household_members(session, save: ChronicleSave, household: Record, me
     return changed
 
 
-BOOL_FIELDS = {"active", "roll_required", "legally_married", "contagious", "maternal_rolls_required", "newborn_rolls_required", "pinned", "include_in_tree", "auto_schedule", "followup_enabled", "followup_failure_is_lethal", "completed"}
+BOOL_FIELDS = {"active", "roll_required", "legally_married", "contagious", "maternal_rolls_required", "newborn_rolls_required", "pinned", "include_in_tree", "auto_schedule", "followup_enabled", "followup_failure_is_lethal", "completed", "temporary", "resolved"}
 INT_FIELDS = {
     "start_global_day", "end_global_day", "conception_global_day", "due_global_day", "delivery_global_day",
     "birth_global_day", "death_global_day", "global_day", "start_year", "end_year", "age_days", "min_age_days",
     "max_age_days", "max_babies", "target_children", "min_birth_spacing_days", "children_count", "babies_expected", "babies_delivered", "followup_delay_days",
     "roll_repeat_interval_years", "amount", "impact", "planned_global_day", "decade", "year_acquired",
+    "ward_start_global_day", "ceremony_global_day", "end_global_day", "sentence_end_global_day",
+    "return_global_day", "restriction_end_global_day", "suggested_amount", "year", "birth_order",
 }
 
 
@@ -1383,6 +1386,7 @@ def feature_page(request: Request, page: str):
             "households":{"household","sim","game_history","pregnancy","illness"},
             "planner":{"sim","household","play_rotation","family_plan","roll"},
             "historical-life":{"sim","household","relationship","event","campaign","service","migration","era_guidance","era_rule","era_check","estate_plan","economy_entry","education_plan","reputation_event","migration_plan","memorial","heirloom","correspondence"},
+            "life-records":{"sim","household","relationship","pregnancy","illness","roll","event","death","migration","family_plan","dowry_plan","guardianship","birth_privilege","coming_of_age","dispersal_plan","social_mobility","legal_case","absence","disability","mourning","wellbeing","medical_treatment","recovery_restriction","saved_view","newspaper"},
             "challenge":{"sim","household","relationship","roll","planner_rule","campaign","service","era_guidance","era_rule"},
             "world":{"sim","migration","household"},
             "legacy-lab":{"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","clock_diagnostic"},
@@ -1536,6 +1540,14 @@ def feature_page(request: Request, page: str):
         if page == "historical-life" and save:
             ctx.update(historical_life=historical_life.build(view_records or [], save),
                        historical_life_notice=request.session.pop("historical_life_notice", None))
+            records=[]
+        if page == "life-records" and save:
+            ctx.update(life_records=life_records.build(view_records or [], save),
+                       life_records_notice=request.session.pop("life_records_notice", None),
+                       automation_undo_rows=[item for item in session.scalars(select(Record).where(
+                           Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),
+                           Record.data["status"].as_string()=="accepted",
+                       ).order_by(Record.updated_at.desc()).limit(30)) if (item.data or {}).get("undo_targets")])
             records=[]
         if page == "challenge" and save:
             year=insights.current_year(save);challenge_location=str((save.settings or {}).get("challenge_location") or "").casefold();guidance_by_key={}
@@ -1930,7 +1942,7 @@ def feature_page(request: Request, page: str):
             "family-tree":"family_tree.html", "timeline":"timeline.html", "statistics":"statistics.html", "health":"health.html",
             "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "roll-tables":"roll_tables.html", "occult-rules":"occult_rules.html", "historical-guidance":"historical_guidance.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
-            "world":"world.html", "legacy-lab":"legacy_lab.html", "historical-life":"historical_life.html",
+            "world":"world.html", "legacy-lab":"legacy_lab.html", "historical-life":"historical_life.html", "life-records":"life-records.html",
             "clock":"clock.html", "sync":"sync.html", "account":"account.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html",
         }
         return templates.TemplateResponse(request, dedicated.get(page, "feature.html"), ctx)
@@ -2584,6 +2596,97 @@ def dismiss_automation(request: Request, candidate_id: str):
     return RedirectResponse("/p/automation",status_code=303)
 
 
+@app.post("/api/automation/{candidate_id}/undo")
+def undo_accepted_automation(request: Request, candidate_id: str):
+    """Undo one accepted inbox item when none of its affected records changed later."""
+    with db() as session:
+        item=session.get(Record,candidate_id)
+        if not item or item.kind!="game_candidate": raise HTTPException(404)
+        save=owned_save(request,session,item.save_id);item_data=dict(item.data or {})
+        if str(item_data.get("status") or "")!="accepted": raise HTTPException(400,"Only accepted automation can be undone.")
+        targets=list(item_data.get("undo_targets") or [])
+        if not targets: raise HTTPException(400,"This older acceptance has no safe undo snapshot.")
+        blocked=[];restored=[]
+        for target in reversed(targets):
+            record=session.get(Record,str(target.get("record_id") or ""))
+            expected=int_or_none(target.get("after_version"))
+            if not record or record.save_id!=save.id or expected is None or record.version!=expected:
+                blocked.append(str(target.get("kind") or "record"));continue
+            base=record.version
+            if bool(target.get("created")):
+                record.deleted=True;record.version+=1;domain.journal(session,record,"delete",base)
+            else:
+                before=target.get("before_payload")
+                if not isinstance(before,dict):
+                    blocked.append(record.kind);continue
+                label,day,data,deleted=sync.unpack_payload(before)
+                record.label=label;record.global_day=day;record.data=data;record.deleted=deleted
+                record.version+=1;domain.journal(session,record,"delete" if deleted else "upsert",base)
+            restored.append(record.kind)
+        if not restored:
+            raise HTTPException(409,"Undo was blocked because the affected records were edited afterward.")
+        base=item.version;item_data.update({"status":"undone","undone_global_day":save.global_day,
+                                           "undo_result":{"restored":restored,"blocked":blocked}})
+        item.data=item_data;item.version+=1;domain.journal(session,item,"upsert",base);save.revision+=len(restored)+1
+        request.session["life_records_notice"]=(
+            f"Undid {len(restored)} automation change{'s' if len(restored)!=1 else ''}."
+            + (f" {len(blocked)} later-edited record{'s were' if len(blocked)!=1 else ' was'} left unchanged." if blocked else "")
+        )
+    return RedirectResponse("/p/life-records#tools",status_code=303)
+
+
+@app.post("/api/life-records/bulk-sims")
+async def bulk_correct_sims(request: Request):
+    form=await request.form();sim_ids=list(dict.fromkeys(str(value) for value in form.getlist("sim_id") if value))
+    field=str(form.get("field") or "").strip();raw_value=str(form.get("value") or "").strip()
+    allowed={"social_class","current_location","generation","dynasty_name","legitimacy","surname_at_birth","current_household_id"}
+    if field not in allowed or not sim_ids: raise HTTPException(400,"Choose Sims and one supported field.")
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        value: object=raw_value
+        if field=="generation":
+            value=int_or_none(raw_value)
+            if value is None or value<1: raise HTTPException(400,"Generation must be a positive number.")
+        if field=="current_household_id" and raw_value:
+            household=session.get(Record,raw_value)
+            if not household or household.save_id!=save.id or household.kind!="household" or household.deleted:
+                raise HTTPException(400,"Choose a household in this save.")
+        rows=list(session.scalars(select(Record).where(
+            Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False),Record.id.in_(sim_ids))))
+        changed=0
+        for sim in rows:
+            if (sim.data or {}).get(field)==value: continue
+            base=sim.version;sim.data={**(sim.data or {}),field:value};sim.version+=1
+            domain.journal(session,sim,"upsert",base);changed+=1
+        save.revision+=changed;request.session["life_records_notice"]=f"Updated {changed} Sim profile{'s' if changed!=1 else ''}."
+    return RedirectResponse("/p/life-records#tools",status_code=303)
+
+
+@app.post("/api/life-records/newspaper")
+async def create_annual_newspaper(request: Request):
+    form=await request.form();year=int_or_none(form.get("year"))
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        current_year=insights.current_year(save)
+        year=current_year if year is None else year
+        if year>current_year: raise HTTPException(400,"The newspaper cannot report a future year.")
+        records=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.deleted.is_(False))))
+        issue=life_records.annual_newspaper(save,records,year)
+        existing=session.scalar(select(Record).where(
+            Record.save_id==save.id,Record.kind=="newspaper",Record.deleted.is_(False),
+            Record.data["year"].as_integer()==year).limit(1))
+        if existing:
+            base=existing.version;existing.label=issue["label"];existing.global_day=issue["global_day"]
+            existing.data=issue;existing.version+=1;domain.journal(session,existing,"upsert",base);paper=existing
+        else:
+            paper=Record(save_id=save.id,kind="newspaper",label=issue["label"],global_day=issue["global_day"],data=issue)
+            session.add(paper);session.flush();domain.journal(session,paper,"upsert",0)
+        save.revision+=1;request.session["life_records_notice"]=f"Generated {paper.label}."
+    return RedirectResponse("/p/life-records#newspaper",status_code=303)
+
+
 @app.post("/api/automation/batch-dismiss")
 async def batch_dismiss_automation(request: Request):
     form=await request.form();candidate_ids=list(dict.fromkeys(str(value) for value in form.getlist("candidate_id") if value))
@@ -2606,6 +2709,7 @@ async def accept_automation(request: Request, candidate_id: str):
         item=session.get(Record,candidate_id)
         if not item or item.kind!="game_candidate" or item.data.get("status")!="pending": raise HTTPException(404)
         save=owned_save(request,session,item.save_id);action=item.data.get("action");payload=item.data.get("payload") or item.data;sim=session.get(Record,item.data.get("sim_id")) if item.data.get("sim_id") else None;resolved_record=sim
+        accept_change_floor=session.scalar(select(func.max(Change.sequence))) or 0
         def value(name, default=""):
             return form.get(name) if name in form else payload.get(name, default)
         def checked(name, default=True):
@@ -2725,6 +2829,37 @@ async def accept_automation(request: Request, candidate_id: str):
                                "evidence":payload.get("evidence"),"relationship_bits":payload.get("relationship_bits") or [],
                                "source":"Reviewed Clock Sync signal","source_candidate_id":item.id})
             session.add(event);session.flush();domain.journal(session,event,"upsert",0);save.revision+=1;resolved_record=event
+        elif action=="legal_signal" and sim:
+            case_day=int_or_none(value("global_day",payload.get("detected_tracker_global_day"))) or save.global_day
+            offense=str(value("offense",payload.get("signal_label") or "Possible legal matter") or "Possible legal matter").strip()
+            case=Record(save_id=save.id,kind="legal_case",label=f"{sim.label} — {offense}",global_day=case_day,
+                        data={"sim_id":sim.id,"sim_name":sim.label,"offense":offense,
+                              "case_status":str(value("case_status","Under review") or "Under review"),
+                              "punishment":str(value("punishment","") or ""),
+                              "sentence_end_global_day":int_or_none(value("sentence_end_global_day")),
+                              "notes":str(value("notes","") or ""),"source":"Reviewed Clock Sync legal signal",
+                              "source_mod":payload.get("source_mod") or "Law and Disorder compatible telemetry",
+                              "evidence":payload.get("signal_label"),"source_candidate_id":item.id})
+            session.add(case);session.flush();domain.journal(session,case,"upsert",0);save.revision+=1;resolved_record=case
+        elif action=="grief_detected" and sim:
+            start=int_or_none(value("start_global_day",payload.get("start_global_day"))) or save.global_day
+            end=int_or_none(value("end_global_day",payload.get("suggested_end_global_day")))
+            deceased=session.get(Record,str(payload.get("deceased_sim_id") or "")) if payload.get("deceased_sim_id") else None
+            label=str(value("mourning_label",f"Mourning for {payload.get('deceased_name') or 'a loved one'}") or "Mourning").strip()
+            mourning=Record(save_id=save.id,kind="mourning",label=f"{sim.label} — {label}",global_day=start,
+                            data={"sim_id":sim.id,"sim_name":sim.label,"deceased_sim_id":deceased.id if deceased else payload.get("deceased_sim_id"),
+                                  "deceased_name":deceased.label if deceased else payload.get("deceased_name"),
+                                  "relationship":str(value("relationship",payload.get("relationship") or "Loved one") or "Loved one"),
+                                  "start_global_day":start,"end_global_day":end,"status":str(value("status","Active") or "Active"),
+                                  "customs":str(value("customs","") or ""),"source":"Reviewed grief automation","source_candidate_id":item.id})
+            session.add(mourning);session.flush();domain.journal(session,mourning,"upsert",0);save.revision+=1;resolved_record=mourning
+            if checked("create_wellbeing",True):
+                wellbeing=Record(save_id=save.id,kind="wellbeing",label=f"{sim.label} — Grieving",global_day=start,
+                                 data={"sim_id":sim.id,"sim_name":sim.label,"state":"Grieving","start_global_day":start,
+                                       "end_global_day":end,"support":str(value("support","") or ""),
+                                       "notes":str(value("wellbeing_notes","") or ""),"source":"Reviewed grief automation",
+                                       "mourning_record_id":mourning.id,"source_candidate_id":item.id})
+                session.add(wellbeing);session.flush();domain.journal(session,wellbeing,"upsert",0);save.revision+=1
         elif action in {"new_sim","new_baby"}:
             first=str(value("first_name") or "").strip();last=str(value("last_name") or "").strip();name=" ".join(x for x in (first,last) if x) or item.label
             birth_estimate=clock.estimate_new_sim_birth(session,save,payload,item.global_day) if action=="new_sim" else {}
@@ -2802,7 +2937,8 @@ async def accept_automation(request: Request, candidate_id: str):
                 death_base=death.version;death.data={**death.data,"sim_id":sim.id,"cause":cause,"place":place,"death_global_day":death_day,"completed":True,"confirmed_global_day":death_day,"source_candidate_id":item.id,**calendar};death.version+=1;domain.journal(session,death,"upsert",death_base)
             else:
                 death=Record(save_id=save.id,kind="death",label=f"Death of {sim.label}",global_day=death_day,data={"sim_id":sim.id,"cause":cause,"place":place,"death_global_day":death_day,"completed":True,"confirmed_global_day":death_day,"source":"game","source_candidate_id":item.id,**calendar});session.add(death);session.flush();domain.journal(session,death,"upsert",0)
-            resolved_record=death;save.revision+=1+domain.end_illnesses_for_death(session,save,sim,death_day);domain.schedule_rolls(session,save)
+            grief_reviews=life_records.schedule_grief_candidates(session,save,sim,death_day)
+            resolved_record=death;save.revision+=1+len(grief_reviews)+domain.end_illnesses_for_death(session,save,sim,death_day);domain.schedule_rolls(session,save)
         elif action=="sim_resurrection" and sim:
             resurrection_day=int_or_none(value("resurrection_global_day",payload.get("detected_tracker_global_day"))) or save.global_day
             resurrection_hour=int_or_none(value("resurrection_game_hour",payload.get("detected_game_hour")))
@@ -2888,7 +3024,27 @@ async def accept_automation(request: Request, candidate_id: str):
                     rel_base=rel.version;rel.data={**rel.data,"status":end_status,"end_global_day":end_day,**end_fields,"historical_end_date":historical_end,"legally_married":bool((rel.data or {}).get("legally_married")) and end_status.casefold()=="widowed","end_source":"Clock Sync relationship transition","source_candidate_id":item.id};rel.version+=1;domain.journal(session,rel,"upsert",rel_base);resolved_record=rel;save.revision+=1+domain.sync_generations(session,save);domain.schedule_marriage_rolls(session,save)
         automation.resolve_parent_links(session,save)
         reviewed={key:str(value) for key,value in form.multi_items() if key not in {"confirm"}}
-        base=item.version;item.data={**item.data,"status":"accepted","reviewed_details":reviewed,"resolved_record_id":resolved_record.id if resolved_record else None};item.version+=1;domain.journal(session,item,"upsert",base);save.revision+=2
+        acceptance_changes=list(session.scalars(select(Change).where(
+            Change.save_id==save.id,Change.sequence>accept_change_floor,Change.record_id!=item.id,
+        ).order_by(Change.sequence)))
+        grouped_changes={}
+        for change in acceptance_changes:
+            grouped_changes.setdefault(change.record_id,[]).append(change)
+        undo_targets=[]
+        for record_id,changes in grouped_changes.items():
+            first,last=changes[0],changes[-1]
+            before=None
+            if first.base_version:
+                previous=session.scalar(select(Change).where(
+                    Change.save_id==save.id,Change.record_id==record_id,Change.new_version==first.base_version,
+                ).order_by(Change.sequence.desc()).limit(1))
+                before=dict(previous.payload or {}) if previous else None
+            if first.base_version==0 or before:
+                undo_targets.append({"record_id":record_id,"kind":last.kind,"before_version":first.base_version,
+                                     "after_version":last.new_version,"before_payload":before,"created":first.base_version==0})
+        base=item.version;item.data={**item.data,"status":"accepted","accepted_global_day":save.global_day,
+                                    "reviewed_details":reviewed,"resolved_record_id":resolved_record.id if resolved_record else None,
+                                    "undo_targets":undo_targets};item.version+=1;domain.journal(session,item,"upsert",base);save.revision+=2
     return RedirectResponse("/p/automation",status_code=303)
 
 
@@ -2993,7 +3149,7 @@ def generate_historical_correspondence(request: Request, writing_kind: str = For
 
 @app.post("/records/{kind}/structured")
 async def add_structured_record(request: Request, kind: str):
-    allowed={"event","note","story_entry","roll_rule","death_causes","planner_rule","multiple_birth_rule","era_guidance","occult_rule","play_rotation","family_plan","campaign","service","estate_plan","economy_entry","education_plan","reputation_event","migration_plan","memorial","heirloom","correspondence"}
+    allowed={"event","note","story_entry","roll_rule","death_causes","planner_rule","multiple_birth_rule","era_guidance","occult_rule","play_rotation","family_plan","campaign","service","estate_plan","economy_entry","education_plan","reputation_event","migration_plan","memorial","heirloom","correspondence","dowry_plan","guardianship","birth_privilege","coming_of_age","dispersal_plan","social_mobility","legal_case","absence","disability","mourning","wellbeing","medical_treatment","recovery_restriction","saved_view","newspaper"}
     if kind not in allowed: raise HTTPException(400,"Unsupported record type")
     form=await request.form()
     with db() as session:
@@ -3752,6 +3908,11 @@ def confirm_today_death(request: Request, sim_id: str, cause_of_death: str = For
             death_data.update(death_calendar_fields(save,death_day,final_hour,final_minute))
             death=Record(save_id=save.id,kind="death",label=f"Death of {sim.label}",global_day=death_day,data=death_data)
             session.add(death);session.flush();domain.journal(session,death,"upsert",0);save.revision+=1
+        grief_reviews=life_records.schedule_grief_candidates(session,save,sim,death_day)
+        save.revision+=len(grief_reviews)
+        if grief_reviews and request.session.get("today_undo"):
+            request.session["today_undo"].setdefault("delete_ids",[])
+            request.session["today_undo"]["delete_ids"].extend(item.id for item in grief_reviews)
         domain.schedule_rolls(session,save)
     return RedirectResponse("/p/today?task=deaths",status_code=303)
 
@@ -4269,11 +4430,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.0-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.1-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.0-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.1-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

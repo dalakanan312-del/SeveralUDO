@@ -33,6 +33,53 @@ def _detected_list(value) -> list[str]:
     return result
 
 
+def _signal_labels(snapshot: dict) -> list[str]:
+    """Collect human-readable state labels without treating arbitrary telemetry as fact."""
+    result: list[str] = []
+
+    def visit(value, depth: int = 0):
+        if depth > 3 or value in (None, ""):
+            return
+        if isinstance(value, str):
+            label = value.strip()
+            if label and not label.isdigit() and label not in result:
+                result.append(label)
+            return
+        if isinstance(value, dict):
+            preferred = next((value.get(key) for key in (
+                "display_name", "resolved_name", "name", "label", "title", "description",
+                "trait", "buff", "moodlet", "state",
+            ) if value.get(key) not in (None, "")), None)
+            if preferred is not None:
+                visit(preferred, depth + 1)
+            else:
+                for item in value.values():
+                    visit(item, depth + 1)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                visit(item, depth + 1)
+
+    for field in (
+        "traits", "trait_details", "health_buffs", "symptoms", "fears", "lifestyles",
+        "buffs", "moodlets", "status_effects", "legal_states", "grief_states",
+    ):
+        if field in snapshot:
+            visit(snapshot.get(field))
+    return result
+
+
+_LEGAL_SIGNAL_WORDS = (
+    "arrested", "under arrest", "arrest warrant", "probation", "parole", "sentenced",
+    "prisoner", "inmate", "incarcerat", "community service", "criminal record", "wanted",
+    "charged with", "convicted", "court summons", "law and disorder",
+)
+_GRIEF_SIGNAL_WORDS = (
+    "grief", "grieving", "mourning", "bereaved", "bereavement", "lost a loved one",
+    "death of a loved one", "widow grief",
+)
+
+
 def _positive_count(*values) -> int | None:
     for value in values:
         try:
@@ -971,6 +1018,53 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             )
             if item:
                 made.append(item)
+    signal_fields = {
+        "traits", "trait_details", "health_buffs", "symptoms", "fears", "lifestyles",
+        "buffs", "moodlets", "status_effects", "legal_states", "grief_states",
+    }
+    has_signal_state = any(field in snapshot for field in signal_fields)
+    legal_signal_keys: set[str] = set()
+    grief_signal_keys: set[str] = set()
+    prior_legal_signal_keys = set(data.get("game_legal_signal_keys") or [])
+    prior_grief_signal_keys = set(data.get("game_grief_signal_keys") or [])
+    detected_mods = " ".join(str(value) for value in (snapshot.get("detected_optional_mods") or []))
+    law_and_disorder = "law and disorder" in detected_mods.casefold()
+    for label in _signal_labels(snapshot):
+        normalized = " ".join(label.casefold().split())
+        if any(word in normalized for word in _LEGAL_SIGNAL_WORDS):
+            signal_key = normalized[:240]
+            legal_signal_keys.add(signal_key)
+            if signal_key not in prior_legal_signal_keys:
+                payload = {
+                    "signal_label": label,
+                    "source_mod": "Law and Disorder" if law_and_disorder else "Game telemetry",
+                    "detected_tracker_global_day": snapshot.get("detected_tracker_global_day", save.global_day),
+                    "detected_game_hour": snapshot.get("detected_game_hour"),
+                    "detected_game_minute": snapshot.get("detected_game_minute"),
+                }
+                item = candidate(
+                    session, save, "legal_signal", sim,
+                    f"Legal status needs review: {sim.label}", payload, signal_key,
+                )
+                if item:
+                    made.append(item)
+        if any(word in normalized for word in _GRIEF_SIGNAL_WORDS):
+            signal_key = normalized[:240]
+            grief_signal_keys.add(signal_key)
+            if signal_key not in prior_grief_signal_keys:
+                payload = {
+                    "signal_label": label,
+                    "start_global_day": snapshot.get("detected_tracker_global_day", save.global_day),
+                    "suggested_end_global_day": save.global_day + max(1, save.days_per_year // 2),
+                    "detected_game_hour": snapshot.get("detected_game_hour"),
+                    "detected_game_minute": snapshot.get("detected_game_minute"),
+                }
+                item = candidate(
+                    session, save, "grief_detected", sim,
+                    f"Grief needs review: {sim.label}", payload, signal_key,
+                )
+                if item:
+                    made.append(item)
     # Save files expose one significant-other ID even when their compact
     # summary does not contain the full relationship collection. Preserve the
     # ID and offer a review instead of guessing that it means marriage.
@@ -1047,6 +1141,9 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
     if has_relationship_state:
         state_updates.update(game_relationship_keys=relationship_keys, game_relationship_end_sequences=end_sequences,
                              game_scandal_signal_keys=sorted(scandal_keys))
+    if has_signal_state:
+        state_updates.update(game_legal_signal_keys=sorted(legal_signal_keys),
+                             game_grief_signal_keys=sorted(grief_signal_keys))
     if any(data.get(key) != value for key, value in state_updates.items()):
         base = sim.version; sim.data = {**sim.data, **state_updates}; sim.version += 1; journal(session, sim, "upsert", base)
         data = dict(sim.data or {})

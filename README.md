@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.5.0` adds the connected Historical Life workspace: era-transition preparation, estates and inheritance, household accounts, education and apprenticeships, reputation and reviewable scandal consequences, military service, migration planning, memorials, heirlooms and transfers, historical marriage matching, demographic warnings, letters and diaries, and strict/story-focused/relaxed accuracy profiles. Clock Sync 2.2.8 adds guarded scandal evidence and selective inventory metadata for confirmable heirloom suggestions without declaring either automatically.
+`4.5.1` adds compact collapsible family plans and the connected Life Records workspace: planned-marriage dowry estimates, guardianship, birth-order privileges, coming-of-age and household-dispersal planning, social mobility, absences, disability, mourning, wellbeing, treatment and recovery restrictions, Law & Disorder-compatible legal reviews, grief automation, roll explanations, safe automation undo, contradiction checks, saved views, bulk profile correction, and annual newspapers. Clock Sync remains 2.2.8.
 
 `4.4.9` repairs stale Clock Sync anchors automatically, adds a save-wide master automation switch, and adds editable manual rolls. A manual Global Day change can no longer strand the game clock behind the tracker, while a persistent game-day high watermark still prevents an older Sims save from advancing the chronicle. Pausing automation preserves existing data and keeps the private link healthy; resuming starts from the current alignment without a catch-up burst.
 
