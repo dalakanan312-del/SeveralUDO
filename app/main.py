@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_scanner, themes, tray_scanner, sync, storyline, telemetry, insights
+from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -35,6 +35,7 @@ FEATURES = {
     "households": ("Households", "Residences, branches, class and rotation"),
     "relationships": ("Relationships", "Marriages, partners and couple portraits"),
     "pregnancies": ("Pregnancies", "Pregnancy timelines, outcomes and newborn scheduling"),
+    "university": ("University", "Enrollment, terms, credits, grades and academic performance"),
     "rolls": ("Rolls", "Automatic obligations, outcomes and audited dice"),
     "events": ("Events", "Historical events, eligibility and effects"),
     "illnesses": ("Illnesses", "Disease, severity, treatment and outcomes"),
@@ -86,7 +87,7 @@ NAVIGATION_GROUPS = (
         "label": "Family & Life",
         "description": "People, homes and life events",
         "icon": "♟",
-        "pages": ("sims", "family-tree", "relationships", "households", "pregnancies", "illnesses", "historical-life", "life-records"),
+        "pages": ("sims", "family-tree", "relationships", "households", "pregnancies", "university", "illnesses", "historical-life", "life-records"),
     },
     {
         "id": "history",
@@ -146,7 +147,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.1")
+app = FastAPI(title="Decades Tracker", version="4.5.2")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -467,6 +468,13 @@ def detected_form_list(value) -> list[str]:
     return entries
 
 
+def float_or_none(value):
+    try:
+        return float(value) if str(value or "").strip() else None
+    except (TypeError, ValueError):
+        return None
+
+
 def next_sim_number(session, save_id: str) -> str:
     """Allocate the next stable display ID, including archived Sims."""
     import re
@@ -558,10 +566,11 @@ def navigation_counts(session, save: ChronicleSave) -> dict[str, int]:
         "rolls": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "roll", pending, Record.global_day <= save.global_day)) or 0,
         "pregnancies": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "pregnancy", func.lower(func.coalesce(Record.data["status"].as_string(), "active")).notin_(["delivered", "complete", "miscarriage", "stillbirth", "cancelled", "canceled"]))) or 0,
         "illnesses": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "illness", func.lower(func.coalesce(Record.data["status"].as_string(), "active")).notin_(["recovered", "fatal", "resolved", "complete"]))) or 0,
+        "university": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "university_term", Record.data["end_global_day"].as_integer() <= save.global_day, func.lower(func.coalesce(Record.data["status"].as_string(), "in progress")).in_(["planned", "in progress", "active", "probation"]))) or 0,
         "events": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "event", Record.global_day <= save.global_day, or_(Record.data["end_global_day"].as_integer().is_(None), Record.data["end_global_day"].as_integer() >= save.global_day), Record.data["ignored"].as_boolean().is_not(True), Record.data["active"].as_boolean().is_not(False))) or 0,
         "deaths": session.scalar(select(func.count()).select_from(Record).where(*base, Record.kind == "sim", Record.data["death_global_day"].as_integer() <= save.global_day, Record.data["death_confirmed"].as_boolean().is_not(True))) or 0,
     }
-    counts["today"] = counts["rolls"] + counts["pregnancies"] + counts["illnesses"] + counts["events"] + counts["deaths"]
+    counts["today"] = counts["rolls"] + counts["pregnancies"] + counts["university"] + counts["illnesses"] + counts["events"] + counts["deaths"]
     return {key: int(value) for key, value in counts.items()}
 
 
@@ -1387,6 +1396,7 @@ def feature_page(request: Request, page: str):
             "family-tree":{"sim","relationship","household"},
             "statistics":{"sim","household","relationship","pregnancy","illness","event","death","roll"},
             "pregnancies":{"sim","pregnancy","roll"}, "illnesses":{"illness","sim"},
+            "university":{"sim","university_enrollment","university_term","university_performance","game_history"},
             "households":{"household","sim","game_history","pregnancy","illness"},
             "planner":{"sim","household","play_rotation","family_plan","roll"},
             "historical-life":{"sim","household","relationship","event","campaign","service","migration","era_guidance","era_rule","era_check","estate_plan","economy_entry","education_plan","reputation_event","migration_plan","memorial","heirloom","correspondence"},
@@ -1431,6 +1441,10 @@ def feature_page(request: Request, page: str):
             ctx["illness_signatures"] = list(session.scalars(select(Record).where(
                 Record.save_id == save.id, Record.kind == "illness_signature", Record.deleted.is_(False),
             ).order_by(Record.label)))
+        if page == "university" and save:
+            ctx["university"] = university.dashboard(view_records, save)
+            ctx["university_performance_band"] = university.performance_band
+            ctx["university_notice"] = request.session.pop("university_notice", None)
         if page == "households" and save:
             ctx["household_census"] = insights.household_census(view_records, save)
         if page == "timeline" and save:
@@ -1621,7 +1635,7 @@ def feature_page(request: Request, page: str):
             density = params.get("density") or request.session.get("today_density", "comfortable")
             roll_kind = params.get("roll_kind") or request.session.get("today_roll_kind", "all")
             if due_scope not in {"due","today","overdue"}: due_scope = "due"
-            if task not in {"rolls","pregnancies","events","illnesses","deaths"}: task = "rolls"
+            if task not in {"rolls","pregnancies","university","events","illnesses","deaths"}: task = "rolls"
             if density not in {"comfortable","compact"}: density = "comfortable"
             if roll_kind not in {"all","event","occult","pregnancy-count","pregnancy","marriage","aging","planner"}: roll_kind = "all"
             request.session.update(today_due=due_scope,today_task=task,today_density=density,today_roll_kind=roll_kind)
@@ -1633,7 +1647,7 @@ def feature_page(request: Request, page: str):
             # one query and partition it in memory instead of issuing a query
             # for each card family. This returns the same records while making
             # button-driven rerenders substantially faster.
-            today_kinds={"sim","household","roll","pregnancy","event","illness"}
+            today_kinds={"sim","household","roll","pregnancy","university_enrollment","university_term","event","illness"}
             today_rows=list(session.scalars(select(Record).where(
                 Record.save_id==save.id,
                 Record.deleted.is_(False),
@@ -1654,6 +1668,8 @@ def feature_page(request: Request, page: str):
             all_households=sorted(rows_by_kind["household"],key=lambda item:item.label.casefold())
             all_rolls=sorted(rows_by_kind["roll"],key=by_day_label)
             all_pregnancies=sorted(rows_by_kind["pregnancy"],key=by_day_label)
+            all_university_enrollments=sorted(rows_by_kind["university_enrollment"],key=by_day_label)
+            all_university_terms=sorted(rows_by_kind["university_term"],key=by_day_label)
             all_events=sorted(rows_by_kind["event"],key=by_day_label)
             all_illnesses=sorted(rows_by_kind["illness"],key=by_day_label)
             occult_history.sort(key=lambda item:(int_or_none(item.global_day) or -10**9,item.updated_at),reverse=True)
@@ -1757,6 +1773,18 @@ def feature_page(request: Request, page: str):
             roll_priority = {"event":0,"occult":1,"pregnancy-count":2,"pregnancy":3,"marriage":4,"aging":5,"planner":6}
             due_rolls.sort(key=lambda r:(roll_priority.get(roll_category(r),9),int(r.global_day or g),r.label.casefold()))
             due_pregnancies = [p for p in all_pregnancies if scoped(p.data.get("due_global_day",p.global_day)) and str(p.data.get("status") or "active").casefold() not in domain.CLOSED_PREGNANCIES]
+            enrollment_by_id={item.id:item for item in all_university_enrollments}
+            sim_by_id={item.id:item for item in all_sims}
+            due_university=[]
+            for term in all_university_terms:
+                term_data=term.data or {};due=int_or_none(term_data.get("end_global_day",term.global_day))
+                if not university.term_is_open(term) or not scoped(due): continue
+                enrollment=enrollment_by_id.get(str(term_data.get("enrollment_id") or ""))
+                linked_sim_id=term_data.get("sim_id") or ((enrollment.data or {}).get("sim_id") if enrollment else "")
+                sim=sim_by_id.get(str(linked_sim_id or ""))
+                detected=next((row for row in university.career_rows(sim) if row.get("performance") is not None),None) if sim else None
+                due_university.append({"term":term,"enrollment":enrollment,"sim":sim,"due_day":due,"performance":university.performance_band(term_data.get("performance")),"detected_performance":detected})
+            due_university.sort(key=lambda row:(row["due_day"] or g,row["sim"].label.casefold() if row["sim"] else ""))
             active_events = [e for e in all_events if bool(e.data.get("active",True)) and int(e.data.get("start_global_day",e.global_day) or -10**9)<=g<=int(e.data.get("end_global_day",e.global_day) or 10**9)]
             active_illnesses = [i for i in all_illnesses if str(i.data.get("status") or "active").casefold() not in domain.CLOSED_ILLNESSES and int(i.data.get("onset_global_day",i.global_day) or g)<=g and (i.data.get("end_global_day") in (None,"") or int(i.data.get("end_global_day"))>=g)]
             active_illnesses.sort(key=lambda i: ({"critical":0,"severe":1,"moderate":2,"mild":3}.get(str(i.data.get("severity") or "").casefold(),4),i.global_day or 0))
@@ -1776,8 +1804,8 @@ def feature_page(request: Request, page: str):
             main_household=raw_settings.get("main_household_id") or id_map.get(legacy.get("main_household_id"),legacy.get("main_household_id"))
             digest_records=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="session_journal",Record.deleted.is_(False)).order_by(Record.global_day.desc(),Record.updated_at.desc()).limit(7)))
             ctx.update(all_sims=all_sims,living_sims=living_sims,all_households=all_households,due_scope=due_scope,task=task,density=density,roll_kind=roll_kind,preview_days=preview_days,
-                due_rolls=due_rolls,today_roll_results=today_roll_results,due_pregnancies=due_pregnancies,active_events=active_events,active_illnesses=active_illnesses,due_deaths=due_deaths,today_deaths=today_deaths,upcoming_deaths=upcoming_deaths,upcoming_rolls=upcoming_rolls,event_context=event_context,
-                today_counts={"rolls":len([r for r in pending_rolls if int(r.global_day or g)<=g]),"pregnancies":len([p for p in all_pregnancies if int(p.data.get("due_global_day",p.global_day) or g)<=g and str(p.data.get("status") or "active").casefold() not in domain.CLOSED_PREGNANCIES]),"events":len(active_events),"illnesses":len(active_illnesses),"deaths":len(today_deaths)},
+                due_rolls=due_rolls,today_roll_results=today_roll_results,due_pregnancies=due_pregnancies,due_university=due_university,active_events=active_events,active_illnesses=active_illnesses,due_deaths=due_deaths,today_deaths=today_deaths,upcoming_deaths=upcoming_deaths,upcoming_rolls=upcoming_rolls,event_context=event_context,
+                today_counts={"rolls":len([r for r in pending_rolls if int(r.global_day or g)<=g]),"pregnancies":len([p for p in all_pregnancies if int(p.data.get("due_global_day",p.global_day) or g)<=g and str(p.data.get("status") or "active").casefold() not in domain.CLOSED_PREGNANCIES]),"university":len([term for term in all_university_terms if university.term_is_open(term) and int_or_none((term.data or {}).get("end_global_day",term.global_day)) is not None and int((term.data or {}).get("end_global_day",term.global_day))<=g]),"events":len(active_events),"illnesses":len(active_illnesses),"deaths":len(today_deaths)},
                 roll_page=roll_page,roll_pages=roll_pages,current_heir=current_heir,main_household=main_household,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),today_undo=request.session.get("today_undo"),
                 daily_digest=digest_records[0] if digest_records else None,recent_digests=digest_records,
                 occult_summaries=occult_summaries,occult_summary_counts=occult_summary_counts,
@@ -1925,7 +1953,7 @@ def feature_page(request: Request, page: str):
             ctx.update(match_eligible=sorted_sims(match_eligible,save),selected_match=selected_match,
                        selected_match_roll=selected_match_roll,match_candidates=match_candidates,
                        kinship_depth=kinship_depth,generated_marriage_rolls=generated_marriage_rolls)
-        if save and page in {"sims", "relationships", "households", "pregnancies", "illnesses", "automation", "rolls"}:
+        if save and page in {"sims", "relationships", "households", "pregnancies", "university", "illnesses", "automation", "rolls"}:
             support_rows=support_rows_cache if support_rows_cache is not None else list(session.scalars(select(Record).where(
                 Record.save_id==save.id,Record.kind.in_({"sim","household"}),Record.deleted.is_(False),
             )))
@@ -1945,7 +1973,7 @@ def feature_page(request: Request, page: str):
         ctx.update(records=records, kind=kind, portrait_status=portraits.provider_status())
         dedicated = {
             "today":"today.html", "sims":"sims.html", "relationships":"relationships.html", "households":"households.html",
-            "pregnancies":"pregnancies.html", "illnesses":"illnesses.html", "automation":"automation.html", "storyline":"storyline.html",
+            "pregnancies":"pregnancies.html", "university":"university.html", "illnesses":"illnesses.html", "automation":"automation.html", "storyline":"storyline.html",
             "family-tree":"family_tree.html", "timeline":"timeline.html", "statistics":"statistics.html", "health":"health.html",
             "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "roll-tables":"roll_tables.html", "occult-rules":"occult_rules.html", "historical-guidance":"historical_guidance.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
@@ -2069,6 +2097,11 @@ def sim_profile(request: Request, sim_id: str):
                 stage_progress=100
         active_illnesses=[item for item in illnesses if str((item.data or {}).get("status") or "Active").casefold() in {"active","chronic","ongoing"}]
         active_pregnancies=[item for item in pregnancies if str((item.data or {}).get("status") or "Active").casefold() in {"active","pregnant","ongoing"}]
+        university_records=list(session.scalars(select(Record).where(
+            Record.save_id==save.id,Record.kind.in_({"university_enrollment","university_term","university_performance"}),Record.deleted.is_(False),
+        )))
+        university_dashboard=university.dashboard(all_sims+university_records,save)
+        university_profile=next((row for row in university_dashboard["rows"] if str((row["enrollment"].data or {}).get("sim_id") or "")==sim.id),None)
         pending_rolls=[item for item in related_rolls if not (item.data or {}).get("completed")]
         completed_rolls=[item for item in related_rolls if (item.data or {}).get("completed")]
         profile_summary={"life_stage":life_stage,"age_days":age_days,"stage_progress":stage_progress,"next_stage":next_stage,"active_illnesses":active_illnesses,"active_pregnancies":active_pregnancies,"pending_rolls":pending_rolls,"completed_rolls":completed_rolls}
@@ -2077,7 +2110,7 @@ def sim_profile(request: Request, sim_id: str):
         sim_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==sim.id).order_by(Portrait.created_at)))
         delete_impact=domain.sim_delete_impact(session,sim) if request.query_params.get("delete")=="1" else None
         name_history={"surname_at_birth":domain.surname_at_birth(sim),"married_surname":domain.married_surname(sim)}
-        ctx = context(request, session, sim=sim, name_history=name_history, all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, partner_relationship_rows=partner_relationship_rows, other_relationship_rows=other_relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,catchup_roll_count=catchup_roll_count,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
+        ctx = context(request, session, sim=sim, name_history=name_history, all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, partner_relationship_rows=partner_relationship_rows, other_relationship_rows=other_relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,university_profile=university_profile,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,catchup_roll_count=catchup_roll_count,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
         return templates.TemplateResponse(request, "sim_profile.html", ctx)
 
 
@@ -3266,6 +3299,169 @@ def reset_appearance(request: Request):
     return RedirectResponse("/p/appearance", status_code=303)
 
 
+def university_history(session, save: ChronicleSave, sim: Record | None, label: str, *, history_global_day: int | None = None, **details) -> Record:
+    item=Record(save_id=save.id,kind="game_history",label=label,global_day=history_global_day or save.global_day,data={
+        "category":"university","sim_id":sim.id if sim else None,"sim_name":sim.label if sim else None,
+        "notes":label,"source":"tracker",**details,
+    })
+    session.add(item);session.flush();domain.journal(session,item,"upsert",0)
+    return item
+
+
+@app.post("/api/university/enrollments")
+def create_university_enrollment(request: Request, sim_id: str = Form(...), institution: str = Form(""),
+                                 degree: str = Form(""), degree_type: str = Form("Standard degree"),
+                                 status: str = Form("Enrolled"), start_global_day: str = Form(""),
+                                 credits_required: str = Form("12"), credits_earned: str = Form("0"),
+                                 residence: str = Form(""), funding: str = Form(""), scholarships: str = Form(""),
+                                 notes: str = Form(""), source: str = Form("manual")):
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        sim=session.get(Record,sim_id)
+        if not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"Sim not found.")
+        active_duplicate=next((item for item in session.scalars(select(Record).where(
+            Record.save_id==save.id,Record.kind=="university_enrollment",Record.deleted.is_(False),
+            Record.data["sim_id"].as_string()==sim.id,
+        )) if university.enrollment_is_active(item)),None)
+        if active_duplicate: raise HTTPException(409,f"{sim.label} already has an active university record.")
+        start=max(1,int_or_none(start_global_day) or save.global_day);program=degree.strip() or "Undeclared degree"
+        data={"sim_id":sim.id,"sim_name":sim.label,"institution":institution.strip(),"degree":program,
+              "degree_type":degree_type.strip(),"status":status.strip() or "Enrolled","start_global_day":start,
+              "credits_required":max(1,int_or_none(credits_required) or 12),"credits_earned":max(0,int_or_none(credits_earned) or 0),
+              "residence":residence.strip(),"funding":funding.strip(),"scholarships":scholarships.strip(),
+              "notes":notes.strip(),"source":source.strip() or "manual"}
+        enrollment=Record(save_id=save.id,kind="university_enrollment",label=f"{sim.label} — {program}",global_day=start,data=data)
+        session.add(enrollment);session.flush();domain.journal(session,enrollment,"upsert",0)
+        university_history(session,save,sim,f"{sim.label} enrolled in {program}{f' at {institution.strip()}' if institution.strip() else ''}.",
+                           history_global_day=start,enrollment_id=enrollment.id,institution=institution.strip(),degree=program)
+        save.revision+=2;request.session["university_notice"]=f"University tracking started for {sim.label}."
+    return RedirectResponse("/p/university#students",status_code=303)
+
+
+@app.post("/api/university/enrollments/{enrollment_id}")
+def update_university_enrollment(request: Request, enrollment_id: str, institution: str = Form(""),
+                                 degree: str = Form(""), degree_type: str = Form("Standard degree"),
+                                 status: str = Form("Enrolled"), start_global_day: str = Form(""),
+                                 graduation_global_day: str = Form(""), credits_required: str = Form("12"),
+                                 credits_earned: str = Form("0"), residence: str = Form(""), funding: str = Form(""),
+                                 scholarships: str = Form(""), notes: str = Form("")):
+    with db() as session:
+        enrollment=session.get(Record,enrollment_id)
+        if not enrollment or enrollment.kind!="university_enrollment" or enrollment.deleted: raise HTTPException(404)
+        save=owned_save(request,session,enrollment.save_id);data=dict(enrollment.data or {});sim=session.get(Record,str(data.get("sim_id") or ""))
+        base=enrollment.version;program=degree.strip() or "Undeclared degree";start=max(1,int_or_none(start_global_day) or enrollment.global_day or save.global_day)
+        data.update({"sim_name":sim.label if sim else data.get("sim_name"),"institution":institution.strip(),"degree":program,
+                     "degree_type":degree_type.strip(),"status":status.strip() or "Enrolled","start_global_day":start,
+                     "graduation_global_day":int_or_none(graduation_global_day),"credits_required":max(1,int_or_none(credits_required) or 12),
+                     "credits_earned":max(0,int_or_none(credits_earned) or 0),"residence":residence.strip(),"funding":funding.strip(),
+                     "scholarships":scholarships.strip(),"notes":notes.strip()})
+        enrollment.label=f"{sim.label if sim else data.get('sim_name') or 'Student'} — {program}";enrollment.global_day=start;enrollment.data=data;enrollment.version+=1
+        domain.journal(session,enrollment,"upsert",base);save.revision+=1;request.session["university_notice"]=f"Updated {enrollment.label}."
+    return RedirectResponse("/p/university#students",status_code=303)
+
+
+@app.post("/api/university/enrollments/{enrollment_id}/terms")
+def create_university_term(request: Request, enrollment_id: str, term_number: str = Form(""),
+                           start_global_day: str = Form(""), end_global_day: str = Form(""),
+                           status: str = Form("In progress"), courses: str = Form(""), credits_attempted: str = Form("3"),
+                           credits_earned: str = Form("0"), performance: str = Form(""), grade: str = Form(""),
+                           gpa: str = Form(""), notes: str = Form("")):
+    with db() as session:
+        enrollment=session.get(Record,enrollment_id)
+        if not enrollment or enrollment.kind!="university_enrollment" or enrollment.deleted: raise HTTPException(404)
+        save=owned_save(request,session,enrollment.save_id);enrollment_data=enrollment.data or {};sim=session.get(Record,str(enrollment_data.get("sim_id") or ""))
+        existing=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="university_term",Record.deleted.is_(False),Record.data["enrollment_id"].as_string()==enrollment.id)))
+        number=max(1,int_or_none(term_number) or (max((int_or_none((item.data or {}).get("term_number")) or 0 for item in existing),default=0)+1))
+        start=max(1,int_or_none(start_global_day) or save.global_day);end=max(start,int_or_none(end_global_day) or start+6)
+        term_data={"enrollment_id":enrollment.id,"sim_id":sim.id if sim else enrollment_data.get("sim_id"),
+                   "sim_name":sim.label if sim else enrollment_data.get("sim_name"),"term_number":number,
+                   "start_global_day":start,"end_global_day":end,"status":status.strip() or "In progress",
+                   "courses":detected_form_list(courses),"credits_attempted":max(0,int_or_none(credits_attempted) or 0),
+                   "credits_earned":max(0,int_or_none(credits_earned) or 0),"performance":float_or_none(performance),
+                   "grade":grade.strip(),"gpa":float_or_none(gpa),"notes":notes.strip()}
+        if term_data["performance"] is not None and not 0<=term_data["performance"]<=100: raise HTTPException(400,"Performance must be from 0 to 100.")
+        if term_data["gpa"] is not None and not 0<=term_data["gpa"]<=4: raise HTTPException(400,"GPA must be from 0 to 4.")
+        term=Record(save_id=save.id,kind="university_term",label=f"{sim.label if sim else enrollment_data.get('sim_name') or 'Student'} — Term {number}",global_day=end,data=term_data)
+        session.add(term);session.flush();domain.journal(session,term,"upsert",0);save.revision+=1
+        if status.casefold() in university.PASSED_TERM_STATUSES:
+            enrollment_base=enrollment.version;result=university.apply_term_result(enrollment,term,status=status,performance=performance or None,grade=grade,gpa=gpa or None,credits_earned=int_or_none(credits_earned) or 0,end_global_day=end,notes=notes)
+            term.data=result["term_data"];term.version+=1;domain.journal(session,term,"upsert",term.version-1)
+            enrollment.data=result["enrollment_data"];enrollment.version+=1;domain.journal(session,enrollment,"upsert",enrollment_base);save.revision+=2
+        request.session["university_notice"]=f"Term {number} added for {sim.label if sim else enrollment_data.get('sim_name') or 'the student'}."
+    return RedirectResponse("/p/university#students",status_code=303)
+
+
+@app.post("/api/university/terms/{term_id}")
+def update_university_term(request: Request, term_id: str, status: str = Form("In progress"),
+                           end_global_day: str = Form(""), courses: str = Form(""), credits_attempted: str = Form("0"),
+                           credits_earned: str = Form("0"), performance: str = Form(""), grade: str = Form(""),
+                           gpa: str = Form(""), notes: str = Form(""), graduate: str = Form(""),
+                           return_to: str = Form("/p/university#students")):
+    with db() as session:
+        term=session.get(Record,term_id)
+        if not term or term.kind!="university_term" or term.deleted: raise HTTPException(404)
+        save=owned_save(request,session,term.save_id);term_data=dict(term.data or {});enrollment=session.get(Record,str(term_data.get("enrollment_id") or ""))
+        if not enrollment or enrollment.kind!="university_enrollment" or enrollment.deleted or enrollment.save_id!=save.id: raise HTTPException(409,"The linked enrollment is missing.")
+        sim=session.get(Record,str(term_data.get("sim_id") or (enrollment.data or {}).get("sim_id") or ""));term_base=term.version;enrollment_base=enrollment.version
+        end=max(1,int_or_none(end_global_day) or int_or_none(term_data.get("end_global_day")) or save.global_day)
+        score=float_or_none(performance);gpa_value=float_or_none(gpa)
+        if score is not None and not 0<=score<=100: raise HTTPException(400,"Performance must be from 0 to 100.")
+        if gpa_value is not None and not 0<=gpa_value<=4: raise HTTPException(400,"GPA must be from 0 to 4.")
+        result=university.apply_term_result(enrollment,term,status=status,performance=score,grade=grade,gpa=gpa_value,
+                                            credits_earned=int_or_none(credits_earned) or 0,end_global_day=end,notes=notes,
+                                            graduate=graduate.casefold() in {"1","true","on","yes"})
+        result["term_data"]["courses"]=detected_form_list(courses);result["term_data"]["credits_attempted"]=max(0,int_or_none(credits_attempted) or 0)
+        term.data=result["term_data"];term.global_day=end;term.version+=1;domain.journal(session,term,"upsert",term_base)
+        enrollment.data=result["enrollment_data"];enrollment.version+=1;domain.journal(session,enrollment,"upsert",enrollment_base);save.revision+=2
+        if result["completed_transition"]:
+            university_history(session,save,sim,f"{sim.label if sim else (enrollment.data or {}).get('sim_name') or 'The student'} completed university term {(term.data or {}).get('term_number')}{f' with a grade of {grade.strip()}' if grade.strip() else ''}.",history_global_day=end,enrollment_id=enrollment.id,term_id=term.id,performance=(term.data or {}).get("performance"),grade=grade.strip());save.revision+=1
+        if result["graduated_transition"]:
+            university_history(session,save,sim,f"{sim.label if sim else (enrollment.data or {}).get('sim_name') or 'The student'} graduated with {(enrollment.data or {}).get('degree') or 'a university degree'}.",history_global_day=end,enrollment_id=enrollment.id,term_id=term.id,degree=(enrollment.data or {}).get("degree"));save.revision+=1
+        request.session["university_notice"]=f"Saved Term {(term.data or {}).get('term_number')} for {sim.label if sim else (enrollment.data or {}).get('sim_name') or 'the student'}."
+    destination=return_to if return_to.startswith("/") and not return_to.startswith("//") else "/p/university#students"
+    return RedirectResponse(destination,status_code=303)
+
+
+@app.post("/api/university/performance")
+def add_university_performance(request: Request, enrollment_id: str = Form(...), term_id: str = Form(""),
+                               performance: str = Form(...), checkpoint_type: str = Form("Progress check"),
+                               global_day: str = Form(""), notes: str = Form("")):
+    with db() as session:
+        enrollment=session.get(Record,enrollment_id)
+        if not enrollment or enrollment.kind!="university_enrollment" or enrollment.deleted: raise HTTPException(404)
+        save=owned_save(request,session,enrollment.save_id);score=float_or_none(performance)
+        if score is None or score<0 or score>100: raise HTTPException(400,"Performance must be from 0 to 100.")
+        term=session.get(Record,term_id) if term_id else None
+        if term and (term.kind!="university_term" or term.save_id!=save.id or term.deleted or str((term.data or {}).get("enrollment_id") or "")!=enrollment.id): raise HTTPException(404)
+        enrollment_data=enrollment.data or {};sim=session.get(Record,str(enrollment_data.get("sim_id") or ""));day=max(1,int_or_none(global_day) or save.global_day)
+        kind=checkpoint_type.strip() or "Progress check";item=Record(save_id=save.id,kind="university_performance",label=f"{sim.label if sim else enrollment_data.get('sim_name') or 'Student'} — {kind}",global_day=day,data={
+            "enrollment_id":enrollment.id,"term_id":term.id if term else None,"sim_id":sim.id if sim else enrollment_data.get("sim_id"),
+            "sim_name":sim.label if sim else enrollment_data.get("sim_name"),"checkpoint_type":kind,"performance":score,"notes":notes.strip(),"source":"manual",
+        })
+        session.add(item);session.flush();domain.journal(session,item,"upsert",0);save.revision+=1;request.session["university_notice"]=f"Recorded {kind.casefold()} for {sim.label if sim else enrollment_data.get('sim_name') or 'the student'}."
+    return RedirectResponse("/p/university#students",status_code=303)
+
+
+@app.post("/api/university/terms/{term_id}/use-game-performance")
+def use_game_university_performance(request: Request, term_id: str):
+    with db() as session:
+        term=session.get(Record,term_id)
+        if not term or term.kind!="university_term" or term.deleted: raise HTTPException(404)
+        save=owned_save(request,session,term.save_id);data=term.data or {};enrollment=session.get(Record,str(data.get("enrollment_id") or ""))
+        if not enrollment or enrollment.kind!="university_enrollment" or enrollment.deleted or enrollment.save_id!=save.id: raise HTTPException(409,"The linked enrollment is missing.")
+        linked_sim_id=data.get("sim_id") or (enrollment.data or {}).get("sim_id");sim=session.get(Record,str(linked_sim_id or ""))
+        if not sim or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"The student could not be found.")
+        careers=university.career_rows(sim);detected=next((row for row in careers if university.is_university_career(row) and row.get("performance") is not None),None) or next((row for row in careers if row.get("performance") is not None),None)
+        if not detected: raise HTTPException(409,"Clock Sync has not reported a performance value for this Sim yet.")
+        score=max(0,min(100,float(detected["performance"])));item=Record(save_id=save.id,kind="university_performance",label=f"{sim.label} — Clock Sync performance",global_day=save.global_day,data={
+            "enrollment_id":enrollment.id if enrollment else None,"term_id":term.id,"sim_id":sim.id,"sim_name":sim.label,
+            "checkpoint_type":"Clock Sync performance","performance":score,"raw_game_performance":detected["performance"],"career":detected.get("name"),"source":"clock-sync",
+        })
+        session.add(item);session.flush();domain.journal(session,item,"upsert",0);save.revision+=1;request.session["university_notice"]=f"Saved {sim.label}'s current game performance ({score:g})."
+    return RedirectResponse("/p/university#students",status_code=303)
+
+
 @app.post("/settings")
 async def update_settings(request: Request):
     form=await request.form()
@@ -3804,6 +4000,16 @@ def delete_record(request: Request, record_id: str):
             assign_household_members(session,save,record,[],include_head=False)
         if record.kind=="pregnancy":
             save.revision+=domain.retire_pregnancy_rolls(session,save,record.id,"Pregnancy archived")
+        if record.kind=="university_enrollment":
+            linked=list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind.in_({"university_term","university_performance"}),Record.deleted.is_(False),
+                Record.data["enrollment_id"].as_string()==record.id,
+            )))
+            record.data={**(record.data or {}),"archived_child_ids":[item.id for item in linked]}
+            for child in linked:
+                child_base=child.version;child.deleted=True;child.version+=1
+                session.add(Change(save_id=save.id,device_id="local" if settings.local_mode else "web",record_id=child.id,kind=child.kind,operation="delete",base_version=child_base,new_version=child.version,payload=sync.serialize(child)))
+            save.revision+=len(linked)
         base = record.version
         record.deleted = True; record.version += 1
         session.add(Change(save_id=record.save_id, device_id="local" if settings.local_mode else "web", record_id=record.id, kind=record.kind, operation="delete", base_version=base, new_version=record.version, payload=sync.serialize(record)))
@@ -3820,6 +4026,12 @@ def restore_record(request: Request, record_id: str):
         session.add(Change(save_id=save.id,device_id="local" if settings.local_mode else "web",record_id=record.id,kind=record.kind,operation="upsert",base_version=base,new_version=record.version,payload=sync.serialize(record)));save.revision+=1
         if record.kind=="household": assign_household_members(session,save,record,list((record.data or {}).get("archived_member_ids") or []))
         if record.kind=="pregnancy" and str((record.data or {}).get("status") or "active").casefold() not in domain.CLOSED_PREGNANCIES: domain.schedule_rolls(session,save)
+        if record.kind=="university_enrollment":
+            for child_id in (record.data or {}).get("archived_child_ids") or []:
+                child=session.get(Record,str(child_id))
+                if not child or child.save_id!=save.id or not child.deleted or child.kind not in {"university_term","university_performance"}: continue
+                child_base=child.version;child.deleted=False;child.version+=1
+                session.add(Change(save_id=save.id,device_id="local" if settings.local_mode else "web",record_id=child.id,kind=child.kind,operation="upsert",base_version=child_base,new_version=child.version,payload=sync.serialize(child)));save.revision+=1
     return RedirectResponse(request.headers.get("referer") or "/",status_code=303)
 
 
@@ -4472,11 +4684,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.1-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.2-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.1-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.2-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

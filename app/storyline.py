@@ -49,6 +49,8 @@ def _story_day(item: Record) -> int | None:
         "roll": ("completed_global_day",),
         "event": ("start_global_day",),
         "death": ("death_global_day",),
+        "university_enrollment": ("start_global_day",),
+        "university_term": ("end_global_day", "start_global_day"),
     }.get(item.kind, ())
     for key in candidates:
         value = data.get(key)
@@ -84,6 +86,8 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
     illnesses = [item for item in entries if item.kind == "illness"]
     completed_rolls = [item for item in entries if item.kind == "roll" and bool((item.data or {}).get("completed"))]
     histories = [item for item in entries if item.kind == "game_history"]
+    university_enrollments = [item for item in entries if item.kind == "university_enrollment"]
+    university_terms = [item for item in entries if item.kind == "university_term" and str((item.data or {}).get("status") or "").casefold() in {"completed", "passed"}]
     authored = [item for item in entries if item.kind == "story_entry"]
     overlapping_events = []
     for event in events:
@@ -103,6 +107,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
     if deaths_by_name: headline_bits.append(f"{len(deaths_by_name)} death{'s' if len(deaths_by_name) != 1 else ''}")
     if relationships: headline_bits.append(f"{len(relationships)} relationship change{'s' if len(relationships) != 1 else ''}")
     if overlapping_events: headline_bits.append(f"{len(overlapping_events)} historical event{'s' if len(overlapping_events) != 1 else ''}")
+    if university_enrollments or university_terms: headline_bits.append(f"{len(university_enrollments) + len(university_terms)} university milestone{'s' if len(university_enrollments) + len(university_terms) != 1 else ''}")
     headline = ", ".join(headline_bits).capitalize() if headline_bits else "A quiet year in the surviving record"
 
     sentences = []
@@ -120,6 +125,15 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
     if migrations:
         routes=[f"{(item.data or {}).get('sim_name') or item.label} from {(item.data or {}).get('from_country') or 'an earlier home'} to {(item.data or {}).get('to_country') or 'a new country'}" for item in migrations]
         sentences.append(f"Movement reshaped the family's world as {_natural_list(routes)} entered the migration ledger.")
+    if university_enrollments:
+        studies=[f"{(item.data or {}).get('sim_name') or item.label} began {(item.data or {}).get('degree') or 'university study'}" for item in university_enrollments]
+        sentences.append(f"Higher education entered the record when {_natural_list(studies)}.")
+    if university_terms:
+        outcomes=[]
+        for item in university_terms:
+            data=item.data or {};grade=f" with {data.get('grade')}" if data.get("grade") else ""
+            outcomes.append(f"{data.get('sim_name') or item.label} completed term {data.get('term_number') or '?'}{grade}")
+        sentences.append(f"Academic progress continued as {_natural_list(outcomes)}.")
     if pregnancies:
         details = []
         for item in pregnancies:
@@ -167,7 +181,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
 
 
 def build(session: Session, save: ChronicleSave) -> dict:
-    story_kinds={"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","story_entry","session_journal"}
+    story_kinds={"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","story_entry","session_journal","university_enrollment","university_term","university_performance"}
     records = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.in_(story_kinds), Record.deleted.is_(False))))
     ignored_event_ids={item.id for item in records if item.kind=="event" and event_is_ignored(item)}
     records=[item for item in records if item.id not in ignored_event_ids and str((item.data or {}).get("event_id") or "") not in ignored_event_ids]
@@ -267,7 +281,7 @@ def build(session: Session, save: ChronicleSave) -> dict:
 
 
 def _story_facts(session: Session, save: ChronicleSave) -> tuple[list[Record], list[str]]:
-    allowed={"sim","relationship","pregnancy","illness","roll","event","death","migration","game_history","session_journal"}
+    allowed={"sim","relationship","pregnancy","illness","roll","event","death","migration","game_history","session_journal","university_enrollment","university_term","university_performance"}
     rows=list(session.scalars(select(Record).where(
         Record.save_id==save.id,Record.kind.in_(allowed),Record.deleted.is_(False)
     ).order_by(Record.global_day.desc(),Record.updated_at.desc()).limit(80)))

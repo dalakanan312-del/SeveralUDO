@@ -21,6 +21,7 @@ SYNC_KINDS = {
     "dowry_plan", "guardianship", "birth_privilege", "coming_of_age", "dispersal_plan",
     "social_mobility", "legal_case", "absence", "disability", "mourning", "wellbeing",
     "medical_treatment", "recovery_restriction", "saved_view", "newspaper",
+    "university_enrollment", "university_term", "university_performance",
 }
 
 SECRET_MARKERS = ("password", "secret", "token", "api_key", "apikey", "database_url", "connection_string", "oauth")

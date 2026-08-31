@@ -28,7 +28,7 @@
 .attention-heading,.secondary-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:18px}
 .attention-heading h2,.secondary-heading h2{margin:0}
 .attention-total{padding:5px 10px;border:1px solid #5c462a;border-radius:999px;color:var(--gold);font-size:.78rem;font-weight:800}
-.workload{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;margin:14px 0 10px}
+.workload{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;margin:14px 0 10px}
 .workload-card{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#131419;color:var(--muted)}
 .workload-card>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.82rem;font-weight:700}
 .workload-card strong{font:700 1.15rem Georgia;color:var(--ink)}
@@ -135,7 +135,7 @@
 @media(max-width:1100px){
   .today-command{grid-template-columns:1fr}
   .date-tools{grid-template-columns:1fr 1fr;min-width:0}
-  .workload{grid-template-columns:repeat(5,minmax(105px,1fr));overflow-x:auto;padding-bottom:4px}
+  .workload{grid-template-columns:repeat(6,minmax(105px,1fr));overflow-x:auto;padding-bottom:4px}
   .rule-action-item .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .rule-action-item .form-grid button{grid-column:1/-1}
 }
@@ -161,7 +161,7 @@
   .date-metrics article{padding:6px 8px}
   .attention-shell{padding:12px}
   .attention-heading,.secondary-heading{align-items:flex-start;flex-direction:column}
-  .workload{grid-template-columns:repeat(5,106px)}
+  .workload{grid-template-columns:repeat(6,106px)}
   .workload-card{padding:9px}
   .tool-drawer>summary{align-items:flex-start}
   .tool-drawer>summary>span:nth-child(2){display:none}

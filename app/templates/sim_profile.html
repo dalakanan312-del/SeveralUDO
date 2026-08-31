@@ -66,6 +66,11 @@
       {% if sim.data.get('notes') %}<blockquote class="profile-note">{{sim.data.get('notes')}}</blockquote>{% endif %}
     </section>
 
+    {% if university_profile %}<section class="profile-section sim-university-summary">
+      <div class="section-heading"><div><p class="eyebrow">UNIVERSITY & PERFORMANCE</p><h2>{{university_profile.enrollment.data.get('degree') or 'University study'}}</h2></div><a href="/p/university#students">Open university ledger →</a></div>
+      <div class="detected-summary"><div><span>Institution</span><strong>{{university_profile.enrollment.data.get('institution') or 'Not recorded'}}</strong></div><div><span>Status</span><strong>{{university_profile.enrollment.data.get('status','Enrolled')}}</strong></div><div><span>Credits</span><strong>{{university_profile.credits_earned}} / {{university_profile.credits_required}}</strong></div><div><span>Performance</span><strong>{{university_profile.performance.score if university_profile.performance.score is not none else '—'}}</strong><small>{{university_profile.performance.label}}</small></div></div>
+    </section>{% endif %}
+
     <section class="profile-section" id="family">
       <div class="section-heading"><div><p class="eyebrow">HOUSEHOLD & KIN</p><h2>Family connections</h2></div><a href="/p/family-tree?focus={{sim.id}}">Open centered tree →</a></div>
       {% if current_household %}<a class="household-banner" href="/households/{{current_household.id}}"><span>⌂</span><div><small>Current household</small><strong>{{current_household.label}}</strong><em>{{current_household.data.get('location') or 'Location not recorded'}}</em></div><b>View household →</b></a>{% endif %}

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from .domain import CLOSED_PREGNANCIES, journal
 from .models import ChronicleSave, Record
-from . import game_metadata
+from . import game_metadata, university
 
 
 def _text(value) -> str:
@@ -104,6 +104,45 @@ def capture_sim_changes(session: Session, save: ChronicleSave, sim: Record, snap
         history_event(session, save, category="career_progress", label=label, snapshot=snapshot, sim=sim,
                       details={"from": old_careers, "to": new_careers})
         entries.append(label)
+
+    # University careers use the normal career tracker in The Sims 4. Preserve
+    # meaningful performance changes as checkpoints only when the player has
+    # linked this Sim to an active university record. Repeated full snapshots
+    # with the same score stay idempotent.
+    incoming_careers = [row for row in (snapshot.get("careers") or []) if isinstance(row, dict)]
+    university_careers = [row for row in incoming_careers if university.is_university_career(row) and row.get("performance") is not None]
+    if university_careers:
+        enrollment = next((item for item in session.scalars(select(Record).where(
+            Record.save_id == save.id, Record.kind == "university_enrollment", Record.deleted.is_(False),
+            Record.data["sim_id"].as_string() == sim.id,
+        )) if university.enrollment_is_active(item)), None)
+        if enrollment:
+            latest = session.scalar(select(Record).where(
+                Record.save_id == save.id, Record.kind == "university_performance", Record.deleted.is_(False),
+                Record.data["enrollment_id"].as_string() == enrollment.id,
+                Record.data["source"].as_string() == "clock-sync",
+            ).order_by(Record.global_day.desc(), Record.created_at.desc()).limit(1))
+            career = university_careers[0]
+            try:
+                score = max(0.0, min(100.0, float(career.get("performance"))))
+            except (TypeError, ValueError):
+                score = None
+            latest_score = (latest.data or {}).get("performance") if latest else None
+            if score is not None and latest_score != score:
+                term = session.scalar(select(Record).where(
+                    Record.save_id == save.id, Record.kind == "university_term", Record.deleted.is_(False),
+                    Record.data["enrollment_id"].as_string() == enrollment.id,
+                ).order_by(Record.global_day.desc()).limit(1))
+                checkpoint = Record(save_id=save.id, kind="university_performance",
+                                    label=f"{sim.label} — Clock Sync performance", global_day=save.global_day,
+                                    data={"enrollment_id": enrollment.id, "term_id": term.id if term else None,
+                                          "sim_id": sim.id, "sim_name": sim.label,
+                                          "checkpoint_type": "Clock Sync performance", "performance": score,
+                                          "raw_game_performance": career.get("performance"),
+                                          "career": career.get("title") or career.get("name"), "source": "clock-sync",
+                                          **_clock_data(snapshot)})
+                session.add(checkpoint);session.flush();journal(session,checkpoint,"upsert",0);save.revision+=1
+                entries.append(f"{sim.label}'s university performance was recorded as {score:g}.")
 
     for source, stored, category, sentence in (
         ("degrees", "game_degrees", "education", "completed or reported the degree"),
