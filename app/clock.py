@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import ChronicleSave, ClockLink, Portrait, Record
-from .domain import AGING_STAGE_OFFSETS, CLOSED_ILLNESSES, automation_enabled, journal, schedule_rolls, sync_generations
+from .domain import AGING_STAGE_OFFSETS, CLOSED_ILLNESSES, automation_enabled, journal
 from . import automation, game_metadata, telemetry, sync, notifications, portraits, storyline
 
 
@@ -1167,6 +1167,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     link.last_game_day, link.last_game_hour, link.last_game_minute = game_day, hour, minute
     link.last_seen_at = datetime.now(timezone.utc)
     candidates = []; illnesses_created = illnesses_ended = portrait_updates = 0; journal_entries = []
+    roll_inputs_changed = False
     members = list(report.get("household_members", report.get("household_sims", [])) or [])
     incoming_ids = {str(item.get("game_sim_id") or "") for item in members if item.get("game_sim_id")}
     tracked = list(session.scalars(select(Record).where(
@@ -1280,6 +1281,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             if _store_game_portrait(session, save, existing, enriched):
                 portrait_updates += 1
             changes = automation.reconcile_sim(session, save, existing, enriched)
+            roll_inputs_changed = roll_inputs_changed or bool(enriched.get("_roll_inputs_changed"))
             for item in changes:
                 notifications.candidate_event(session, save, item)
             for unknown in enriched.get("unknown_health_traits") or ():
@@ -1311,21 +1313,26 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     if household_members_linked:
         verb = "were" if household_members_linked != 1 else "was"
         journal_entries.append(f"{household_members_linked} Sim household assignment{'s' if household_members_linked != 1 else ''} {verb} synchronized.")
-    parent_link_updates = automation.resolve_parent_links(session, save)
-    generation_updates = sync_generations(session, save)
     population_updates = _reconcile_population_manifest(session, save, report, tracked, candidates)
     diagnostic_updated = _update_clock_diagnostic(session, save, members, game_day, hour, minute, report)
-    # Event and lifecycle obligations are true roll records. Reconcile once when
-    # the in-game calendar advances instead of producing parallel event-result
-    # rows on every clock report.
+    # Keep factual tracker maintenance in one place.  A calendar advance always
+    # schedules due work; an occult/location change can also make a rule newly
+    # applicable without waiting a whole in-game day.
     event_results = 0
-    rolls_created = schedule_rolls(session, save) if day_advanced else 0
+    maintenance = automation.run_clean_automations(
+        session, save,
+        include_rolls=day_advanced or roll_inputs_changed,
+        full_maintenance=day_advanced or roll_inputs_changed,
+    )
+    parent_link_updates = int(maintenance["parent_links"])
+    generation_updates = int(maintenance["generations"])
+    rolls_created = int(maintenance["rolls_created"])
     if rolls_created: journal_entries.append(f"{rolls_created} new roll obligation(s) became due or applicable.")
     if rolls_created:
         notifications.record(session,save,"roll",f"{rolls_created} new roll{'s' if rolls_created != 1 else ''} are ready",
                              "Open Today to complete the newly scheduled obligations.","/p/today",f"clock-rolls:{game_day}")
     journal_record = automation.session_journal(session, save, journal_entries, game_day, hour, minute)
-    save.revision += illnesses_created + illnesses_ended + portrait_updates + len(candidates) + event_results + parent_link_updates + generation_updates + population_updates + bool(journal_record) + bool(diagnostic_updated)
+    save.revision += illnesses_created + illnesses_ended + portrait_updates + len(candidates) + event_results + population_updates + bool(journal_record) + bool(diagnostic_updated)
     if day_advanced and bool((save.settings or {}).get("automatic_storyline")):
         prior_story = session.scalar(select(Record.id).where(
             Record.save_id == save.id, Record.kind == "story_entry", Record.deleted.is_(False),

@@ -1458,7 +1458,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.4")
+            self.assertEqual(health.json()["version"], "4.5.5")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1998,6 +1998,40 @@ class CoreSmokeTests(unittest.TestCase):
             sim=session.get(Record,sim_id);self.assertEqual(sim.data["pregnancy_allowance_count"],4);self.assertEqual(sim.data["pregnancy_allowances"]["1530"]["roll_id"],roll_id)
             plan=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="family_plan"));self.assertIsNotNone(plan);self.assertEqual(plan.data["target_pregnancies"],4);self.assertEqual(plan.data["source_pregnancy_roll_id"],roll_id)
             session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_clean_automation_sweep_maintains_only_deterministic_records(self):
+        marker=uuid.uuid4().hex[:10]
+        with SessionLocal() as session:
+            template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+            save=ChronicleSave(workspace_id=template.workspace_id,name=f"Clean sweep {marker}",global_day=20,start_year=1500,days_per_year=4)
+            session.add(save);session.flush()
+            mother=Record(save_id=save.id,kind="sim",label=f"Mother {marker}",global_day=1,data={"game_sim_id":f"mother-{marker}","sex":"Female","generation":1,"first_name":"Mother","last_name":"Willow"})
+            child=Record(save_id=save.id,kind="sim",label=f"Child {marker}",global_day=5,data={"game_sim_id":f"child-{marker}","parent_game_sim_ids":[f"mother-{marker}"]})
+            spouse=Record(save_id=save.id,kind="sim",label=f"Spouse {marker}",global_day=1,data={"sex":"Male","first_name":"Spouse","last_name":"Stone"})
+            deceased=Record(save_id=save.id,kind="sim",label=f"Deceased {marker}",global_day=1,data={"death_global_day":12,"death_confirmed":True})
+            session.add_all([mother,child,spouse,deceased]);session.flush()
+            marriage=Record(save_id=save.id,kind="relationship",label=f"Marriage {marker}",global_day=8,data={"partner1_id":mother.id,"partner2_id":spouse.id,"type":"Marriage","status":"Active","legally_married":True,"surname_rule":"automatic"})
+            illness=Record(save_id=save.id,kind="illness",label=f"Illness {marker}",global_day=6,data={"sim_id":deceased.id,"status":"Active"})
+            pregnancy_roll=Record(save_id=save.id,kind="roll",label=f"Pregnancy count {marker}",global_day=17,data={"sim_id":mother.id,"pregnancy_count_roll":True,"planner_year":1504,"pregnancy_count":2,"completed":True,"completed_global_day":17})
+            marriage_roll=Record(save_id=save.id,kind="roll",label=f"Marriage eligibility {marker}",global_day=17,data={"roll_type":"Marriage eligibility","source":"marriage:test","completed":True,"outcome":"May marry"})
+            session.add_all([marriage,illness,pregnancy_roll,marriage_roll]);session.flush()
+
+            result=automation.run_clean_automations(session,save,include_rolls=False,full_maintenance=True)
+            self.assertEqual(result["parent_links"],1)
+            self.assertGreaterEqual(result["generations"],1)
+            self.assertGreaterEqual(result["married_names"],1)
+            self.assertEqual(result["pregnancy_plans"],2)
+            self.assertEqual(result["marriage_dates"],1)
+            self.assertEqual(result["illnesses_ended"],1)
+            self.assertEqual(child.data["mother_id"],mother.id)
+            self.assertEqual(child.data["generation"],2)
+            self.assertEqual(mother.data["last_name"],"Stone")
+            self.assertEqual(illness.data["status"],"Deceased")
+            self.assertIsNotNone(marriage_roll.data.get("suggested_marriage_global_day"))
+            self.assertIsNotNone(session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="family_plan")))
+            repeat=automation.run_clean_automations(session,save,include_rolls=False,full_maintenance=True)
+            self.assertEqual(sum(int(repeat[key]) for key in ("parent_links","generations","married_names","pregnancy_plans","marriage_dates","illnesses_ended")),0)
+            session.rollback()
 
     def test_today_displays_every_roll_result_completed_on_the_current_day(self):
         marker=uuid.uuid4().hex[:10]

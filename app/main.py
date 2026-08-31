@@ -147,7 +147,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.4")
+app = FastAPI(title="Decades Tracker", version="4.5.5")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -701,8 +701,10 @@ def startup() -> None:
             for existing_save in session.scalars(select(ChronicleSave)):
                 if not settings.skip_startup_migrations and str((existing_save.settings or {}).get("defaults_schema_version") or "")!=domain.DEFAULTS_SCHEMA_VERSION:
                     domain.seed_defaults(session,existing_save)
-                domain.backfill_pregnancy_allowances(session,existing_save)
-                existing_save.revision += domain.backfill_married_surnames(session,existing_save)
+                # Record repair is performed once for the active save after
+                # the UI opens, then continuously by Clock Sync/save scans.
+                # Walking every historical save at process startup made the
+                # desktop app feel stuck before its window even appeared.
         from .sync_client import start
         start()
     if settings.automatic_snapshots:
@@ -1363,6 +1365,19 @@ def feature_page(request: Request, page: str):
         if not ctx["user"]: return RedirectResponse("/", status_code=303)
         save = ctx["save"]
         if save:
+            # Run the shared, fact-only repair once after this release reaches a
+            # save.  Clock Sync and save scans keep it current after that; this
+            # initial pass also repairs existing saves that have not reported
+            # from the game recently.
+            clean_automation_version = "2026-08-31"
+            if (domain.automation_enabled(save)
+                    and (save.settings or {}).get("clean_automation_sweep_version") != clean_automation_version):
+                clean_automation = automation.run_clean_automations(session, save, include_rolls=True, full_maintenance=True)
+                save_settings = dict(save.settings or {})
+                save_settings["clean_automation_sweep_version"] = clean_automation_version
+                save.settings = save_settings
+                save.revision += 1
+                ctx["clean_automation"] = clean_automation
             hash_name_repair = automation.repair_hashed_sim_metadata(session, save)
             if hash_name_repair["sims"] or hash_name_repair["labels"]:
                 session.flush()
@@ -3891,9 +3906,12 @@ def toggle_master_automation(request: Request, enabled: str = Form(""), return_t
             )
         save.settings = values
         save.revision += 1
-        created = domain.schedule_rolls(session, save) if turn_on else 0
+        maintenance = automation.run_clean_automations(
+            session, save, include_rolls=True, full_maintenance=True,
+        ) if turn_on else None
+        created = int(maintenance["rolls_created"]) if maintenance else 0
         request.session["master_automation_notice"] = (
-            f"Automation is on. Clock Sync, detections, scheduled obligations, automatic outcomes and storyline updates can run again. {created} missing roll{'s were' if created != 1 else ' was'} added."
+            f"Automation is on. Clock Sync, detections, scheduled obligations, automatic outcomes and storyline updates can run again. {created} missing roll{'s were' if created != 1 else ' was'} added; factual profile upkeep has also been refreshed."
             if turn_on else
             "Automation is paused for this save. Clock reports may still show the live connection, but Global Day, detections, scheduled obligations and automatic outcomes will not change until you resume. Existing records were kept."
         )
@@ -4733,11 +4751,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.4-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.5-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.4-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.5-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

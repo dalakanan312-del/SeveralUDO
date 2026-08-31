@@ -654,9 +654,16 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
         candidates += len(changes)
         updated += 1
         journal_entries.extend(snapshot.get("_history_entries") or [])
+    maintenance = automation.run_clean_automations(
+        session, save,
+        include_rolls=bool(advanced or linked or updated),
+        full_maintenance=True,
+    )
+    made = int(maintenance["rolls_created"])
     if advanced:
-        made = domain.schedule_rolls(session, save)
         journal_entries.append(f"The save-file clock advanced the tracker by {advanced} day(s); {made} obligation(s) were scheduled.")
+    elif made:
+        journal_entries.append(f"{made} missing obligation(s) were scheduled from the save scan.")
     if linked:
         journal_entries.append(f"{linked} imported Sim(s) were matched to their game identities.")
     if households_created:
@@ -673,4 +680,7 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
             "households_created":households_created, "households_updated":households_updated,
             "household_members_linked":household_members_linked,
             "portrait_updates":portrait_updates,
+            "parent_links_updated":int(maintenance["parent_links"]),
+            "generations_updated":int(maintenance["generations"]),
+            "rolls_created":made,
             "selected":len(selected_game_ids), "global_day":save.global_day}

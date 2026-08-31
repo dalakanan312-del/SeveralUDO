@@ -4,7 +4,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import ChronicleSave, Record
-from .domain import end_illnesses_for_death, event_is_ignored, journal
+from .domain import (
+    automation_enabled,
+    backfill_generated_marriage_dates,
+    backfill_married_surnames,
+    backfill_pregnancy_allowances,
+    end_illnesses_for_death,
+    event_is_ignored,
+    journal,
+    schedule_rolls,
+    sync_generations,
+)
 from . import game_metadata, telemetry
 
 
@@ -677,6 +687,65 @@ def candidate(session: Session, save: ChronicleSave, action: str, sim: Record | 
     return item
 
 
+def run_clean_automations(session: Session, save: ChronicleSave, *, include_rolls: bool = False,
+                          full_maintenance: bool = False) -> dict[str, int | bool]:
+    """Run the deterministic, idempotent maintenance shared by every intake path.
+
+    This deliberately does not accept inbox candidates.  Facts that can be
+    derived without judgment are kept current here; births, deaths, illnesses,
+    relationships and other uncertain game transitions remain reviewable.
+    """
+    result: dict[str, int | bool] = {
+        "enabled": automation_enabled(save),
+        "parent_links": 0,
+        "generations": 0,
+        "married_names": 0,
+        "pregnancy_plans": 0,
+        "marriage_dates": 0,
+        "illnesses_ended": 0,
+        "rolls_created": 0,
+    }
+    if not result["enabled"]:
+        return result
+
+    result["parent_links"] = resolve_parent_links(session, save)
+    result["generations"] = sync_generations(session, save)
+    if full_maintenance:
+        result["married_names"] = backfill_married_surnames(session, save)
+        # This helper maintains its own revision because it may update both a
+        # Sim allowance and the family plan derived from the completed roll.
+        result["pregnancy_plans"] = backfill_pregnancy_allowances(session, save)
+        result["marriage_dates"] = backfill_generated_marriage_dates(session, save)
+
+        sims = list(session.scalars(select(Record).where(
+            Record.save_id == save.id,
+            Record.kind == "sim",
+            Record.deleted.is_(False),
+        )))
+        for sim in sims:
+            data = sim.data or {}
+            death_day = data.get("death_global_day")
+            try:
+                death_day = int(death_day)
+            except (TypeError, ValueError):
+                continue
+            # A proposed challenge death is not the same thing as an observed
+            # or confirmed death.  Only close illnesses once the death is
+            # factual.
+            if bool(data.get("death_confirmed")) or bool(data.get("game_was_dead")):
+                result["illnesses_ended"] = int(result["illnesses_ended"]) + end_illnesses_for_death(
+                    session, save, sim, death_day,
+                )
+
+    direct_changes = sum(int(result[key]) for key in (
+        "parent_links", "generations", "married_names", "marriage_dates", "illnesses_ended",
+    ))
+    save.revision += direct_changes
+    if include_rolls or direct_changes or int(result["pregnancy_plans"]):
+        result["rolls_created"] = schedule_rolls(session, save)
+    return result
+
+
 def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: dict) -> list[Record]:
     """Turn one guarded game snapshot into safe telemetry and confirmable changes."""
     named_collections = (
@@ -910,6 +979,18 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         clearable.update({"game_inventory_items", "game_inventory_scan_supported"})
     updates = {key: value for key, value in telemetry_values.items() if value not in (None, "", []) or key in clearable}
     changed_telemetry = any(data.get(key) != value for key, value in updates.items())
+    # Only a small subset of live telemetry can change whether a roll applies.
+    # Mark it for the intake path so a newly detected occult or relocation does
+    # not have to wait for the next in-game day, while ordinary skill/mood
+    # updates do not trigger an expensive full roll sweep.
+    roll_input_keys = {
+        "game_occult_types", "species_occult", "last_game_world", "last_game_lot",
+        "game_household_member_game_ids", "game_household_is_player",
+    }
+    snapshot["_roll_inputs_changed"] = any(
+        key in roll_input_keys and data.get(key) != value
+        for key, value in updates.items()
+    )
     if changed_telemetry:
         base = sim.version; data.update(updates); sim.data = data; sim.version += 1; journal(session, sim, "upsert", base)
     data = dict(sim.data or {})
