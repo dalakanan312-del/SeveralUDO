@@ -1,4 +1,4 @@
-DECADES TRACKER 4.5.8 - NATIVE WINDOWS EDITION
+DECADES TRACKER 4.5.9 - NATIVE WINDOWS EDITION
 ================================================
 
 1. Extract the complete Decades Tracker folder before opening it.

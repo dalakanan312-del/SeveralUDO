@@ -67,7 +67,7 @@ function themeDarken(value,limit){let result=value;while(themeLuminance(result)>
 function updateThemePreview(editor){
   const preview=editor.querySelector('#theme-preview');if(!preview)return;
   const value=(name)=>editor.elements[name]?.value;
-  const accent=value('theme_accent'),rawBackground=value('theme_background'),rawSurface=value('theme_surface');let background=themeDarken(rawBackground,.055),surface=themeDarken(rawSurface,.085),ink=value('theme_text'),muted=value('theme_muted');
+  const accent=value('theme_accent'),rawBackground=value('theme_background'),rawSurface=value('theme_surface'),mode=value('theme_mode')||'dark';let background=mode==='dark'?themeDarken(rawBackground,.055):rawBackground,surface=mode==='dark'?themeDarken(rawSurface,.085):rawSurface,ink=value('theme_text'),muted=value('theme_muted');
   const canvasAdjusted=background!==rawBackground||surface!==rawSurface;if(themeContrast(surface,ink)<4.5)ink=['#f8f5ee','#171512'].sort((a,b)=>themeContrast(surface,b)-themeContrast(surface,a))[0];if(themeContrast(surface,muted)<3)muted=themeMix(ink,surface,.38);
   const radius={square:'5px',soft:'15px',round:'24px'}[value('theme_corners')]||'15px';const size={small:'13.5px',standard:'14.5px',large:'16px'}[value('theme_text_scale')]||'14.5px';const font={classic:"Georgia, 'Times New Roman', serif",modern:"Inter, 'Segoe UI', sans-serif",bookish:"'Palatino Linotype', Palatino, Georgia, serif"}[value('theme_heading_style')]||'Georgia, serif';
   const colors={'--ink':ink,'--text':ink,'--muted':muted,'--paper':background,'--panel':surface,'--panel-raised':themeMix(surface,'#ffffff',.055),'--panel-soft':themeMix(background,surface,.52),'--line':themeMix(surface,ink,.17),'--gold':accent,'--gold-bright':themeMix(accent,'#ffffff',.32),'--gold-dim':themeMix(accent,background,.48),'--accent-rgb':themeRgb(accent).join(','),'--paper-rgb':themeRgb(background).join(','),'--panel-rgb':themeRgb(surface).join(','),'--radius':radius,'--theme-body-size':size,'--theme-heading-font':font};Object.entries(colors).forEach(([key,item])=>preview.style.setProperty(key,item));
@@ -76,7 +76,10 @@ function updateThemePreview(editor){
 function initializeThemeEditor(){
   const editor=document.querySelector('#appearance-editor');if(!editor||editor.dataset.ready==='true')return;editor.dataset.ready='true';const custom=editor.querySelector('input[name="theme_preset"][value="custom"]');
   const selectCard=(input)=>{editor.querySelectorAll('.theme-preset-card').forEach((card)=>card.classList.toggle('selected',card.contains(input)));};
-  editor.querySelectorAll('input[name="theme_preset"]').forEach((radio)=>radio.addEventListener('change',()=>{selectCard(radio);if(radio.value!=='custom'){['accent','background','surface','text','muted'].forEach((key)=>{editor.elements[`theme_${key}`].value=radio.dataset[key];});}updateThemePreview(editor);}));
+  const presets=Array.from(editor.querySelectorAll('input[name="theme_preset"]'));
+  const applyPreset=(radio)=>{selectCard(radio);if(radio.value!=='custom'){['accent','background','surface','text','muted'].forEach((key)=>{editor.elements[`theme_${key}`].value=radio.dataset[key];});editor.elements.theme_mode.value=radio.dataset.mode||'dark';}updateThemePreview(editor);};
+  presets.forEach((radio)=>radio.addEventListener('change',()=>applyPreset(radio)));
+  const mode=editor.elements.theme_mode;if(mode)mode.addEventListener('change',()=>{if(!custom.checked){const matching=presets.find((radio)=>radio.dataset.mode===mode.value);if(matching){matching.checked=true;applyPreset(matching);return;}custom.checked=true;selectCard(custom);}updateThemePreview(editor);});
   editor.querySelectorAll('input[type="color"]').forEach((input)=>input.addEventListener('input',()=>{if(custom){custom.checked=true;selectCard(custom);}updateThemePreview(editor);}));
   editor.querySelectorAll('select,input[name="theme_reduce_motion"]').forEach((input)=>input.addEventListener('change',()=>updateThemePreview(editor)));updateThemePreview(editor);
 }

@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'SeveralUDO'),
           StringStruct('FileDescription', 'Decades Tracker desktop application'),
-          StringStruct('FileVersion', '4.5.8.0'),
+          StringStruct('FileVersion', '4.5.9.0'),
           StringStruct('InternalName', 'Decades Tracker'),
           StringStruct('LegalCopyright', 'Copyright SeveralUDO'),
           StringStruct('OriginalFilename', 'Decades Tracker.exe'),
           StringStruct('ProductName', 'Decades Tracker'),
-          StringStruct('ProductVersion', '4.5.8.0'),
+          StringStruct('ProductVersion', '4.5.9.0'),
         ],
       )
     ]),

@@ -40,6 +40,19 @@ class ThemeTests(unittest.TestCase):
         self.assertGreaterEqual(resolved["contrast"], 4.5)
         self.assertNotIn("position", resolved["inline_style"])
 
+    def test_daylight_preset_and_custom_light_mode_preserve_light_canvas(self):
+        daylight = themes.resolve({"preset": "daylight"})
+        self.assertEqual(daylight["mode"], "light")
+        self.assertEqual(daylight["background"], themes.PRESETS["daylight"]["background"])
+        custom = themes.resolve({
+            "preset": "custom", "mode": "light", "accent": "#89601d",
+            "background": "#f4f0e7", "surface": "#fffdf8", "text": "#292721", "muted": "#625e55",
+        })
+        self.assertEqual((custom["mode"], custom["background"]), ("light", "#f4f0e7"))
+        self.assertFalse(custom["canvas_corrected"])
+        submitted = themes.from_form(FormData([("theme_preset", "daylight"), ("theme_mode", "dark")]))
+        self.assertEqual(submitted["mode"], "light")
+
     def test_form_preferences_are_normalized(self):
         result = themes.from_form(FormData([
             ("theme_preset", "custom"), ("theme_accent", "#abcdef"),
@@ -47,9 +60,11 @@ class ThemeTests(unittest.TestCase):
             ("theme_text", "#ffffff"), ("theme_muted", "#bbbbbb"),
             ("theme_density", "compact"), ("theme_text_scale", "large"),
             ("theme_heading_style", "bookish"), ("theme_corners", "round"),
+            ("theme_mode", "light"),
             ("theme_reduce_motion", "on"),
         ]))
         self.assertEqual((result["density"], result["text_scale"], result["corners"]), ("compact", "large", "round"))
+        self.assertEqual(result["mode"], "light")
         self.assertTrue(result["reduce_motion"])
 
     def test_appearance_is_a_first_class_page(self):
@@ -88,6 +103,11 @@ class ThemeTests(unittest.TestCase):
                 save_id = save.id
             reset = client.post("/appearance/reset", follow_redirects=False)
             self.assertEqual(reset.status_code, 303)
+            saved_daylight = client.post("/appearance", data={"theme_preset": "daylight", "theme_mode": "dark"}, follow_redirects=False)
+            self.assertEqual(saved_daylight.status_code, 303)
+            daylight = client.get("/p/appearance")
+            self.assertIn('data-theme-mode="light"', daylight.text)
+            self.assertIn("#f4f0e7", daylight.text)
             client.post(f"/saves/{save_id}/delete", data={"confirm": save_name}, follow_redirects=False)
 
 

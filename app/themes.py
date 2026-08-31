@@ -42,6 +42,12 @@ PRESETS = {
         "accent": "#d2a15c", "background": "#15100b", "surface": "#251d14",
         "text": "#f3e8d4", "muted": "#b9aa92", "mode": "dark",
     },
+    "daylight": {
+        "name": "Daylight Chronicle",
+        "description": "An easy-reading parchment page with ink, gold, and high-contrast details.",
+        "accent": "#89601d", "background": "#f4f0e7", "surface": "#fffdf8",
+        "text": "#292721", "muted": "#625e55", "mode": "light",
+    },
 }
 
 DEFAULTS = {
@@ -51,6 +57,7 @@ DEFAULTS = {
     "heading_style": "classic",
     "corners": "soft",
     "reduce_motion": False,
+    "mode": "dark",
 }
 
 
@@ -109,14 +116,19 @@ def resolve(value: object = None) -> dict:
 
     custom = preset_key == "custom"
     source = raw if custom else preset
+    mode = str((raw.get("mode") if custom else preset.get("mode")) or DEFAULTS["mode"]).casefold()
+    if mode not in {"dark", "light"}:
+        mode = DEFAULTS["mode"]
     accent = _hex(source.get("accent"), preset["accent"])
     background = _hex(source.get("background"), preset["background"])
     surface = _hex(source.get("surface"), preset["surface"])
-    background, background_corrected = _dark_canvas(background, .055)
-    surface, surface_corrected = _dark_canvas(surface, .085)
+    if mode == "dark":
+        background, background_corrected = _dark_canvas(background, .055)
+        surface, surface_corrected = _dark_canvas(surface, .085)
+    else:
+        background_corrected = surface_corrected = False
     requested_text = _hex(source.get("text"), preset["text"])
     text, text_corrected = _accessible_text(surface, requested_text)
-    mode = "dark"
     muted_default = _mix(text, surface, .38)
     muted = _hex(source.get("muted"), muted_default)
     if contrast(surface, muted) < 3:
@@ -182,12 +194,13 @@ def from_form(form) -> dict:
         "text_scale": form.get("theme_text_scale"),
         "heading_style": form.get("theme_heading_style"),
         "corners": form.get("theme_corners"),
+        "mode": form.get("theme_mode"),
         "reduce_motion": "theme_reduce_motion" in form,
     }
     resolved = resolve(raw)
     return {key: resolved[key] for key in (
         "preset", "accent", "background", "surface", "text", "muted", "density",
-        "text_scale", "heading_style", "corners", "reduce_motion",
+        "text_scale", "heading_style", "corners", "mode", "reduce_motion",
     )}
 
 

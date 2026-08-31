@@ -9,7 +9,7 @@
       <label class="theme-preset-card {% if visual_theme.preset==preset.id %}selected{% endif %}">
         <input type="radio" name="theme_preset" value="{{preset.id}}" {% if visual_theme.preset==preset.id %}checked{% endif %}
           data-accent="{{preset.resolved.accent}}" data-background="{{preset.resolved.background}}"
-          data-surface="{{preset.resolved.surface}}" data-text="{{preset.resolved.text}}" data-muted="{{preset.resolved.muted}}">
+          data-surface="{{preset.resolved.surface}}" data-text="{{preset.resolved.text}}" data-muted="{{preset.resolved.muted}}" data-mode="{{preset.resolved.mode}}">
         <span class="theme-swatches" aria-hidden="true"><i style="--swatch:{{preset.resolved.background}}"></i><i style="--swatch:{{preset.resolved.surface}}"></i><i style="--swatch:{{preset.resolved.accent}}"></i><i style="--swatch:{{preset.resolved.text}}"></i></span>
         <strong>{{preset.name}}</strong><small>{{preset.description}}</small>
       </label>
@@ -17,7 +17,7 @@
       <label class="theme-preset-card {% if visual_theme.preset=='custom' %}selected{% endif %}">
         <input type="radio" name="theme_preset" value="custom" {% if visual_theme.preset=='custom' %}checked{% endif %}>
         <span class="theme-swatches custom" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-        <strong>Custom palette</strong><small>Choose each main color yourself. Canvas colors stay dark and text contrast is corrected automatically.</small>
+        <strong>Custom palette</strong><small>Choose each main color yourself, then select light or dark reading mode below.</small>
       </label>
     </div>
   </section>
@@ -27,8 +27,8 @@
       <div class="section-heading"><div><p class="eyebrow">CUSTOM COLORS</p><h2>Fine tune the palette</h2><p>Changing a color automatically selects Custom palette.</p></div></div>
       <div class="theme-color-grid">
         <label>Accent<input type="color" name="theme_accent" value="{{visual_theme.accent}}"><small>Buttons, dates, and highlights</small></label>
-        <label>Page<input type="color" name="theme_background" value="{{visual_theme.background}}"><small>Darkened when needed for full compatibility</small></label>
-        <label>Panels<input type="color" name="theme_surface" value="{{visual_theme.surface}}"><small>Kept dark so older pages remain readable</small></label>
+        <label>Page<input type="color" name="theme_background" value="{{visual_theme.background}}"><small>Canvas color for the selected reading mode</small></label>
+        <label>Panels<input type="color" name="theme_surface" value="{{visual_theme.surface}}"><small>Surface color for pages, cards, and menus</small></label>
         <label>Main text<input type="color" name="theme_text" value="{{visual_theme.text}}"><small>Automatically kept readable</small></label>
         <label>Quiet text<input type="color" name="theme_muted" value="{{visual_theme.muted}}"><small>Captions and supporting details</small></label>
       </div>
@@ -41,6 +41,7 @@
         <label>Text size<select name="theme_text_scale"><option value="small" {% if visual_theme.text_scale=='small' %}selected{% endif %}>Small</option><option value="standard" {% if visual_theme.text_scale=='standard' %}selected{% endif %}>Standard</option><option value="large" {% if visual_theme.text_scale=='large' %}selected{% endif %}>Large</option></select></label>
         <label>Headings<select name="theme_heading_style"><option value="classic" {% if visual_theme.heading_style=='classic' %}selected{% endif %}>Classic</option><option value="bookish" {% if visual_theme.heading_style=='bookish' %}selected{% endif %}>Bookish</option><option value="modern" {% if visual_theme.heading_style=='modern' %}selected{% endif %}>Modern</option></select></label>
         <label>Corners<select name="theme_corners"><option value="square" {% if visual_theme.corners=='square' %}selected{% endif %}>Subtle</option><option value="soft" {% if visual_theme.corners=='soft' %}selected{% endif %}>Soft</option><option value="round" {% if visual_theme.corners=='round' %}selected{% endif %}>Rounded</option></select></label>
+        <label>Reading mode<select name="theme_mode"><option value="dark" {% if visual_theme.mode=='dark' %}selected{% endif %}>Dark</option><option value="light" {% if visual_theme.mode=='light' %}selected{% endif %}>Light</option></select><small>Switches to a matching preset, or controls the mode for a custom palette.</small></label>
         <label class="wide checkbox-line"><input type="checkbox" name="theme_reduce_motion" {% if visual_theme.reduce_motion %}checked{% endif %}> Reduce page and hover motion</label>
       </div>
     </article>

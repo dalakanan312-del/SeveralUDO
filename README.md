@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.9` adds a true light reading option. Daylight Chronicle provides a polished parchment-and-ink palette, and Custom palette can now be saved in either light or dark mode without dimming the selected canvas. The Appearance preview, cards, forms, navigation, Today, family tree, and other older feature surfaces follow the chosen mode.
+
 `4.5.8` refreshes the approved pre-1300 source documents, preserving existing 1200s event IDs while adding the missing historical entries and refreshed roll tables. It also expands the hosted Neon connection pool so simultaneous page loads and Clock Sync reports do not exhaust the web service and cause internal-server errors. Clock Sync remains 2.2.8.
 
 `4.5.7` ensures a Clock Sync relationship upgrading from a generic game summary to Marriage always creates an Automation Inbox review. An engagement no longer suppresses a later marriage confirmation, while an already-recorded marriage remains protected from duplicate reviews. It also retains the maternal delivery safeguards introduced in 4.5.6. Clock Sync remains 2.2.8.
