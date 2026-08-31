@@ -11,6 +11,17 @@ OCCULT_TYPES = (
 )
 
 
+# Only the occult types whose supplied rules define a moral alignment receive
+# an automatic alignment roll.  The labels deliberately match the wording of
+# the original rules and the Sim profile editor.
+ALIGNMENT_LABELS = {
+    "Vampire": {"good": "Good", "bad": "Bad"},
+    "Spellcaster": {"good": "Good", "bad": "Bad"},
+    "Mermaid": {"good": "Good", "bad": "Bad"},
+    "Fairy": {"good": "Benevolent", "bad": "Unseelie"},
+}
+
+
 # Follow-up relationships are kept separately from the editable rule rows so
 # saves created before the workbench can use them immediately. Future rule
 # records may instead declare `triggered_by` themselves.
@@ -154,7 +165,7 @@ def _rule(key, label, occult, cadence, die, trigger, results, notes,
 # manual until their prerequisite is known.
 DEFAULT_OCCULT_RULES = [
     _rule("general_inheritance", "General occult inheritance", "General", "birth", "dynamic", "dynamic", "Varies by the parents' detected occult and dormant blood", "Normal game genetics apply first. A human child may carry or manifest dormant occult blood; two different occults use a coin flip."),
-    _rule("alignment_inheritance", "Occult alignment inheritance", "General", "birth", "d10", "1", "1: Opposite alignment; 2-10: Inherit occult parent's alignment", "Opposing parents flip a coin instead.", auto=False),
+    {**_rule("alignment_inheritance", "Occult alignment inheritance", "General", "birth", "d10", "", "1: Opposite alignment; 2-10: Inherit occult parent's alignment", "Opposing parents flip a coin instead."), "alignment_automation_version": 1},
 
     _rule("vampire_hunt", "Vampire hunt occurrence", "Vampire", "annual", "d2", "1", "1: Heads — vampire hunt occurs; 2: Tails — no hunt", "Roll once per household or settlement while a vampire lives there.", scope="household"),
     _rule("vampire_accused", "Vampire accused during a hunt", "Vampire", "follow-up", "d10", "9", "9: Accused; all others: Not accused", "Two accusation rolls after witnessed powers, public feeding, or an attack; otherwise one.", auto=False),
@@ -239,6 +250,25 @@ def sim_occult_types(data: dict | None) -> list[str]:
     compact = text.casefold()
     found = [name for name in OCCULT_TYPES if name.casefold() in compact]
     return found
+
+
+def alignment_occult(data: dict | None) -> str:
+    """Return the first detected occult type that uses alignment rules."""
+    return next((name for name in sim_occult_types(data) if name in ALIGNMENT_LABELS), "")
+
+
+def alignment_side(value) -> str:
+    """Normalize profile alignment wording to the universal good/bad sides."""
+    text = str(value or "").strip().casefold()
+    if text in {"good", "benevolent"}:
+        return "good"
+    if text in {"bad", "malevolent", "unseelie"}:
+        return "bad"
+    return ""
+
+
+def alignment_label(occult: str, side: str) -> str:
+    return ALIGNMENT_LABELS.get(str(occult or ""), {}).get(str(side or ""), "")
 
 
 def dormant_occult_types(data: dict | None) -> list[str]:

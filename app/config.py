@@ -69,7 +69,7 @@ class Settings:
     openai_image_model: str = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
     desktop_installer_url: str = os.getenv(
         "DESKTOP_INSTALLER_URL",
-        "https://github.com/dalakanan312-del/SeveralUDO/releases/download/v4.5.3/Decades-Tracker-4.5.3-Setup.exe",
+        "https://github.com/dalakanan312-del/SeveralUDO/releases/download/v4.5.4/Decades-Tracker-4.5.4-Setup.exe",
     )
     skip_startup_migrations: bool = os.getenv("DECADES_SKIP_STARTUP_MIGRATIONS", "").casefold() in {"1","true","yes","on"}
     automatic_snapshots: bool = _automatic_snapshots(database_url)

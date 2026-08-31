@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.5.3` repairs visible automatic day progression: open tracker pages now follow the stored Clock Sync day, refresh once when Global Day advances, preserve unsaved forms, show the last automatic advance on the Clock page, and avoid versioning identical clock state on every polling report. Clock Sync remains 2.2.8.
+`4.5.4` adds automatic occult-alignment rolls. Vampires, Spellcasters and Mermaids use Good/Bad; Fairies use Benevolent/Unseelie. Founders establish alignment with a D2, children normally inherit an aligned occult parent's result with the supplied D10 rule, and opposing parents use a D2. Completed results update the Sim profile and unlock alignment-dependent obligations without creating duplicates. Clock Sync remains 2.2.8.
 
 `4.5.1` adds compact collapsible family plans and the connected Life Records workspace: planned-marriage dowry estimates, guardianship, birth-order privileges, coming-of-age and household-dispersal planning, social mobility, absences, disability, mourning, wellbeing, treatment and recovery restrictions, Law & Disorder-compatible legal reviews, grief automation, roll explanations, safe automation undo, contradiction checks, saved views, bulk profile correction, and annual newspapers. A new save-level Appearance editor adds six compatible palettes, safe custom colors, spacing, text size, heading style, corner, motion, live-preview, and reset controls across desktop, hosted, and mobile layouts. Clock Sync remains 2.2.8.
 

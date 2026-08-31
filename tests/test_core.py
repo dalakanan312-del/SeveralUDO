@@ -1458,7 +1458,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.3")
+            self.assertEqual(health.json()["version"], "4.5.4")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -3369,15 +3369,47 @@ class CoreSmokeTests(unittest.TestCase):
                 ]
                 session.add_all(sims);session.flush()
                 self.assertGreaterEqual(seed_occult_rules(session,save),60)
-                self.assertEqual(schedule_occult_rolls(session,save,sims),7)
+                self.assertEqual(schedule_occult_rolls(session,save,sims),12)
                 rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["occult_roll"].as_boolean().is_(True))))
                 keys=[item.data["occult_rule_key"] for item in rolls]
+                self.assertEqual(keys.count("alignment_inheritance"),5)
                 self.assertEqual(keys.count("vampire_hunt"),1)
                 self.assertEqual(keys.count("werewolf_attack"),1)
                 self.assertEqual(keys.count("werewolf_discovery"),1)
                 self.assertNotIn("mermaid_sailor",keys);self.assertNotIn("mermaid_dehydration",keys)
                 self.assertNotIn("ghost_haunting",keys);self.assertNotIn("ghost_move_on",keys)
                 self.assertEqual(schedule_occult_rolls(session,save,sims),0)
+                session.rollback()
+
+    def test_occult_alignment_rolls_use_parent_inheritance_and_type_specific_labels(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Occult alignment",global_day=65,start_year=1500,days_per_year=4,settings={"automatic_occult_rolls":True,"occult_rolls_enabled_from_global_day":65})
+                session.add(save);session.flush()
+                good_vampire=Record(save_id=save.id,kind="sim",label="Good Parent",data={"species_occult":"Vampire","game_occult_types":["Vampire"],"occult_alignment":"Good"})
+                bad_vampire=Record(save_id=save.id,kind="sim",label="Bad Parent",data={"species_occult":"Vampire","game_occult_types":["Vampire"],"occult_alignment":"Bad"})
+                session.add_all([good_vampire,bad_vampire]);session.flush()
+                inherited=Record(save_id=save.id,kind="sim",label="Inherited Vampire",data={"species_occult":"Vampire","game_occult_types":["Vampire"],"mother_id":good_vampire.id})
+                opposing=Record(save_id=save.id,kind="sim",label="Opposing Vampire",data={"species_occult":"Vampire","game_occult_types":["Vampire"],"mother_id":good_vampire.id,"father_id":bad_vampire.id})
+                founder_fairy=Record(save_id=save.id,kind="sim",label="Founder Fairy",data={"species_occult":"Fairy","game_occult_types":["Fairy"]})
+                alien=Record(save_id=save.id,kind="sim",label="Unaligned Alien",data={"species_occult":"Alien","game_occult_types":["Alien"]})
+                session.add_all([inherited,opposing,founder_fairy,alien]);session.flush();seed_occult_rules(session,save)
+                schedule_occult_rolls(session,save,[good_vampire,bad_vampire,inherited,opposing,founder_fairy,alien])
+                alignment_rolls=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),
+                    Record.data["occult_rule_key"].as_string()=="alignment_inheritance",
+                )))
+                by_sim={item.data["sim_id"]:item for item in alignment_rolls}
+                self.assertEqual(set(by_sim),{inherited.id,opposing.id,founder_fairy.id})
+                self.assertEqual(by_sim[inherited.id].data["die"],"d10")
+                self.assertEqual(by_sim[inherited.id].data["result_rules"],"1: Bad; 2-10: Good")
+                self.assertEqual(by_sim[opposing.id].data["die"],"d2")
+                self.assertEqual(by_sim[founder_fairy.id].data["result_rules"],"1: Benevolent; 2: Unseelie")
+
+                complete_roll(session,save,by_sim[founder_fairy.id],2)
+                self.assertEqual(founder_fairy.data["occult_alignment"],"Unseelie")
+                self.assertEqual(schedule_occult_rolls(session,save,[founder_fairy]),0)
                 session.rollback()
 
     def test_ghost_followups_require_successful_persistence_and_stop_after_moving_on(self):
@@ -3453,7 +3485,7 @@ class CoreSmokeTests(unittest.TestCase):
                 duplicate=Record(save_id=save.id,kind="occult_rule",label=original.label,data={**original.data,"default_id":""})
                 session.add(duplicate);session.flush()
 
-                self.assertEqual(schedule_occult_rolls(session,save,[vampire]),1)
+                self.assertEqual(schedule_occult_rolls(session,save,[vampire]),2)
                 hunts=list(session.scalars(select(Record).where(
                     Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),
                     Record.data["occult_rule_key"].as_string()=="vampire_hunt",

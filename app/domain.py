@@ -16,7 +16,7 @@ from . import advanced, calendar_utils, core_rulesets, decade_portraits, occult_
 from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
 
 
-DEFAULTS_SCHEMA_VERSION = "4.4.6-aging-tables"
+DEFAULTS_SCHEMA_VERSION = "4.5.4-occult-alignment"
 
 # Authoritative pre-1700 SeveralUDO mortality table recovered from the
 # original Rules Config. The age offsets remain challenge-day milestones;
@@ -1468,14 +1468,12 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
 
 
 def seed_occult_rules(session: Session, save: ChronicleSave) -> int:
-    """Install the supplied occult rules without enabling automatic scheduling."""
+    """Install and version the supplied occult rules without duplicating them."""
     repaired = repair_duplicate_occult_rules(session, save)
-    existing = {
-        _occult_rule_identity(item.data)
-        for item in session.scalars(select(Record).where(
-            Record.save_id == save.id, Record.kind == "occult_rule", Record.deleted.is_(False)
-        ))
-    }
+    existing_records = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "occult_rule", Record.deleted.is_(False)
+    )))
+    existing = {_occult_rule_identity(item.data): item for item in existing_records}
     created = 0
     for definition in occult_rules.DEFAULT_OCCULT_RULES:
         data = {key:value for key,value in definition.items() if key != "label"}
@@ -1483,10 +1481,25 @@ def seed_occult_rules(session: Session, save: ChronicleSave) -> int:
         data["default_id"] = default_id
         identity = _occult_rule_identity(data)
         if identity in existing:
+            # Alignment was originally shipped as a manual guidance rule.  A
+            # version marker upgrades it once, so a player's later choice to
+            # turn this individual rule off is respected on future startups.
+            current = existing[identity]
+            current_data = dict(current.data or {})
+            if (
+                data.get("rule_key") == "alignment_inheritance"
+                and int(current_data.get("alignment_automation_version") or 0) < 1
+            ):
+                base = current.version
+                current_data.update({"auto_schedule": True, "alignment_automation_version": 1})
+                current.data = current_data
+                current.version += 1
+                journal(session, current, "upsert", base)
+                created += 1
             continue
         record = Record(save_id=save.id, kind="occult_rule", label=definition["label"], data=data)
         session.add(record); session.flush(); journal(session, record, "upsert", 0)
-        existing.add(identity); created += 1
+        existing[identity] = record; created += 1
     return repaired + created
 
 
@@ -3041,6 +3054,73 @@ def _occult_inheritance_rolls(session: Session, save: ChronicleSave, sims: list[
     return created
 
 
+def _occult_alignment_rolls(session: Session, save: ChronicleSave, sims: list[Record],
+                            rules: list[Record]) -> int:
+    """Create the one-time alignment roll required by the supplied rules."""
+    rule = next((item for item in rules if (item.data or {}).get("rule_key") == "alignment_inheritance"
+                 and bool((item.data or {}).get("active", True))
+                 and bool((item.data or {}).get("auto_schedule", False))), None)
+    if not rule:
+        return 0
+    by_id = {sim.id: sim for sim in sims}
+    created = 0
+    missing_values = {"", "unknown", "undetermined", "none", "not set"}
+    for sim in sims:
+        sim_data = sim.data or {}
+        occult = occult_rules.alignment_occult(sim_data)
+        current_alignment = str(sim_data.get("occult_alignment") or "").strip()
+        if not occult or current_alignment.casefold() not in missing_values:
+            continue
+        if not occult_rules.living(sim_data, save.global_day):
+            continue
+
+        aligned_parents: list[tuple[Record, str]] = []
+        for parent_key in ("mother_id", "father_id"):
+            parent = by_id.get(str(sim_data.get(parent_key) or ""))
+            if not parent or parent.deleted:
+                continue
+            side = occult_rules.alignment_side((parent.data or {}).get("occult_alignment"))
+            if side:
+                aligned_parents.append((parent, side))
+        same_occult = [item for item in aligned_parents if occult in occult_rules.sim_occult_types(item[0].data)]
+        parents = same_occult or aligned_parents
+
+        good = occult_rules.alignment_label(occult, "good")
+        bad = occult_rules.alignment_label(occult, "bad")
+        parent_ids = [parent.id for parent, _side in parents]
+        if parents and len({side for _parent, side in parents}) == 1:
+            inherited_side = parents[0][1]
+            inherited = occult_rules.alignment_label(occult, inherited_side)
+            opposite = occult_rules.alignment_label(occult, "bad" if inherited_side == "good" else "good")
+            die = "d10"
+            results = f"1: {opposite}; 2-10: {inherited}"
+            result_map = {"1": opposite, **{str(value): inherited for value in range(2, 11)}}
+            basis = "Inherits an occult parent's alignment; 1 on D10 gives the opposite alignment."
+        else:
+            # Opposing aligned parents and founders both use an even D2.  For
+            # founders this establishes alignment without inventing ancestry.
+            die = "d2"
+            results = f"1: {good}; 2: {bad}"
+            result_map = {"1": good, "2": bad}
+            basis = (
+                "Opposing occult parents — coin flip between alignments."
+                if parents else "No known aligned occult parent — establish alignment by coin flip."
+            )
+        created += int(_add_occult_roll(
+            session, save, rule, sim, int(save.global_day), f"occult:alignment:{sim.id}",
+            label=f"{sim.label} — {occult} alignment",
+            overrides={
+                "die": die, "trigger_results": "", "result_rules": results,
+                "occult_type": occult, "occult_effect": "set_occult_alignment",
+                "occult_alignment_result_map": result_map,
+                "occult_alignment_parent_ids": parent_ids,
+                "occult_alignment_basis": basis,
+                "notes": basis,
+            },
+        ))
+    return created
+
+
 def _ghost_persistence_rolls(session: Session, save: ChronicleSave, sims: list[Record],
                              rules: list[Record], enabled_from: int) -> int:
     rule = next((item for item in rules if (item.data or {}).get("rule_key") == "ghost_persistence"
@@ -3096,6 +3176,7 @@ def schedule_occult_rolls(session: Session, save: ChronicleSave,
         Record.save_id == save.id, Record.kind == "occult_rule", Record.deleted.is_(False)
     )))
     created = _occult_inheritance_rolls(session, save, sims, rules, enabled_from)
+    created += _occult_alignment_rolls(session, save, sims, rules)
     created += _ghost_persistence_rolls(session, save, sims, rules, enabled_from)
     living_sims = [sim for sim in sims if occult_rules.living(sim.data, save.global_day)]
     current_year = _occult_year(save, save.global_day)
@@ -3260,7 +3341,17 @@ def apply_occult_roll_result(session: Session, roll: Record, actual: int) -> int
     sim_data = dict(sim.data or {})
     rule_key = str(data.get("source_rule_key") or data.get("occult_rule_key") or "")
     candidates = [str(value) for value in (data.get("occult_candidates") or []) if value]
-    if effect == "add_dormant_occult" and candidates and triggered:
+    if effect == "set_occult_alignment":
+        result_map = data.get("occult_alignment_result_map") or {}
+        selected = str(result_map.get(str(actual)) or "").strip()
+        if not selected:
+            return 0
+        sim_data.update({
+            "occult_alignment": selected,
+            "occult_alignment_source_roll_id": roll.id,
+            "occult_alignment_global_day": int(roll.global_day or 1),
+        })
+    elif effect == "add_dormant_occult" and candidates and triggered:
         existing = occult_rules.dormant_occult_types(sim_data)
         sim_data["dormant_occult_types"] = list(dict.fromkeys(existing + candidates))
     elif effect == "manifest_dormant_occult" and candidates and triggered:
@@ -4386,6 +4477,11 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         roll.data = {**roll.data, **marriage_updates}
     occult_changed = apply_occult_roll_result(session, roll, actual) if automate else 0
     automatic_followups = _schedule_automatic_occult_followup(session, save, roll) if automate else 0
+    occult_scheduled = (
+        schedule_occult_rolls(session, save)
+        if occult_changed and str(roll.data.get("occult_effect") or "") == "set_occult_alignment"
+        else 0
+    )
     if automate:
         automatic_followups += _schedule_event_followup(session, save, roll, actual)
     service_changed = _record_campaign_service(session, save, roll) if automate else False
@@ -4490,7 +4586,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 save.revision += end_illnesses_for_death(session, save, sim, death_day)
                 death_changed = True
             save.revision += _retire_rolls_after_death(session, save, sim.id, death_day, roll.id)
-    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + automatic_followups
+    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + occult_scheduled + automatic_followups
     return {
         "outcome": roll.data["outcome"], "death": sync.serialize(death) if death else None,
         "death_created": death_created, "death_changed": death_changed, "pregnancy_count":pregnancy_count,
