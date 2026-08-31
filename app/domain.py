@@ -1252,6 +1252,47 @@ def _delivery_retirement_reason(reason: object) -> bool:
     ))
 
 
+def maternal_rule_for_day(
+    save: ChronicleSave,
+    rules: list[Record],
+    mother: Record | None,
+    day: int,
+) -> Record | None:
+    """Return the maternal table that applies to one delivery day.
+
+    Both the normal scheduler and delivery recovery use this same selection
+    rule.  Keeping it in one place prevents a completed pregnancy from being
+    unable to recover an obligation merely because it arrived before the
+    periodic scheduler had created it.
+    """
+    if not mother:
+        return None
+    birth = (mother.data or {}).get("birth_global_day", mother.global_day)
+    if birth is None:
+        return None
+    try:
+        age = int(day) - int(birth)
+    except (TypeError, ValueError):
+        return None
+    stage = (
+        "preteen" if age < 52 else "teen" if age < 72 else
+        "young adult" if age < 160 else "adult" if age < 240 else "elder"
+    )
+    due_year = save.start_year + (int(day) - 1) // max(1, save.days_per_year)
+    eligible = [
+        rule for rule in rules
+        if int((rule.data or {}).get("start_year", -9999)) <= due_year
+        <= int((rule.data or {}).get("end_year", 9999))
+    ]
+    return (
+        next((rule for rule in eligible if stage in rule.label.casefold()), None)
+        or next((
+            rule for rule in eligible
+            if "all ages" in rule.label.casefold() or "birth" in rule.label.casefold()
+        ), None)
+    )
+
+
 def preserve_delivery_maternal_rolls(
     session: Session,
     save: ChronicleSave,
@@ -1259,13 +1300,16 @@ def preserve_delivery_maternal_rolls(
     delivery_day: int | None = None,
     *,
     restore_retired: bool = False,
+    create_missing: bool = True,
 ) -> int:
     """Keep unfinished maternal obligations visible after delivery acceptance.
 
-    Existing pending rolls are re-anchored to the confirmed delivery day.  The
-    optional repair mode revives only rolls that older versions explicitly
-    retired as a delivery; rolls retired for a miscarriage, cancellation,
-    archive, or ruleset change remain retired.
+    Existing pending rolls are re-anchored to the confirmed delivery day.  If
+    a delivery is received before periodic scheduling had created its roll, a
+    current delivery flow creates the one missing obligation.  The optional
+    repair mode revives only rolls that older versions explicitly retired as a
+    delivery; rolls retired for a miscarriage, cancellation, archive, or
+    ruleset change remain retired.
     """
     pregnancy_data = dict(pregnancy.data or {})
     if not pregnancy_data.get("maternal_rolls_required", True):
@@ -1284,13 +1328,14 @@ def preserve_delivery_maternal_rolls(
         Record.kind == "roll",
     )))
     source_prefix = f"maternal:{pregnancy.id}:"
-    matching_rolls = [
+    all_matching_rolls = [
         roll for roll in rolls
-        if not (roll.data or {}).get("completed") and (
+        if (
             (roll.data or {}).get("source_id") == pregnancy.id
             or str((roll.data or {}).get("source") or "").startswith(source_prefix)
         )
     ]
+    matching_rolls = [roll for roll in all_matching_rolls if not (roll.data or {}).get("completed")]
     active_rolls = [roll for roll in matching_rolls if not roll.deleted]
     restorable_id = None
     if restore_retired and not active_rolls:
@@ -1331,6 +1376,61 @@ def preserve_delivery_maternal_rolls(
         roll.version += 1
         journal(session, roll, "upsert", base)
         changed += 1
+    # When there is already a completed or retired history record, preserve
+    # that history rather than creating a second pending maternal roll.  A
+    # genuinely missing record is safe to create only in the live delivery
+    # workflow; broad historic repair remains revive-only.
+    if create_missing and not all_matching_rolls and mother and not mother.deleted:
+        mother_data = mother.data or {}
+        mother_death = mother_data.get("death_global_day")
+        try:
+            mother_death_has_arrived = mother_death is not None and int(mother_death) <= int(save.global_day)
+        except (TypeError, ValueError):
+            mother_death_has_arrived = False
+        mother_is_unavailable = (
+            bool(mother_data.get("game_was_dead"))
+            or "Servo" in occult_rules.sim_occult_types(mother_data)
+            or mother_death_has_arrived
+        )
+        if not mother_is_unavailable and (save.settings or {}).get("maternal_rolls_enabled", True):
+            rules = [
+                item for item in session.scalars(select(Record).where(
+                    Record.save_id == save.id,
+                    Record.kind == "roll_rule",
+                    Record.deleted.is_(False),
+                ))
+                if core_rulesets.applies_to_selected_core(save, item)
+                and "maternal" in item.label.casefold()
+                and (item.data or {}).get("active", True)
+            ]
+            rule = maternal_rule_for_day(save, rules, mother, day)
+            if rule:
+                roll = Record(
+                    save_id=save.id,
+                    kind="roll",
+                    label=f"{mother.label} — {rule.label}",
+                    global_day=day,
+                    data={
+                        "sim_id": mother.id,
+                        "sim_name": mother.label,
+                        "source_id": pregnancy.id,
+                        "roll_type": rule.label,
+                        "die": (rule.data or {}).get("die"),
+                        "bad_results": (rule.data or {}).get("bad_results"),
+                        "source": f"maternal:{pregnancy.id}:{rule.id}",
+                        "due_global_day": day,
+                        "delivery_global_day": day,
+                        "delivery_confirmed": True,
+                        "maternal_roll_preserved_after_delivery": True,
+                        "completed": False,
+                        "core_ruleset_id": (rule.data or {}).get("core_ruleset_id"),
+                        "core_source_rule_id": (rule.data or {}).get("source_rule_id"),
+                    },
+                )
+                session.add(roll)
+                session.flush()
+                journal(session, roll, "upsert", 0)
+                changed += 1
     return changed
 
 
@@ -1342,7 +1442,9 @@ def restore_delivery_maternal_rolls(session: Session, save: ChronicleSave) -> in
         Record.deleted.is_(False),
     )))
     return sum(
-        preserve_delivery_maternal_rolls(session, save, pregnancy, restore_retired=True)
+        preserve_delivery_maternal_rolls(
+            session, save, pregnancy, restore_retired=True, create_missing=False,
+        )
         for pregnancy in pregnancies
         if pregnancy_keeps_maternal_roll((pregnancy.data or {}).get("status"))
     )
@@ -4242,12 +4344,7 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
             mother_death = mother.data.get("death_global_day") if mother else None
             if due is None or int(due) < 1 or birth is None or (mother and (bool((mother.data or {}).get("game_was_dead")) or "Servo" in occult_rules.sim_occult_types(mother.data))) or (mother_death is not None and int(mother_death) <= save.global_day) or (status in CLOSED_PREGNANCIES and int(due) < save.global_day):
                 continue
-            age = int(due) - int(birth)
-            stage = "preteen" if age < 52 else "teen" if age < 72 else "young adult" if age < 160 else "adult" if age < 240 else "elder"
-            due_year = save.start_year + (int(due) - 1) // max(1, save.days_per_year)
-            eligible = [item for item in maternal_rules if int(item.data.get("start_year", -9999)) <= due_year <= int(item.data.get("end_year", 9999))]
-            rule = next((item for item in eligible if stage in item.label.casefold()), None)
-            rule = rule or next((item for item in eligible if "all ages" in item.label.casefold() or "birth" in item.label.casefold()), None)
+            rule = maternal_rule_for_day(save, maternal_rules, mother, int(due))
             if not rule:
                 continue
             source = f"maternal:{pregnancy.id}:{rule.id}"

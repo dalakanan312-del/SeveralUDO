@@ -27,7 +27,7 @@ from app.clock import _game_illnesses, _store_game_portrait, attach_game_identit
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, preserve_delivery_maternal_rolls, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, restore_delivery_maternal_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, confirmed_illness_name, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
@@ -2212,6 +2212,31 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(roll.data["source_id"],active.id)
                 self.assertIn("Maternal",roll.data["roll_type"])
                 session.rollback()
+
+    def test_delivery_creates_a_missing_maternal_roll_without_rewriting_history(self):
+        """A delivery report can arrive before the background scheduler runs."""
+        with SessionLocal() as session:
+            workspace=Workspace(name="Missing maternal delivery");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Missing maternal delivery",global_day=30,start_year=1550,days_per_year=4,settings={"maternal_rolls_enabled":True})
+            session.add(save);session.flush()
+            mother=Record(save_id=save.id,kind="sim",label="Delivery Parent",global_day=1,data={"birth_global_day":1})
+            rule=Record(save_id=save.id,kind="roll_rule",label="Maternal — Preteen",data={"die":"d20","bad_results":"1-8","active":True})
+            session.add_all([mother,rule]);session.flush()
+            pregnancy=Record(save_id=save.id,kind="pregnancy",label="Reported delivery",global_day=30,data={"mother_id":mother.id,"status":"Delivered","actual_delivery_global_day":30,"maternal_rolls_required":True})
+            session.add(pregnancy);session.flush()
+
+            # Historic repair deliberately only revives records it can prove
+            # were hidden by a delivery; it must not invent old obligations.
+            self.assertEqual(restore_delivery_maternal_rolls(session,save),0)
+            self.assertEqual(preserve_delivery_maternal_rolls(session,save,pregnancy,30),1)
+            roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll"))
+            self.assertEqual((roll.global_day,roll.data["due_global_day"]),(30,30))
+            self.assertEqual(roll.data["source"],f"maternal:{pregnancy.id}:{rule.id}")
+            self.assertTrue(roll.data["delivery_confirmed"])
+            self.assertFalse(roll.data["completed"])
+            self.assertEqual(preserve_delivery_maternal_rolls(session,save,pregnancy,30),0)
+            self.assertEqual(len(list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll")))),1)
+            session.rollback()
 
     def test_roll_refresh_restores_only_maternal_rolls_hidden_by_delivery(self):
         with SessionLocal() as session:

@@ -1369,7 +1369,7 @@ def feature_page(request: Request, page: str):
             # save.  Clock Sync and save scans keep it current after that; this
             # initial pass also repairs existing saves that have not reported
             # from the game recently.
-            clean_automation_version = "2026-08-31"
+            clean_automation_version = "2026-08-31-maternal-recovery"
             if (domain.automation_enabled(save)
                     and (save.settings or {}).get("clean_automation_sweep_version") != clean_automation_version):
                 clean_automation = automation.run_clean_automations(session, save, include_rolls=True, full_maintenance=True)

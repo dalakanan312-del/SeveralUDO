@@ -12,6 +12,7 @@ from .domain import (
     end_illnesses_for_death,
     event_is_ignored,
     journal,
+    restore_delivery_maternal_rolls,
     schedule_rolls,
     sync_generations,
 )
@@ -703,6 +704,7 @@ def run_clean_automations(session: Session, save: ChronicleSave, *, include_roll
         "pregnancy_plans": 0,
         "marriage_dates": 0,
         "illnesses_ended": 0,
+        "maternal_rolls_restored": 0,
         "rolls_created": 0,
     }
     if not result["enabled"]:
@@ -716,6 +718,11 @@ def run_clean_automations(session: Session, save: ChronicleSave, *, include_roll
         # Sim allowance and the family plan derived from the completed roll.
         result["pregnancy_plans"] = backfill_pregnancy_allowances(session, save)
         result["marriage_dates"] = backfill_generated_marriage_dates(session, save)
+        # Versions before the delivery-preservation fix could hide an already
+        # scheduled maternal roll when a birth was accepted.  This revive-only
+        # pass repairs that exact, auditable history without inventing rolls
+        # for old deliveries that never had one.
+        result["maternal_rolls_restored"] = restore_delivery_maternal_rolls(session, save)
 
         sims = list(session.scalars(select(Record).where(
             Record.save_id == save.id,
@@ -739,6 +746,7 @@ def run_clean_automations(session: Session, save: ChronicleSave, *, include_roll
 
     direct_changes = sum(int(result[key]) for key in (
         "parent_links", "generations", "married_names", "marriage_dates", "illnesses_ended",
+        "maternal_rolls_restored",
     ))
     save.revision += direct_changes
     if include_rolls or direct_changes or int(result["pregnancy_plans"]):
