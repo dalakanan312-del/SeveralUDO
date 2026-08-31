@@ -1096,6 +1096,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     except (TypeError, ValueError):
         high_watermark = int(link.last_game_day if link.last_game_day is not None else game_day)
     prior_game_day = int(link.last_game_day) if link.last_game_day is not None else None
+    prior_anchor = (link.game_anchor_day, link.tracker_anchor_day)
     game_day_regressed = game_day < high_watermark
     if link.game_anchor_day is None or link.tracker_anchor_day is None:
         link.game_anchor_day = game_day
@@ -1124,7 +1125,12 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         link.last_seen_at = datetime.now(timezone.utc)
         members = list(report.get("household_members", report.get("household_sims", [])) or [])
         diagnostic_updated = _update_clock_diagnostic(session, save, members, game_day, hour, minute, report)
-        sync.sync_clock_state(session, save, link)
+        # The link table keeps the exact most-recent time. The versioned sync
+        # shadow only needs a new entry when the calendar or anchor changes;
+        # writing one every polling second made local databases and their WAL
+        # files grow needlessly large.
+        if prior_game_day != game_day or prior_anchor != (link.game_anchor_day, link.tracker_anchor_day):
+            sync.sync_clock_state(session, save, link)
         if protocol_result:
             _commit_protocol_state(session, save, protocol_state, protocol_prior, protocol_result, report)
         session.flush()
@@ -1144,10 +1150,20 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
                             sequence_gap=protocol_result.get("sequence_gap"),
                             chain_mismatch=bool(protocol_result.get("chain_mismatch")))
         return response
+    previous_tracker_day = int(save.global_day)
     day_advanced = target > save.global_day
     if target > save.global_day:
         save.global_day = target
         save.revision += 1
+        advanced_at = datetime.now(timezone.utc)
+        advance_settings = dict(save.settings or {})
+        advance_settings.update({
+            "clock_last_advance_from_global_day": previous_tracker_day,
+            "clock_last_advance_tracker_global_day": int(target),
+            "clock_last_advance_game_day": game_day,
+            "clock_last_advance_at": advanced_at.isoformat(),
+        })
+        save.settings = advance_settings
     link.last_game_day, link.last_game_hour, link.last_game_minute = game_day, hour, minute
     link.last_seen_at = datetime.now(timezone.utc)
     candidates = []; illnesses_created = illnesses_ended = portrait_updates = 0; journal_entries = []
@@ -1318,7 +1334,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         if not prior_story:
             chapter = storyline.generate_chapter(session, save, tone="intimate", use_ai=False)
             chapter.data = {**chapter.data, "automatic_clock_day": save.global_day}
-    sync.sync_clock_state(session,save,link)
+    if day_advanced or anchor_repaired or prior_game_day != game_day or prior_anchor != (link.game_anchor_day, link.tracker_anchor_day):
+        sync.sync_clock_state(session,save,link)
     if protocol_result:
         _commit_protocol_state(session, save, protocol_state, protocol_prior, protocol_result, report)
     session.flush()

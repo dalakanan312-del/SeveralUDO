@@ -147,7 +147,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.2")
+app = FastAPI(title="Decades Tracker", version="4.5.3")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1156,6 +1156,36 @@ def notification_feed(request: Request, after: str = ""):
         }
 
 
+@app.get("/api/live-status")
+def live_status(request: Request):
+    """Small polling response that lets an open tracker follow Clock Sync."""
+    with db() as session:
+        ctx = context(request, session)
+        user, save = ctx.get("user"), ctx.get("save")
+        if not user or not save:
+            raise HTTPException(401)
+        link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id))
+        advance = dict(save.settings or {})
+        return {
+            "ok": True,
+            "save_id": save.id,
+            "global_day": int(save.global_day),
+            "clock": {
+                "enabled": bool(link and link.enabled),
+                "game_day": link.last_game_day if link else None,
+                "hour": link.last_game_hour if link else None,
+                "minute": link.last_game_minute if link else None,
+                "last_seen_at": link.last_seen_at.isoformat() if link and link.last_seen_at else None,
+            },
+            "last_advance": {
+                "from_global_day": advance.get("clock_last_advance_from_global_day"),
+                "global_day": advance.get("clock_last_advance_tracker_global_day"),
+                "game_day": advance.get("clock_last_advance_game_day"),
+                "at": advance.get("clock_last_advance_at"),
+            },
+        }
+
+
 @app.post("/saves/select")
 def select_save(request: Request, save_id: str = Form(...)):
     with db() as session:
@@ -1836,6 +1866,14 @@ def feature_page(request: Request, page: str):
                 Record.save_id == save.id, Record.kind == "clock_diagnostic", Record.deleted.is_(False),
             ).order_by(Record.updated_at.desc()).limit(1))
             ctx["clock_notice"] = request.session.pop("clock_notice", None)
+            clock_settings = dict(save.settings or {})
+            if clock_settings.get("clock_last_advance_tracker_global_day") is not None:
+                ctx["clock_last_advance"] = {
+                    "from_global_day": clock_settings.get("clock_last_advance_from_global_day"),
+                    "global_day": clock_settings.get("clock_last_advance_tracker_global_day"),
+                    "game_day": clock_settings.get("clock_last_advance_game_day"),
+                    "at": clock_settings.get("clock_last_advance_at"),
+                }
             if link and link.last_game_day is not None and link.game_anchor_day is not None and link.tracker_anchor_day is not None:
                 ctx["clock_projected_day"] = int(link.tracker_anchor_day) + max(0, int(link.last_game_day) - int(link.game_anchor_day))
                 ctx["clock_drift"] = save.global_day - ctx["clock_projected_day"]
@@ -4043,6 +4081,11 @@ def advance_day(request: Request, save_id: str, days: int = Form(1)):
         label = "Skipped 7 days" if step == 7 else "Changed Global Day"
         set_today_undo(request, label, save_global_day=save.global_day)
         save.global_day = max(1, min(20000, save.global_day + step))
+        link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id, ClockLink.enabled.is_(True)))
+        if link and link.last_game_day is not None:
+            link.game_anchor_day = int(link.last_game_day)
+            link.tracker_anchor_day = int(save.global_day)
+            sync.sync_clock_state(session, save, link)
         domain.schedule_rolls(session, save)
     return RedirectResponse("/p/today", status_code=303)
 
@@ -4051,7 +4094,13 @@ def advance_day(request: Request, save_id: str, days: int = Form(1)):
 def set_global_day(request: Request, save_id: str, global_day: int = Form(...)):
     with db() as session:
         save=owned_save(request,session,save_id);set_today_undo(request,"Changed Global Day",save_global_day=save.global_day)
-        save.global_day=max(1,min(20000,global_day));domain.schedule_rolls(session,save)
+        save.global_day=max(1,min(20000,global_day))
+        link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id, ClockLink.enabled.is_(True)))
+        if link and link.last_game_day is not None:
+            link.game_anchor_day = int(link.last_game_day)
+            link.tracker_anchor_day = int(save.global_day)
+            sync.sync_clock_state(session, save, link)
+        domain.schedule_rolls(session,save)
     return RedirectResponse("/p/today",status_code=303)
 
 
@@ -4684,11 +4733,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.2-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.3-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.2-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.3-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

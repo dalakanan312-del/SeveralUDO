@@ -31,7 +31,7 @@ from app.domain import apply_married_surnames, backfill_married_surnames, backfi
 from app.game_metadata import _refpack_decompress, bundled_localizations, confirmed_illness_name, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
-from app.models import ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Portrait, Record, User, Workspace
+from app.models import Change, ChronicleSave, ClockLink, Conflict, DiceAudit, LegacyWorkspaceCode, Membership, Portrait, Record, User, Workspace
 from app.portraits import normalize_image
 from app.storyline import build as build_storyline
 from app.save_scanner import SIM_PORTRAIT_RESOURCE, _embedded_sim_portraits, _parse_save_slot, _parse_sim, compare_scan, import_portraits, protobuf_fields
@@ -993,6 +993,44 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(save.global_day, 73)
                 session.rollback()
 
+    def test_clock_audits_day_advance_without_versioning_every_poll(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                template = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save = ChronicleSave(workspace_id=template.workspace_id, name="Clock write throttle", global_day=20)
+                session.add(save); session.flush()
+                link = ClockLink(save_id=save.id, token_hash=uuid.uuid4().hex)
+                session.add(link); session.flush()
+                receive_clock(session, link, {"game_day":100,"hour":8,"minute":0,"household_members":[]})
+                first_changes = session.scalar(select(func.count()).select_from(Change).where(
+                    Change.save_id == save.id, Change.kind == "clock_state",
+                ))
+                receive_clock(session, link, {"game_day":100,"hour":8,"minute":1,"household_members":[]})
+                same_day_changes = session.scalar(select(func.count()).select_from(Change).where(
+                    Change.save_id == save.id, Change.kind == "clock_state",
+                ))
+                advanced = receive_clock(session, link, {"game_day":101,"hour":0,"minute":1,"household_members":[]})
+                final_changes = session.scalar(select(func.count()).select_from(Change).where(
+                    Change.save_id == save.id, Change.kind == "clock_state",
+                ))
+                self.assertEqual(first_changes, same_day_changes)
+                self.assertGreater(final_changes, same_day_changes)
+                self.assertEqual(advanced["tracker_global_day"], 21)
+                self.assertEqual(save.settings["clock_last_advance_from_global_day"], 20)
+                self.assertEqual(save.settings["clock_last_advance_tracker_global_day"], 21)
+                self.assertEqual(save.settings["clock_last_advance_game_day"], 101)
+                session.rollback()
+
+    def test_open_tracker_has_a_live_global_day_feed(self):
+        with TestClient(app) as client:
+            status = client.get("/api/live-status")
+            self.assertEqual(status.status_code, 200)
+            self.assertIn("global_day", status.json())
+            page = client.get("/p/today")
+            self.assertEqual(page.status_code, 200)
+            self.assertIn('data-live-status="/api/live-status"', page.text)
+            self.assertIn("data-current-global-day=", page.text)
+
     def test_clock_high_watermark_does_not_reanchor_an_older_game_save(self):
         with TestClient(app):
             with SessionLocal() as session:
@@ -1420,7 +1458,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.2")
+            self.assertEqual(health.json()["version"], "4.5.3")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)

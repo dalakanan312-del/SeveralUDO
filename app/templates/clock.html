@@ -13,6 +13,9 @@
   <article><strong>{{clock_link.last_game_day if clock_link and clock_link.last_game_day is not none else 'Waiting'}}</strong><span>last game day</span></article>
   <article><strong>{{save.global_day}}</strong><span>tracker Global Day</span></article>
 </section>
+{% if clock_last_advance %}
+<div class="notice"><strong>Last automatic advance:</strong> game day {{clock_last_advance.game_day}} moved the tracker from GD {{clock_last_advance.from_global_day}} to GD {{clock_last_advance.global_day}}{% if clock_last_advance.at %} · {{clock_last_advance.at}}{% endif %}.</div>
+{% endif %}
 {% if clock_link and clock_link.last_game_day is not none %}
 <div class="notice"><strong>{{sim_weekday(clock_link.last_game_day)}}</strong> · {{'%02d'|format(clock_link.last_game_hour or 0)}}:{{'%02d'|format(clock_link.last_game_minute or 0)}} · last report {{clock_link.last_seen_at}}</div>
 {% endif %}

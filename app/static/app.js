@@ -38,6 +38,26 @@ document.addEventListener('click',async(event)=>{if(!event.target.closest('#enab
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollTrackerAlerts();});
 window.setInterval(pollTrackerAlerts,30000);window.setTimeout(pollTrackerAlerts,1800);
 
+let liveStatusPollActive=false;
+let trackerFormDirty=false;
+function showDayAdvanceNotice(fromDay,toDay){
+  let notice=document.getElementById('live-day-advance');
+  if(!notice){notice=document.createElement('div');notice.id='live-day-advance';notice.className='tracker-alert-tray';document.body.appendChild(notice);}
+  notice.innerHTML='';const card=document.createElement('section');card.className='tracker-alert clock';
+  const copy=document.createElement('div');const title=document.createElement('strong');title.textContent=`Tracker advanced to Global Day ${toDay}`;const message=document.createElement('p');message.textContent=`Your open form was preserved. Refresh when ready to update Today, dates, and due work (previously GD ${fromDay}).`;copy.append(title,message);
+  const actions=document.createElement('div');const refresh=document.createElement('button');refresh.type='button';refresh.className='primary';refresh.textContent='Refresh now';refresh.addEventListener('click',()=>location.reload());actions.append(refresh);card.append(copy,actions);notice.append(card);
+}
+document.addEventListener('input',(event)=>{const form=event.target.closest('form');if(form&&String(form.method||'get').toLowerCase()==='post')trackerFormDirty=true;});
+document.addEventListener('change',(event)=>{const form=event.target.closest('form');if(form&&String(form.method||'get').toLowerCase()==='post')trackerFormDirty=true;});
+document.addEventListener('submit',()=>{trackerFormDirty=false;});
+async function pollLiveStatus(){
+  const body=document.body;const endpoint=body.dataset.liveStatus;if(!endpoint||document.hidden||liveStatusPollActive)return;liveStatusPollActive=true;
+  try{const response=await fetch(endpoint,{headers:{Accept:'application/json'},cache:'no-store'});if(!response.ok)return;const data=await response.json();if(data.save_id!==body.dataset.saveId)return;const current=Number(body.dataset.currentGlobalDay),next=Number(data.global_day);if(!Number.isFinite(next))return;document.querySelectorAll('[data-live-global-day]').forEach((node)=>{node.textContent=String(next);});if(Number.isFinite(current)&&next!==current){body.dataset.currentGlobalDay=String(next);if(trackerFormDirty)showDayAdvanceNotice(current,next);else location.reload();}}
+  catch(_error){}finally{liveStatusPollActive=false;}
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollLiveStatus();});
+window.setInterval(pollLiveStatus,10000);window.setTimeout(pollLiveStatus,2200);
+
 function themeRgb(value){const clean=String(value||'').replace('#','');return [0,2,4].map((index)=>parseInt(clean.slice(index,index+2),16));}
 function themeHex(channels){return '#'+channels.map((channel)=>Math.max(0,Math.min(255,Math.round(channel))).toString(16).padStart(2,'0')).join('');}
 function themeMix(first,second,amount){const a=themeRgb(first),b=themeRgb(second);return themeHex(a.map((channel,index)=>channel+(b[index]-channel)*amount));}

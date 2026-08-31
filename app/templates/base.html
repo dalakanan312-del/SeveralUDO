@@ -19,7 +19,7 @@
 <link rel="stylesheet" href="/static/theme.css?v={{static_version}}">
   <script src="/static/htmx.min.js?v={{static_version}}" defer></script>
 </head>
-<body data-page="{{page or 'home'}}" data-theme-mode="{{visual_theme.mode}}" data-theme-density="{{visual_theme.density}}" data-theme-scale="{{visual_theme.text_scale}}" data-heading-style="{{visual_theme.heading_style}}" data-theme-motion="{{'reduce' if visual_theme.reduce_motion else 'full'}}" {% if user and save %}data-notification-feed="/api/notifications" data-notification-cursor="{{notification_cursor}}" data-save-id="{{save.id}}"{% endif %}>
+<body data-page="{{page or 'home'}}" data-theme-mode="{{visual_theme.mode}}" data-theme-density="{{visual_theme.density}}" data-theme-scale="{{visual_theme.text_scale}}" data-heading-style="{{visual_theme.heading_style}}" data-theme-motion="{{'reduce' if visual_theme.reduce_motion else 'full'}}" {% if user and save %}data-notification-feed="/api/notifications" data-notification-cursor="{{notification_cursor}}" data-live-status="/api/live-status" data-current-global-day="{{save.global_day}}" data-save-id="{{save.id}}"{% endif %}>
 {% if user %}
 <aside class="app-sidebar">
   <div class="mobile-sidebar-head">
@@ -47,7 +47,7 @@
     </div>
     <p class="nav-no-results" hidden>No matching page. Try a broader word.</p>
   </nav>
-  <footer class="sidebar-footer"><span>{{user.display_name}}</span>{% if save %}<small>{{save.name}} · GD {{save.global_day}}</small>{% endif %}<small>Tracker {{app_version}}</small>{% if not local_mode %}<form action="/auth/logout" method="post"><button>Sign out</button></form>{% endif %}</footer>
+  <footer class="sidebar-footer"><span>{{user.display_name}}</span>{% if save %}<small>{{save.name}} · GD <span data-live-global-day>{{save.global_day}}</span></small>{% endif %}<small>Tracker {{app_version}}</small>{% if not local_mode %}<form action="/auth/logout" method="post"><button>Sign out</button></form>{% endif %}</footer>
 </aside>
 {% endif %}
 <main class="app-main page-{{page or 'home'}} {% if not user %}centered{% endif %}" {% if page in ['today','rolls','automation'] %}hx-boost="true" hx-target="this" hx-select="main" hx-swap="outerHTML show:top" hx-push-url="true"{% endif %}>{% if user and page and navigation_group %}<nav class="page-breadcrumb" aria-label="Breadcrumb"><a href="/">Overview</a><span aria-hidden="true">›</span><span>{{navigation_group.label}}</span><span aria-hidden="true">›</span><strong>{{features[page][0]}}</strong></nav>{% endif %}{% if master_automation_notice %}<div class="notice automation-global-notice" role="status">{{master_automation_notice}}</div>{% endif %}{% if occult_notice %}<div class="notice occult-global-notice" role="status">{{occult_notice}}</div>{% endif %}{% block body %}{% endblock %}{% block scripts %}{% endblock %}</main>

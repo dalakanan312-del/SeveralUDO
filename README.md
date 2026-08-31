@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.5.2` adds the University & Performance workspace: enrollments, institutions and programs; term schedules and Today reminders; courses, grades, GPA, credits and academic standing; performance checkpoints; automatic graduation; Sim-profile and Storyline summaries; and optional Clock Sync academic-performance evidence. The card-based ledger and responsive forms work in desktop, hosted, and mobile layouts. Clock Sync remains 2.2.8.
+`4.5.3` repairs visible automatic day progression: open tracker pages now follow the stored Clock Sync day, refresh once when Global Day advances, preserve unsaved forms, show the last automatic advance on the Clock page, and avoid versioning identical clock state on every polling report. Clock Sync remains 2.2.8.
 
 `4.5.1` adds compact collapsible family plans and the connected Life Records workspace: planned-marriage dowry estimates, guardianship, birth-order privileges, coming-of-age and household-dispersal planning, social mobility, absences, disability, mourning, wellbeing, treatment and recovery restrictions, Law & Disorder-compatible legal reviews, grief automation, roll explanations, safe automation undo, contradiction checks, saved views, bulk profile correction, and annual newspapers. A new save-level Appearance editor adds six compatible palettes, safe custom colors, spacing, text size, heading style, corner, motion, live-preview, and reset controls across desktop, hosted, and mobile layouts. Clock Sync remains 2.2.8.
 
