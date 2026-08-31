@@ -1458,7 +1458,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.6")
+            self.assertEqual(health.json()["version"], "4.5.7")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -2774,6 +2774,41 @@ class CoreSmokeTests(unittest.TestCase):
                     "relationships":[{"other_game_sim_id":"b-"+marker,"category":"marriage"}],
                 })
                 self.assertEqual(again, [])
+                session.rollback()
+
+    def test_marriage_upgrade_from_generic_relationship_enters_inbox(self):
+        """A late Marriage label must not be suppressed as mere classification."""
+        marker = uuid.uuid4().hex
+        with TestClient(app):
+            with SessionLocal() as session:
+                save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                first_game_id, second_game_id = f"a-{marker}", f"b-{marker}"
+                first = Record(save_id=save.id, kind="sim", label="Marriage transition A", data={
+                    "game_sim_id": first_game_id,
+                    "game_relationship_keys": [f"{second_game_id}:relationship"],
+                })
+                second = Record(save_id=save.id, kind="sim", label="Marriage transition B",
+                                data={"game_sim_id": second_game_id})
+                session.add_all([first, second]); session.flush()
+                engagement = Record(save_id=save.id, kind="relationship", label="Prior engagement", data={
+                    "partner1_id": first.id, "partner2_id": second.id,
+                    "type": "Engagement", "status": "Active",
+                })
+                session.add(engagement); session.flush()
+
+                made = reconcile_sim(session, save, first, {
+                    "game_sim_id": first_game_id,
+                    "relationships": [{"other_game_sim_id": second_game_id, "category": "Marriage"}],
+                    "detected_tracker_global_day": save.global_day,
+                })
+
+                marriage_reviews = [item for item in made if item.data["action"] == "relationship_change"]
+                self.assertEqual(len(marriage_reviews), 1)
+                self.assertEqual(marriage_reviews[0].data["payload"]["category"], "Marriage")
+                self.assertEqual(reconcile_sim(session, save, first, {
+                    "game_sim_id": first_game_id,
+                    "relationships": [{"other_game_sim_id": second_game_id, "category": "Marriage"}],
+                }), [])
                 session.rollback()
 
     def test_parent_links_retry_after_parent_is_later_connected(self):

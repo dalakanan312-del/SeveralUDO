@@ -278,6 +278,14 @@ def _significant_relationship(category: str) -> bool:
     return any(marker in value for marker in ("marriage", "married", "spouse", "fianc", "engag"))
 
 
+def _marriage_relationship(category: str) -> bool:
+    """Return whether a label represents an actual marriage, not courtship."""
+    value = str(category or "").casefold()
+    return any(marker in value for marker in (
+        "marriage", "married", "spouse", "husband", "wife",
+    ))
+
+
 _GENERIC_RELATIONSHIP_CATEGORIES = {"", "relationship", "unknown", "other", "unspecified"}
 
 
@@ -651,7 +659,16 @@ def _existing_relationship(session: Session, save: ChronicleSave, first: Record,
         if {str(data.get("partner1_id") or ""), str(data.get("partner2_id") or "")} != {first.id, second.id}:
             continue
         existing_type = str(data.get("type") or "relationship").casefold()
-        if (_significant_relationship(category) and (bool(data.get("legally_married")) or _significant_relationship(existing_type))) or existing_type == str(category or "relationship").casefold():
+        existing_marriage = bool(data.get("legally_married")) or _marriage_relationship(existing_type)
+        # A marriage is a state change, not merely a more specific label for an
+        # engagement.  Only an already-recorded marriage may suppress a new
+        # marriage review; otherwise the player must be able to confirm it.
+        if _marriage_relationship(category) and existing_marriage:
+            return True
+        if (not _marriage_relationship(category) and _significant_relationship(category)
+                and existing_marriage):
+            return True
+        if existing_type == str(category or "relationship").casefold():
             return True
     return False
 
@@ -1055,7 +1072,13 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
             and prior_categories_for_other
             and prior_categories_for_other.issubset(_GENERIC_RELATIONSHIP_CATEGORIES | {"acquaintance"})
         )
-        is_new_transition = has_relationship_baseline and relationship_key not in prior_relationship_keys and not is_classifier_upgrade
+        # Generic game relationship summaries often become more detailed after
+        # Clock Sync learns their bits.  That normally should not create a
+        # backlog, but a newly exposed marriage must remain reviewable.
+        is_new_transition = (
+            has_relationship_baseline and relationship_key not in prior_relationship_keys
+            and (not is_classifier_upgrade or _marriage_relationship(category))
+        )
         is_initial_significant = not has_relationship_baseline and _significant_relationship(category)
         is_canonical_endpoint = not (other_sim and current_game_id and other and current_game_id > other)
         if (other and (is_new_transition or is_initial_significant) and is_canonical_endpoint

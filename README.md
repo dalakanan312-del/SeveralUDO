@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.5.6` restores maternal delivery obligations safely: a delivery creates its missing maternal roll if it arrives before scheduling, completed results are never duplicated, and an upgraded save revives only rolls older versions demonstrably hid after delivery. It also retains the shared factual upkeep and performance safeguards introduced in 4.5.5. Clock Sync remains 2.2.8.
+`4.5.7` ensures a Clock Sync relationship upgrading from a generic game summary to Marriage always creates an Automation Inbox review. An engagement no longer suppresses a later marriage confirmation, while an already-recorded marriage remains protected from duplicate reviews. It also retains the maternal delivery safeguards introduced in 4.5.6. Clock Sync remains 2.2.8.
 
 `4.5.4` adds automatic occult-alignment rolls. Vampires, Spellcasters and Mermaids use Good/Bad; Fairies use Benevolent/Unseelie. Founders establish alignment with a D2, children normally inherit an aligned occult parent's result with the supplied D10 rule, and opposing parents use a D2. Completed results update the Sim profile and unlock alignment-dependent obligations without creating duplicates. Clock Sync remains 2.2.8.
 
