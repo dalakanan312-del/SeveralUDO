@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -35,10 +36,20 @@ engine_options = {"pool_pre_ping": True}
 if settings.database_url.startswith("sqlite"):
     engine_options["connect_args"] = {"check_same_thread": False}
 else:
-    # One web worker does not benefit from SQLAlchemy's default allowance of
-    # fifteen simultaneous connections.  A small bounded pool is friendlier to
-    # both Railway's memory limit and Neon's transaction pooler.
-    engine_options.update(pool_size=3, max_overflow=2, pool_timeout=10, pool_recycle=300)
+    # Clock Sync can legitimately arrive alongside page loads and background
+    # delivery work. Five total connections caused the hosted receiver to
+    # reject ordinary bursts with QueuePool timeouts. Keep the pool bounded
+    # for Railway/Neon, but leave enough headroom for those independent jobs.
+    pool_size = max(2, int(os.getenv("DECADES_DB_POOL_SIZE", "8")))
+    max_overflow = max(0, int(os.getenv("DECADES_DB_MAX_OVERFLOW", "4")))
+    pool_timeout = max(5, int(os.getenv("DECADES_DB_POOL_TIMEOUT", "30")))
+    engine_options.update(
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=pool_timeout,
+        pool_recycle=300,
+        pool_use_lifo=True,
+    )
 
 engine = create_engine(settings.sqlalchemy_database_url, **engine_options)
 

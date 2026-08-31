@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from .models import Change, ChronicleSave, Portrait, Record
 from . import advanced, calendar_utils, core_rulesets, decade_portraits, occult_rules, sync
 from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
+from .early_event_catalog_data import EARLY_EVENT_LIBRARY_GZIP_BASE64
 
 
 DEFAULTS_SCHEMA_VERSION = "4.5.4-occult-alignment"
@@ -105,7 +106,7 @@ CLOSED_PREGNANCIES = {"delivered", "complete", "completed", "miscarriage", "stil
 DELIVERY_PREGNANCIES = {"delivered", "complete", "completed", "stillbirth", "closed"}
 MATERNAL_ROLL_RETIRE_PREGNANCIES = {"miscarriage", "cancelled", "canceled"}
 CLOSED_ILLNESSES = {"recovered", "resolved", "deceased", "ended", "closed"}
-EVENT_CATALOG_VERSION = "recovered-655-v5-complete-source-roll-tables"
+EVENT_CATALOG_VERSION = "approved-source-1200-865-v3"
 
 # These catalog rows change money, MCCC limits, or available technology.  An
 # early import marked them as rolls even though their source instructions do
@@ -366,6 +367,77 @@ ORIGINAL_EVENT_ROLL_OVERRIDES: dict[str, dict] = {
     },
 }
 
+# These five source entries use result wording such as “land on 7 and
+# survives” or list outcomes after “if” rather than “means”.  Keeping the
+# transcribed tables here prevents a generic d20 fallback and preserves the
+# source's actual dice and outcomes.
+EARLY_EVENT_ROLL_OVERRIDES_BY_NAME: dict[str, dict] = {
+    "2200 BCE The settlements in what today is northern Israel have been abandoned.": {
+        "configured_die": "d4",
+        "configured_bad_results": "1,2,3,4",
+        "source_roll_plan": [{
+            "index": 0, "die": "d4", "bad_results": "1,2,3,4",
+            "result_rules": "1: Migrate to Asia; 2: Migrate elsewhere in the Middle East; 3: Migrate to Europe; 4: Migrate to Africa",
+            "context": "Israeli Sims relocate after the settlements are abandoned",
+            "parent_index": None, "parent_indices": [], "trigger_results": "",
+        }],
+    },
+    "441 BCE The first famine recorded in ancient Rome.": {
+        "configured_die": "d10",
+        "configured_bad_results": "1-6,8-10",
+        "source_roll_plan": [{
+            "index": 0, "die": "d10", "bad_results": "1-6,8-10",
+            "result_rules": "7: Survives; 1-6,8-10: Dies of famine or plague",
+            "context": "All Sims living in Rome",
+            "parent_index": None, "parent_indices": [], "trigger_results": "",
+        }],
+    },
+    "Peloponnesian War (431–404 BCE)": {
+        "configured_die": "d6",
+        "configured_bad_results": "1,2,4,6",
+        "source_roll_plan": [{
+            "index": 0, "die": "d6", "bad_results": "1,2,4,6",
+            "result_rules": "3,5: Survives; 1,2,4,6: Dies during the war or plague",
+            "context": "All Sims living in Greece",
+            "parent_index": None, "parent_indices": [], "trigger_results": "",
+        }],
+    },
+    "Lamian War (323–322 BCE)": {
+        "configured_die": "d10",
+        "configured_bad_results": "2,3,5,6,8,10",
+        "source_roll_plan": [{
+            "index": 0, "die": "d10", "bad_results": "2,3,5,6,8,10",
+            "result_rules": "1,4,7,9: Remains, becomes noble; 2,3,5,6,8,10: Exiled and loses money",
+            "context": "Greek Sims not already exiled",
+            "parent_index": None, "parent_indices": [], "trigger_results": "",
+        }],
+    },
+    "Third Punic War (149–146 BCE)": {
+        # This war has two independent, region-specific tables. Leave the
+        # event global enough to reach both groups, then let each source-plan
+        # step restrict itself to the affected region.
+        "location": "Global",
+        "configured_die": "d2",
+        "configured_bad_results": "1",
+        "source_roll_plan": [
+            {
+                "index": 0, "die": "d2", "bad_results": "1",
+                "result_rules": "1: Does not survive the Third Punic War; 2: Survives",
+                "context": "Sims in or near Carthage or North Africa",
+                "location": "Carthage, North Africa",
+                "parent_index": None, "parent_indices": [], "trigger_results": "",
+            },
+            {
+                "index": 1, "die": "d6", "bad_results": "5",
+                "result_rules": "5: Dies in the Third Punic War",
+                "context": "Sims from Rome",
+                "location": "Rome, Roman Empire",
+                "parent_index": None, "parent_indices": [], "trigger_results": "",
+            },
+        ],
+    },
+}
+
 # The source prose for these events interleaves several regional or household
 # tables.  A plain "next die is the follow-up" rule cannot represent that
 # topology, so keep the small amount of source-defined branching explicit.
@@ -433,7 +505,10 @@ _SOURCE_ROLL_MARKER = re.compile(
 _SOURCE_SUCCESS = re.compile(
     r"\b(?:avoid|unaffected|unharmed|unscathed|spared|surviv(?:e|es|ed|or)|"
     r"return(?:s|ed)?\s+(?:home\s+)?safely|survival|no\s+(?:major\s+)?effect|not\s+involved|"
-    r"do(?:es)?\s+not\s+participate|thriv(?:e|es|ed)|remain(?:s)?\s+intact)\b",
+    r"do(?:es)?\s+not\s+participate|thriv(?:e|es|ed)|remain(?:s)?\s+intact|"
+    r"(?:claim|dispute)\s+is\s+settled|ordinary\s+year|"
+    r"(?:route|trade)\s+(?:prospers?|flourishes?)|"
+    r"gains?\s+(?:a\s+)?(?:local\s+)?(?:favor|reward))\b",
     re.I,
 )
 _SOURCE_DEPENDENT = re.compile(
@@ -499,7 +574,7 @@ def _source_step_rules(segment: str, sides: int, *, coin: bool = False) -> tuple
     )
     numeric = re.compile(
         rf"(?<!\d)({numeric_left})"
-        r"\s*(?:means?|=|:)\s*([^;.]+)",
+        r"\s*(?:means?|=|:|[–—])\s*([^;.]+)",
         re.I,
     )
     for left, outcome in numeric.findall(cleaned):
@@ -627,7 +702,12 @@ def source_event_roll_plan(notes: object) -> list[dict]:
     for marker in candidates:
         tail = text[marker.end():marker.end() + 24]
         prefix = text[max(0, marker.start() - 18):marker.start()]
-        if marker.group("die") and re.match(r"\s*(?:days?|weeks?|months?|years?|objects?|simoleons?)\b", tail, re.I) and not re.search(r"\broll\b", prefix, re.I):
+        if marker.group("die") and re.match(
+            r"\s*(?:days?|weeks?|months?|years?|objects?|simoleons?|goods?|food|"
+            r"livestock|animals?|crops?|supplies|money|coins?|soldiers?)\b",
+            tail,
+            re.I,
+        ) and not re.search(r"\broll\b", prefix, re.I):
             continue
         usable.append(marker)
     plan: list[dict] = []
@@ -715,6 +795,50 @@ def source_event_roll_plan(notes: object) -> list[dict]:
     return _normalize_source_plan_cadence(plan, notes)
 
 
+def _source_numbered_table_roll_plan(notes: object) -> list[dict]:
+    """Recover a die when a source says “roll once” then lists its results.
+
+    The revised early-era document uses table-style rules such as “1 — One Sim
+    dies” rather than repeating “roll D6” in every entry.
+    """
+    text = re.sub(r"\s+", " ", str(notes or "")).strip()
+    if not re.search(r"\broll\s+(?:once|for\s+(?:the|this|each))\b", text, re.IGNORECASE):
+        return []
+    matches = list(re.finditer(
+        r"(?<!\d)(\d+)(?:\s*[-–—]\s*(\d+))?\s*[–—]\s*(.+?)(?=\s+(?<!\d)\d+(?:\s*[-–—]\s*\d+)?\s*[–—]\s+|$)",
+        text,
+        re.IGNORECASE,
+    ))
+    if len(matches) < 2:
+        return []
+    values: list[tuple[int, int, str]] = []
+    for match in matches:
+        low, high = int(match.group(1)), int(match.group(2) or match.group(1))
+        outcome = match.group(3).strip(" .;")
+        if not outcome:
+            continue
+        values.append((low, high, outcome))
+    if len(values) < 2:
+        return []
+    sides = max(high for _low, high, _outcome in values)
+    if sides not in {2, 4, 6, 8, 10, 12, 20, 100}:
+        return []
+    result_rules = "; ".join(
+        f"{low if low == high else f'{low}-{high}'}: {outcome}"
+        for low, high, outcome in values
+    )
+    adverse = [
+        str(low) if low == high else f"{low}-{high}"
+        for low, high, outcome in values
+        if not _source_outcome_is_success(outcome)
+    ]
+    return [{
+        "index": 0, "die": f"d{sides}", "bad_results": ",".join(adverse),
+        "result_rules": result_rules, "context": text[:500],
+        "parent_index": None, "parent_indices": [], "trigger_results": "",
+    }]
+
+
 def event_source_roll_plan(notes: object, override: dict | None = None, catalog_id: str = "") -> list[dict]:
     """Return the authoritative editable plan for one catalog event."""
     override = override or {}
@@ -742,7 +866,7 @@ def event_source_roll_plan(notes: object, override: dict | None = None, catalog_
                 "failure_is_lethal": bool(override.get("followup_failure_is_lethal")),
             })
         return _normalize_source_plan_cadence(plan, notes)
-    plan = source_event_roll_plan(notes)
+    plan = source_event_roll_plan(notes) or _source_numbered_table_roll_plan(notes)
     for index, changes in SOURCE_PLAN_RELATION_OVERRIDES.get(catalog_id, {}).items():
         if not (0 <= index < len(plan)):
             continue
@@ -1769,14 +1893,23 @@ def repair_default_aging_tables(session: Session, save: ChronicleSave) -> int:
 
 
 def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = False) -> int:
-    """Install and repair the approved 655-event catalog without duplicates.
+    """Install and repair the approved historical-event catalog without duplicates.
 
     Earlier builds treated any large partial import as complete.  The integrity
-    pass now checks stable catalog IDs so every new or migrated save receives
-    every approved row while preserving custom events and intentional archives.
+    pass checks stable catalog IDs so every new or migrated save receives every
+    approved row while preserving custom events and intentional archives.
     """
     marker = str((save.settings or {}).get("event_catalog_version") or "")
-    rows = json.loads(gzip.decompress(base64.b64decode(EVENT_LIBRARY_GZIP_BASE64)).decode("utf-8"))
+    source_rows = json.loads(gzip.decompress(base64.b64decode(EARLY_EVENT_LIBRARY_GZIP_BASE64)).decode("utf-8"))
+    refreshed_sources = {str(row.get("source") or "") for row in source_rows}
+    rows = [
+        row for row in json.loads(gzip.decompress(base64.b64decode(EVENT_LIBRARY_GZIP_BASE64)).decode("utf-8"))
+        # The revised 1200s document is now authoritative.  Its refreshed
+        # rows below retain legacy IDs where possible and safely retire rows
+        # removed from the source instead of leaving duplicate events.
+        if str(row.get("source") or "") not in refreshed_sources
+    ]
+    rows.extend(source_rows)
     existing_by_id: dict[str, list[Record]] = defaultdict(list)
     for item in session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "event",
@@ -1788,11 +1921,23 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
     approved_ids={str(row.get("event_id") or "") for row in rows}
     if marker == EVENT_CATALOG_VERSION and approved_ids.issubset(existing_ids) and not force:
         return 0
+    def rebase(value):
+        if value is None:
+            return None
+        value = int(value)
+        absolute_year = 1200 + (value - 1) // 4
+        challenge_day = ((value - 1) % 4) + 1
+        return (absolute_year - save.start_year) * save.days_per_year + min(challenge_day, save.days_per_year)
+
     changed = 0
     for row in rows:
         catalog_id = str(row.get("event_id") or "")
         notes = str(row.get("notes") or "")
-        override = ORIGINAL_EVENT_ROLL_OVERRIDES.get(catalog_id, {})
+        updated_source_event = catalog_id.startswith(("EVT-PRE1000-", "EVT-1000S-", "EVT-1100S-", "EVT-1200S-")) or str(row.get("source") or "") in refreshed_sources
+        override = {
+            **EARLY_EVENT_ROLL_OVERRIDES_BY_NAME.get(str(row.get("event_name") or ""), {}),
+            **ORIGINAL_EVENT_ROLL_OVERRIDES.get(catalog_id, {}),
+        }
         roll_plan = event_source_roll_plan(notes, override, catalog_id)
         original_roll_required = catalog_id not in NON_ROLL_CATALOG_IDS and bool(
             roll_plan or source_event_requires_roll(notes) or override
@@ -1828,6 +1973,38 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
                 base = record.version
                 data = dict(record.data or {})
                 before = dict(data)
+                record_changed = False
+                if updated_source_event:
+                    source_start, source_end = rebase(row.get("start_global_day")), rebase(row.get("end_global_day"))
+                    if record.label != str(row.get("event_name") or catalog_id):
+                        record.label = str(row.get("event_name") or catalog_id)
+                        record_changed = True
+                    if record.global_day != source_start:
+                        record.global_day = source_start
+                        record_changed = True
+                    # This is an explicit source refresh requested for the
+                    # revised source documents. Keep a player's hide choice,
+                    # but replace the catalogue-owned facts and roll table.
+                    source_refresh = {
+                        "start_global_day": source_start,
+                        "end_global_day": source_end,
+                        "scope": row.get("scope") or "Historical event",
+                        "location": row.get("location") or "Global",
+                        "affected_class": row.get("affected_class") or "All applicable Sims",
+                        "source": row.get("source") or "Recovered approved catalog",
+                        "notes": notes,
+                        "original_roll_required": original_roll_required,
+                        "roll_required_source": "Original SeveralUDO event rules" if original_roll_required else "",
+                        "source_catalog_revision": EVENT_CATALOG_VERSION,
+                    }
+                    if original_roll_required:
+                        source_refresh.update({
+                            **source_defaults,
+                            "source_roll_plan": roll_plan,
+                            "source_roll_plan_version": 4,
+                        })
+                    data.update(source_refresh)
+                    data.update(override)
                 if (
                     catalog_id in NON_ROLL_CATALOG_IDS
                     and bool(data.get("original_roll_required"))
@@ -1863,18 +2040,12 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
                             data[key] = value
                     elif data.get(key) in (None, "", [], {}):
                         data[key] = value
-                if data != before:
+                if data != before or record_changed:
                     record.data = data
                     record.version += 1
                     journal(session, record, "upsert", base)
                     changed += 1
             continue
-        def rebase(value):
-            if value is None: return None
-            value = int(value)
-            absolute_year = 1200 + (value - 1) // 4
-            challenge_day = ((value - 1) % 4) + 1
-            return (absolute_year - save.start_year) * save.days_per_year + min(challenge_day, save.days_per_year)
         start = rebase(row.get("start_global_day"))
         end = rebase(row.get("end_global_day"))
         data = {
@@ -1888,9 +2059,34 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
         }
         if original_roll_required:
             data.update(source_defaults)
+        if updated_source_event:
+            data.update({
+                "source_catalog_revision": EVENT_CATALOG_VERSION,
+                "source_roll_plan_version": 4,
+            })
         data.update(override)
         record = Record(save_id=save.id, kind="event", label=str(row.get("event_name") or catalog_id), global_day=start, data=data)
         session.add(record); session.flush(); journal(session, record, "upsert", 0); changed += 1
+    # A revised source may deliberately remove a catalogue row. Deactivate
+    # (rather than delete) only source entries covered by the revised documents so history,
+    # custom notes and completed rolls remain recoverable.
+    for stale_id in existing_ids - approved_ids:
+        for record in existing_by_id[stale_id]:
+            if record.deleted:
+                continue
+            data = dict(record.data or {})
+            if str(data.get("source") or "") not in refreshed_sources:
+                continue
+            if data.get("catalog_removed_from_source") and not data.get("active", True):
+                continue
+            base = record.version
+            record.data = {
+                **data, "active": False, "catalog_removed_from_source": True,
+                "source_catalog_revision": EVENT_CATALOG_VERSION,
+            }
+            record.version += 1
+            journal(session, record, "upsert", base)
+            changed += 1
     settings_data = dict(save.settings or {}); settings_data["event_catalog_version"] = EVENT_CATALOG_VERSION
     save.settings = settings_data; save.revision += changed
     return changed
@@ -2569,6 +2765,29 @@ def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None 
     class_words = ("nobility", "noble", "royal", "peasant", "working", "middle", "upper", "lower")
     requested = [word for word in class_words if word in affected]
     return not requested or any(word in social for word in requested)
+
+
+def _source_roll_step_applies(step: dict, sim: Record, household: Record | None,
+                              save: ChronicleSave, fallback_location: str) -> bool:
+    """Apply a source table's narrower location without widening its event.
+
+    Some historical entries contain separate dice tables for different places.
+    The event itself must reach all of those Sims, while a table should only be
+    scheduled for its own region.
+    """
+    target = str(step.get("location") or step.get("eligible_location") or "").strip()
+    if not target or _normalized_location(target) in {"all", "global", "world", "worldwide"}:
+        return True
+    sim_data = sim.data or {}
+    household_data = household.data if household else {}
+    challenge = save.settings or {}
+    places = " ".join(str(value or "") for value in (
+        sim_data.get("country"), sim_data.get("last_game_world"), sim_data.get("birthplace"),
+        sim_data.get("location"), sim_data.get("world"), household_data.get("country"),
+        household_data.get("location"), household_data.get("world"),
+        challenge.get("challenge_location"), challenge.get("location"), challenge.get("country"),
+    ))
+    return _event_location_matches(target, places or fallback_location)
 
 
 def _remarriage_rule(record: Record) -> bool:
@@ -3981,6 +4200,8 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                 roll_type = f"Event — {event.label}" + (f" — {context_label[:80]}" if root_position else "")
                 for occurrence_number, due in enumerate(occurrence_days, start=1):
                     if not _event_applies(event, sim, due, rule_data, household, save, fallback_location, pregnancies):
+                        continue
+                    if step and not _source_roll_step_applies(step, sim, household, save, fallback_location):
                         continue
                     eligible_stages = {str(value).strip().casefold() for value in step.get("eligible_life_stages") or []}
                     if eligible_stages:

@@ -1458,7 +1458,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.7")
+            self.assertEqual(health.json()["version"], "4.5.8")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -4209,13 +4209,121 @@ class CoreSmokeTests(unittest.TestCase):
                 save=ChronicleSave(workspace_id=template.workspace_id,name="Event integrity",start_year=1550,days_per_year=4)
                 session.add(save);session.flush()
                 made=__import__('app.domain',fromlist=['seed_event_catalog']).seed_event_catalog(session,save)
-                self.assertEqual(made,655)
+                self.assertEqual(made,865)
                 events=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="event")))
-                self.assertEqual(len(events),655)
+                self.assertEqual(len(events),865)
                 session.delete(events[0]);session.flush()
                 repaired=__import__('app.domain',fromlist=['seed_event_catalog']).seed_event_catalog(session,save)
                 self.assertEqual(repaired,1)
-                self.assertEqual(session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="event")),655)
+                self.assertEqual(session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="event")),865)
+                session.rollback()
+
+    def test_source_documents_seed_dated_events_with_source_rolls(self):
+        with TestClient(app):
+            from app import domain as domain_module
+            from app.early_event_catalog_data import EARLY_EVENT_LIBRARY_GZIP_BASE64
+            import base64
+            import gzip
+
+            early_rows=json.loads(gzip.decompress(base64.b64decode(EARLY_EVENT_LIBRARY_GZIP_BASE64)).decode("utf-8"))
+            self.assertEqual(len(early_rows),455)
+            self.assertEqual(sum(bool(item["roll_required"]) for item in early_rows),431)
+            self.assertTrue(any(item["event_name"].startswith("1001 Raids on India") for item in early_rows))
+            self.assertTrue(any(item["event_name"].startswith("1124–1126 Famine In Europe") for item in early_rows))
+            self.assertTrue(any(item["event_name"].startswith("1215 Magna Carta") for item in early_rows))
+
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Early source events",start_year=1000,days_per_year=4)
+                session.add(save);session.flush()
+                self.assertEqual(domain_module.seed_event_catalog(session,save),865)
+                events=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="event")))
+                india=next(item for item in events if item.label.startswith("1001 Raids on India"))
+                famine=next(item for item in events if item.label.startswith("1124–1126 Famine In Europe"))
+                migration=next(item for item in events if item.label.startswith("2200 BCE The settlements"))
+                punic=next(item for item in events if item.label.startswith("Third Punic War"))
+                balkan=next(item for item in events if item.label=="601 Balkan Campaign")
+                magna_carta=next(item for item in events if item.label.startswith("1215 Magna Carta"))
+                mongol_india=next(item for item in events if item.data.get("catalog_id")=="EVT-0060")
+                self.assertEqual((india.global_day,india.data["location"],india.data["configured_die"],india.data["configured_bad_results"]),(5,"India","d20","11"))
+                self.assertEqual((famine.data["location"],famine.data["source_roll_plan"][0]["die"],famine.data["source_roll_plan"][1]["die"]),("Europe","d2","d4"))
+                self.assertEqual((migration.data["configured_die"],migration.data["configured_bad_results"]),("d4","1,2,3,4"))
+                self.assertEqual((punic.data["location"], [(step["die"], step.get("location")) for step in punic.data["source_roll_plan"]]), (
+                    "Global", [("d2", "Carthage, North Africa"), ("d6", "Rome, Roman Empire")]
+                ))
+                self.assertEqual((balkan.data["configured_die"],balkan.data["configured_bad_results"]),("d6","1,2,3,6"))
+                self.assertEqual(balkan.data["source_roll_plan_version"],4)
+                self.assertEqual(magna_carta.data["configured_die"],"d6")
+                self.assertIn("claim is denied",magna_carta.data["configured_result_rules"])
+                self.assertEqual((mongol_india.label,mongol_india.data["end_global_day"]),("1221-1327 Mongol invasion of India",1312))
+                self.assertEqual(domain_module.seed_event_catalog(session,save),0)
+                session.rollback()
+
+    def test_source_event_uses_its_region_specific_roll_tables(self):
+        with TestClient(app):
+            from app import domain as domain_module
+
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(
+                    workspace_id=template.workspace_id, name="Third Punic regions",
+                    start_year=-149, days_per_year=4, global_day=1,
+                )
+                session.add(save); session.flush()
+                domain_module.seed_event_catalog(session,save)
+                sims=[
+                    Record(save_id=save.id,kind="sim",label="Carthage Sim",global_day=1,data={"country":"North Africa","birth_global_day":1}),
+                    Record(save_id=save.id,kind="sim",label="Rome Sim",global_day=1,data={"country":"Rome","birth_global_day":1}),
+                    Record(save_id=save.id,kind="sim",label="Unaffected Sim",global_day=1,data={"country":"Greece","birth_global_day":1}),
+                ]
+                session.add_all(sims); session.flush()
+                punic=next(item for item in session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="event"
+                )) if item.label.startswith("Third Punic War"))
+                domain_module.schedule_event_rolls(session,save,sims)
+                rolls=[
+                    item for item in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll"))
+                    if (item.data or {}).get("event_id")==punic.id
+                ]
+                self.assertEqual(
+                    sorted(((item.data or {}).get("sim_name"), (item.data or {}).get("die")) for item in rolls),
+                    [("Carthage Sim","d2"),("Rome Sim","d6")],
+                )
+                session.rollback()
+
+    def test_updated_source_catalogue_repairs_rows_and_retires_removed_rows(self):
+        with TestClient(app):
+            from app import domain as domain_module
+
+            with SessionLocal() as session:
+                template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=template.workspace_id,name="Updated early source",start_year=600,days_per_year=4)
+                session.add(save); session.flush()
+                domain_module.seed_event_catalog(session,save)
+                balkan=next(item for item in session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="event"
+                )) if item.label=="601 Balkan Campaign")
+                india=next(item for item in session.scalars(select(Record).where(
+                    Record.save_id==save.id,Record.kind=="event"
+                )) if item.label.startswith("1001 Raids on India"))
+                balkan.data={**balkan.data,"notes":"Stale source text","source_roll_plan":[],"source_roll_plan_version":3}
+                balkan.version+=1
+                stale_version=balkan.version
+                india.data={**india.data,"notes":"Stale 1000s source text","source_roll_plan":[]}
+                india.version+=1
+                legacy=Record(save_id=save.id,kind="event",label="Retired source row",global_day=1,data={
+                    "catalog_id":"EVT-1200S-RETIRED","source":"https://docs.google.com/document/d/19NzcWvSdq2MEzv3SKFZmX-JoOcSiNjwqtmrLZYSR-s0/edit",
+                    "active":True,
+                })
+                session.add(legacy);session.flush()
+                save.settings={**(save.settings or {}),"event_catalog_version":"approved-pre1200-845-v1-source-events"}
+                self.assertGreater(domain_module.seed_event_catalog(session,save),0)
+                self.assertGreater(balkan.version,stale_version)
+                self.assertNotEqual(balkan.data["notes"],"Stale source text")
+                self.assertNotEqual(india.data["notes"],"Stale 1000s source text")
+                self.assertEqual((balkan.data["configured_die"],balkan.data["source_roll_plan_version"]),("d6",4))
+                self.assertFalse(legacy.data["active"])
+                self.assertTrue(legacy.data["catalog_removed_from_source"])
                 session.rollback()
 
     def test_approved_event_catalog_restores_every_explicit_original_roll(self):
@@ -4239,13 +4347,14 @@ class CoreSmokeTests(unittest.TestCase):
                 template=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
                 save=ChronicleSave(workspace_id=template.workspace_id,name="Original event roll coverage",start_year=1200,days_per_year=4)
                 session.add(save);session.flush()
-                self.assertEqual(domain_module.seed_event_catalog(session,save),655)
+                self.assertEqual(domain_module.seed_event_catalog(session,save),865)
                 events=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="event")))
                 by_catalog={item.data.get("catalog_id"):item for item in events}
-                roll_events=[item for item in events if bool((item.data or {}).get("roll_required"))]
-                self.assertEqual(len(roll_events),500)
+                original_catalog_ids={row.get("event_id") for row in rows}
+                roll_events=[item for item in events if item.data.get("catalog_id") in original_catalog_ids and bool((item.data or {}).get("roll_required"))]
+                self.assertEqual(len(roll_events),612)
                 plans=[step for item in roll_events for step in (item.data or {}).get("source_roll_plan",[])]
-                self.assertEqual((len(plans),sum(bool(step.get("parent_indices")) or step.get("parent_index") is not None for step in plans)),(876,264))
+                self.assertEqual((len(plans),sum(bool(step.get("parent_indices")) or step.get("parent_index") is not None for step in plans)),(994,274))
                 for item in roll_events:
                     data=item.data or {}
                     self.assertTrue(data.get("configured_die"),item.data.get("catalog_id"))
