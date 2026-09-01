@@ -28,6 +28,19 @@ class ThemeTests(unittest.TestCase):
             self.assertIn("--theme-heading-font:", resolved["inline_style"])
             self.assertIn(resolved["mode"], {"dark", "light"})
 
+    def test_palette_library_includes_both_light_and_dark_choices(self):
+        self.assertGreaterEqual(len(themes.PRESETS), 14)
+        self.assertEqual(themes.resolve({"preset": "harbor"})["mode"], "dark")
+        self.assertEqual(themes.resolve({"preset": "mist"})["mode"], "light")
+        self.assertEqual(themes.resolve({"preset": "lavender"})["accent"], "#705a9b")
+
+    def test_theme_css_tokenizes_legacy_named_surfaces_for_every_palette(self):
+        css = (ROOT / "app" / "static" / "theme.css").read_text(encoding="utf-8")
+        self.assertIn("Theme coverage bridge", css)
+        self.assertIn('body[data-theme-mode] :is(.today-hero-date', css)
+        self.assertIn('.storyline-current-year', css)
+        self.assertNotIn('body[data-theme-mode="light"] :is(.today-hero-date', css)
+
     def test_custom_theme_rejects_css_injection_and_corrects_contrast(self):
         resolved = themes.resolve({
             "preset": "custom", "accent": "#123456;position:fixed", "background": "#ffffff",

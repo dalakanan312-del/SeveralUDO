@@ -42,11 +42,53 @@ PRESETS = {
         "accent": "#d2a15c", "background": "#15100b", "surface": "#251d14",
         "text": "#f3e8d4", "muted": "#b9aa92", "mode": "dark",
     },
+    "cobalt": {
+        "name": "Cobalt Study",
+        "description": "A crisp midnight blue archive with bright scholarly details.",
+        "accent": "#9eb8e9", "background": "#090d17", "surface": "#151c2c",
+        "text": "#eff3ff", "muted": "#abb7cb", "mode": "dark",
+    },
+    "harbor": {
+        "name": "Harbor Teal",
+        "description": "Cool sea-glass accents over a calm, dark green-blue ledger.",
+        "accent": "#83c9bd", "background": "#071312", "surface": "#102321",
+        "text": "#ebf6f2", "muted": "#a6bbb5", "mode": "dark",
+    },
+    "rosewood": {
+        "name": "Rosewood",
+        "description": "A soft rose accent against deep, rich wood-toned panels.",
+        "accent": "#dca2ae", "background": "#180d12", "surface": "#29161d",
+        "text": "#faedf0", "muted": "#c4adb3", "mode": "dark",
+    },
+    "graphite": {
+        "name": "Graphite Archive",
+        "description": "A neutral charcoal theme with a clean silver-blue accent.",
+        "accent": "#aebdca", "background": "#0e1013", "surface": "#1a1e23",
+        "text": "#f0f2f4", "muted": "#b3b9c0", "mode": "dark",
+    },
     "daylight": {
         "name": "Daylight Chronicle",
         "description": "An easy-reading parchment page with ink, gold, and high-contrast details.",
         "accent": "#89601d", "background": "#f4f0e7", "surface": "#fffdf8",
         "text": "#292721", "muted": "#625e55", "mode": "light",
+    },
+    "mist": {
+        "name": "Morning Mist",
+        "description": "A cool, quiet reading palette in pale blue-grey and ink.",
+        "accent": "#426b88", "background": "#edf3f5", "surface": "#ffffff",
+        "text": "#20313b", "muted": "#5a6971", "mode": "light",
+    },
+    "sage": {
+        "name": "Sage Paper",
+        "description": "Gentle green paper with restrained botanical highlights.",
+        "accent": "#617d54", "background": "#f0f3eb", "surface": "#fcfdf8",
+        "text": "#273024", "muted": "#5c6757", "mode": "light",
+    },
+    "lavender": {
+        "name": "Lavender Letter",
+        "description": "A light lilac chronicle with plum ink and soft contrast.",
+        "accent": "#705a9b", "background": "#f3f0f8", "surface": "#fffdff",
+        "text": "#302a3d", "muted": "#665f72", "mode": "light",
     },
 }
 
