@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.12` adds an everyday-use pass: the dashboard now acts as a true starting point with a recent-change digest, household focus, upcoming calendar, data-health checks, and a one-click resume link. Today can focus on a household without losing global events; profiles have a compact chronological life history; Search finds records anywhere in the tracker; dead Sims are excluded from Age Check; and newly accepted Sims automatically receive recorded passes for the life-stage checks they have already outgrown.
+
 `4.5.11` automatically schedules every Harry Potter rule with a tracker-visible trigger when its module is enabled: magical/Squib birth determination, Squib discovery, higher-order magical multiples, accidental magic, American Muggle-Born Obscurial risk, Statute of Secrecy, annual wizarding-household and Hogwarts events, and Wizarding-War household events. Results update the relevant Sim, pregnancy, or household record automatically.
 
 `4.5.10` adds automatic Hogwarts Sorting: when the optional Hogwarts House Assignment rule is enabled, eligible Spellcaster Sims receive one D4 roll at age 11 from 990 onward. Completing the roll records their Hogwarts House on their profile.

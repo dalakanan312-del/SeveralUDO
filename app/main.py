@@ -147,7 +147,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.11")
+app = FastAPI(title="Decades Tracker", version="4.5.12")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -576,7 +576,7 @@ def navigation_counts(session, save: ChronicleSave) -> dict[str, int]:
 
 def _living_sim(sim: Record, save: ChronicleSave) -> bool:
     data = sim.data or {}; birth = int_or_none(data.get("birth_global_day", sim.global_day)); death = int_or_none(data.get("death_global_day"))
-    return not bool(data.get("game_was_dead")) and (birth is None or birth <= save.global_day) and (death is None or death > save.global_day)
+    return not bool(data.get("game_was_dead") or data.get("death_confirmed")) and (birth is None or birth <= save.global_day) and (death is None or death > save.global_day)
 
 
 def _ancestor_ids(sim_id: str, by_id: dict[str, Record], limit: int = 3) -> dict[str, int]:
@@ -778,6 +778,56 @@ def active_workspace(request: Request, session) -> tuple[User, Workspace]:
     return user, workspace
 
 
+_SEARCH_PAGE_BY_KIND = {
+    "event": "events", "illness": "illnesses", "roll": "rolls",
+    "note": "notes", "migration": "world", "death": "timeline",
+    "game_history": "timeline", "family_plan": "planner",
+}
+
+
+def _search_result_for(record: Record, save: ChronicleSave) -> dict:
+    """Return a small, safe cross-tracker search result without loading records."""
+    data = record.data or {}
+    kind = record.kind.replace("_", " ").title()
+    if record.kind == "sim":
+        href = f"/sims/{record.id}"
+        detail = sim_status(record, save)
+    elif record.kind == "household":
+        href = f"/households/{record.id}"
+        detail = str(data.get("location") or data.get("world") or "Household record")
+    elif record.kind == "relationship":
+        href = f"/relationships/{record.id}"
+        detail = str(data.get("type") or data.get("status") or "Relationship")
+    elif record.kind == "pregnancy":
+        href = f"/pregnancies/{record.id}"
+        detail = str(data.get("status") or "Pregnancy")
+    else:
+        page = _SEARCH_PAGE_BY_KIND.get(record.kind, "timeline")
+        href = f"/p/{page}?{urlencode({'q': record.label})}"
+        detail = f"GD {record.global_day}" if record.global_day is not None else kind
+    return {"label": record.label, "kind": kind, "detail": detail, "href": href}
+
+
+@app.get("/api/search")
+def global_search(request: Request, q: str = ""):
+    """Fast label-only finder for Sims and every commonly used tracker record."""
+    query = " ".join(str(q or "").split())
+    if len(query) < 2:
+        return {"results": []}
+    with db() as session:
+        ctx = context(request, session)
+        if not ctx["user"] or not ctx["save"]:
+            raise HTTPException(401)
+        save = ctx["save"]
+        kinds = ("sim", "household", "relationship", "pregnancy", "roll", "event", "illness", "note", "migration", "death", "game_history", "family_plan")
+        rows = list(session.scalars(select(Record).where(
+            Record.save_id == save.id, Record.deleted.is_(False), Record.kind.in_(kinds),
+            Record.label.ilike(f"%{query}%"),
+        ).order_by(Record.updated_at.desc()).limit(24)))
+        rows.sort(key=lambda item: (not item.label.casefold().startswith(query.casefold()), item.label.casefold()))
+        return {"results": [_search_result_for(item, save) for item in rows[:12]]}
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     with db() as session:
@@ -790,8 +840,50 @@ def home(request: Request):
         if save:
             ctx["automation_pending"] = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending")) or 0
         counts = {}
+        household_quick_rows=[];upcoming_glance=[];data_health=[];latest_digest=None
         if save:
             counts = dict(session.execute(select(Record.kind, func.count()).where(Record.save_id == save.id, Record.deleted.is_(False)).group_by(Record.kind)).all())
+            home_sims=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False))))
+            home_households=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="household",Record.deleted.is_(False))))
+            home_relationships=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="relationship",Record.deleted.is_(False))))
+            members_by_household={home.id:[] for home in home_households}
+            for sim in home_sims:
+                home_id=str((sim.data or {}).get("current_household_id") or "")
+                if home_id in members_by_household: members_by_household[home_id].append(sim)
+            main_household_id=str((save.settings or {}).get("main_household_id") or "")
+            for household in sorted(home_households,key=lambda item:(item.id!=main_household_id,item.label.casefold()))[:8]:
+                members=members_by_household.get(household.id,[])
+                household_quick_rows.append({"household":household,"members":len(members),"living":sum(_living_sim(sim,save) for sim in members)})
+            missing_birth=sum((sim.data or {}).get("birth_global_day") in (None,"") for sim in home_sims)
+            unassigned=sum(not str((sim.data or {}).get("current_household_id") or "") for sim in home_sims if _living_sim(sim,save))
+            active_ids={sim.id for sim in home_sims}
+            broken_relationships=sum(
+                bool(str((relationship.data or {}).get("partner1_id") or "") or str((relationship.data or {}).get("partner2_id") or ""))
+                and any(str((relationship.data or {}).get(key) or "") not in active_ids for key in ("partner1_id","partner2_id"))
+                for relationship in home_relationships
+            )
+            game_ids={}
+            for sim in home_sims:
+                game_id=str((sim.data or {}).get("game_sim_id") or "")
+                if game_id: game_ids[game_id]=game_ids.get(game_id,0)+1
+            duplicate_game_ids=sum(count-1 for count in game_ids.values() if count>1)
+            for count,label,detail,href in ((missing_birth,"birth day missing","Add a birth day or year so ages and rolls remain accurate.","/p/sims"),(unassigned,"living Sims without a household","Assign a household when they have a current home.","/p/households"),(broken_relationships,"relationships with a missing Sim","Review the relationship before it appears in family views.","/p/relationships"),(duplicate_game_ids,"duplicate game identities","Open the inbox or Sim profiles and merge the duplicate connection.","/p/automation")):
+                if count:data_health.append({"count":count,"label":label,"detail":detail,"href":href})
+            upcoming_rows=list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.deleted.is_(False),Record.kind.in_(("roll","pregnancy","event")),Record.global_day>=save.global_day,
+            ).order_by(Record.global_day,Record.label).limit(80)))
+            for item in upcoming_rows:
+                data=item.data or {}
+                if item.kind=="roll" and bool(data.get("completed")): continue
+                if item.kind=="pregnancy" and str(data.get("status") or "active").casefold() in domain.CLOSED_PREGNANCIES: continue
+                label=(f"{data.get('sim_name') or item.label} — {data.get('roll_type') or 'roll'}" if item.kind=="roll" else item.label)
+                detail=(data.get("die") or "Roll") if item.kind=="roll" else (data.get("status") or "Pregnancy") if item.kind=="pregnancy" else (data.get("scope") or "Historical event")
+                href="/p/rolls" if item.kind=="roll" else "/p/pregnancies" if item.kind=="pregnancy" else "/p/events"
+                upcoming_glance.append({"day":item.global_day,"label":label,"detail":detail,"href":href})
+                if len(upcoming_glance)>=10: break
+            latest_digest=session.scalar(select(Record).where(
+                Record.save_id==save.id,Record.kind=="session_journal",Record.deleted.is_(False),
+            ).order_by(Record.global_day.desc(),Record.updated_at.desc()).limit(1))
         selected_rule_packs=list((save.settings or {}).get("selected_rule_packs") or []) if save else []
         decade_snapshots=list(session.scalars(select(Record).where(
             Record.save_id==save.id,Record.kind=="decade_snapshot",Record.deleted.is_(False),
@@ -801,6 +893,7 @@ def home(request: Request):
             "core_rulesets":core_rulesets.CORE_RULESETS,
             "selected_core_ruleset":core_rulesets.selected_core(save) if save else core_rulesets.SEVERALUDO,
             "selected_rule_packs":selected_rule_packs,"decade_snapshots":decade_snapshots,
+            "household_quick_rows":household_quick_rows,"upcoming_glance":upcoming_glance,"data_health":data_health,"latest_digest":latest_digest,
         })
 
 
@@ -1721,6 +1814,10 @@ def feature_page(request: Request, page: str):
             by_day_label=lambda item: (int_or_none(item.global_day) if int_or_none(item.global_day) is not None else 10**9,item.label.casefold())
             all_sims=sorted_sims(rows_by_kind["sim"],save)
             all_households=sorted(rows_by_kind["household"],key=lambda item:item.label.casefold())
+            focus_household_id=str(params.get("household") or "")
+            focus_household=next((household for household in all_households if household.id==focus_household_id),None)
+            if not focus_household: focus_household_id=""
+            focus_member_ids={sim.id for sim in all_sims if focus_household_id and str((sim.data or {}).get("current_household_id") or "")==focus_household_id}
             all_rolls=sorted(rows_by_kind["roll"],key=by_day_label)
             all_pregnancies=sorted(rows_by_kind["pregnancy"],key=by_day_label)
             all_university_enrollments=sorted(rows_by_kind["university_enrollment"],key=by_day_label)
@@ -1740,8 +1837,9 @@ def feature_page(request: Request, page: str):
             hidden_event_ids={event.id for event in all_events if domain.event_is_ignored(event)}
             all_events=[event for event in all_events if event.id not in hidden_event_ids]
             if hidden_event_ids: all_rolls=[roll for roll in all_rolls if str((roll.data or {}).get("event_id") or "") not in hidden_event_ids]
-            dead_sim_ids={sim.id for sim in all_sims if bool((sim.data or {}).get("game_was_dead")) or (int_or_none(sim.data.get("death_global_day")) is not None and int(sim.data.get("death_global_day"))<=g)}
-            living_sims=[sim for sim in all_sims if sim.id not in dead_sim_ids]
+            living_sims=[sim for sim in all_sims if _living_sim(sim,save)]
+            living_sim_ids={sim.id for sim in living_sims}
+            dead_sim_ids={sim.id for sim in all_sims if sim.id not in living_sim_ids}
             def roll_identity(roll):
                 return (str(roll.data.get("sim_id") or ""),str(roll.data.get("roll_type") or "").casefold().strip(),int(roll.global_day or roll.data.get("due_global_day") or 0))
             completed_roll_keys = {roll_identity(r) for r in all_rolls if bool(r.data.get("completed"))}
@@ -1846,8 +1944,20 @@ def feature_page(request: Request, page: str):
             due_deaths = [s for s in all_sims if scoped(s.data.get("death_global_day")) and not bool(s.data.get("death_confirmed"))]
             today_deaths = [s for s in all_sims if int_or_none(s.data.get("death_global_day"))==g and not bool(s.data.get("death_confirmed"))]
             upcoming_deaths = sorted([s for s in all_sims if (int_or_none(s.data.get("death_global_day")) or -10**9)>g],key=lambda s:int(s.data.get("death_global_day")))[:10]
-            page_size=50; roll_page=max(1,int_or_none(params.get("roll_page")) or 1); roll_pages=max(1,(len(due_rolls)+page_size-1)//page_size); roll_page=min(roll_page,roll_pages); due_rolls=due_rolls[(roll_page-1)*page_size:roll_page*page_size]
+            if focus_household_id:
+                def in_focus(sim_id): return str(sim_id or "") in focus_member_ids
+                due_rolls=[roll for roll in due_rolls if in_focus((roll.data or {}).get("sim_id")) or str((roll.data or {}).get("household_id") or "")==focus_household_id]
+                today_roll_results=[roll for roll in today_roll_results if in_focus((roll.data or {}).get("sim_id")) or str((roll.data or {}).get("household_id") or "")==focus_household_id]
+                due_pregnancies=[pregnancy for pregnancy in due_pregnancies if in_focus((pregnancy.data or {}).get("mother_id")) or in_focus((pregnancy.data or {}).get("father_id"))]
+                due_university=[row for row in due_university if row["sim"] and in_focus(row["sim"].id)]
+                active_illnesses=[illness for illness in active_illnesses if in_focus((illness.data or {}).get("sim_id"))]
+                due_deaths=[sim for sim in due_deaths if in_focus(sim.id)]
+                today_deaths=[sim for sim in today_deaths if in_focus(sim.id)]
+                upcoming_deaths=[sim for sim in upcoming_deaths if in_focus(sim.id)]
+            due_roll_count=len(due_rolls)
+            page_size=50; roll_page=max(1,int_or_none(params.get("roll_page")) or 1); roll_pages=max(1,(due_roll_count+page_size-1)//page_size); roll_page=min(roll_page,roll_pages); due_rolls=due_rolls[(roll_page-1)*page_size:roll_page*page_size]
             upcoming_rolls = [r for r in pending_rolls if r.global_day is not None and g < int(r.global_day) <= g + preview_days][:20]
+            if focus_household_id: upcoming_rolls=[roll for roll in upcoming_rolls if str((roll.data or {}).get("sim_id") or "") in focus_member_ids or str((roll.data or {}).get("household_id") or "")==focus_household_id]
             event_windows=[(
                 int_or_none((event.data or {}).get("start_global_day",event.global_day)) or -10**9,
                 int_or_none((event.data or {}).get("end_global_day",event.global_day)) or 10**9,
@@ -1857,11 +1967,12 @@ def feature_page(request: Request, page: str):
             raw_settings=dict(save.settings or {}); legacy=raw_settings.get("legacy_settings") or {}; id_map=raw_settings.get("legacy_id_map") or {}
             current_heir=raw_settings.get("current_heir_id") or id_map.get(legacy.get("current_heir_id"),legacy.get("current_heir_id"))
             main_household=raw_settings.get("main_household_id") or id_map.get(legacy.get("main_household_id"),legacy.get("main_household_id"))
-            # This derives entirely from the Sims already loaded for Today: no
-            # extra query and no portrait decoding on the main interaction path.
-            # A deceased Sim remains in the audit at the age they reached.
+            # This derives entirely from the living Sims already loaded for
+            # Today: no extra query and no portrait decoding on the main
+            # interaction path.  Death history stays on a Sim's profile and
+            # in the timeline instead of obscuring the active age check.
             age_check=[]
-            for sim in all_sims:
+            for sim in (living_sims if not focus_household_id else [sim for sim in living_sims if sim.id in focus_member_ids]):
                 sim_data=sim.data or {}
                 birth_day=int_or_none(sim_data.get("birth_global_day",sim.global_day))
                 death_day=int_or_none(sim_data.get("death_global_day"))
@@ -1880,11 +1991,12 @@ def feature_page(request: Request, page: str):
             ctx.update(all_sims=all_sims,living_sims=living_sims,all_households=all_households,due_scope=due_scope,task=task,density=density,roll_kind=roll_kind,preview_days=preview_days,
                 due_rolls=due_rolls,today_roll_results=today_roll_results,due_pregnancies=due_pregnancies,due_university=due_university,active_events=active_events,active_illnesses=active_illnesses,due_deaths=due_deaths,today_deaths=today_deaths,upcoming_deaths=upcoming_deaths,upcoming_rolls=upcoming_rolls,event_context=event_context,
                 age_check=age_check,
-                today_counts={"rolls":len([r for r in pending_rolls if int(r.global_day or g)<=g]),"pregnancies":len([p for p in all_pregnancies if int(p.data.get("due_global_day",p.global_day) or g)<=g and str(p.data.get("status") or "active").casefold() not in domain.CLOSED_PREGNANCIES]),"university":len([term for term in all_university_terms if university.term_is_open(term) and int_or_none((term.data or {}).get("end_global_day",term.global_day)) is not None and int((term.data or {}).get("end_global_day",term.global_day))<=g]),"events":len(active_events),"illnesses":len(active_illnesses),"deaths":len(today_deaths)},
+                today_counts={"rolls":due_roll_count,"pregnancies":len(due_pregnancies),"university":len(due_university),"events":len(active_events),"illnesses":len(active_illnesses),"deaths":len(today_deaths)},
                 roll_page=roll_page,roll_pages=roll_pages,current_heir=current_heir,main_household=main_household,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),today_undo=request.session.get("today_undo"),
                 daily_digest=digest_records[0] if digest_records else None,recent_digests=digest_records,
                 occult_summaries=occult_summaries,occult_summary_counts=occult_summary_counts,
                 rule_definitions=rule_definitions,rule_action_outcomes=rule_action_outcomes,
+                focus_household=focus_household,focus_household_id=focus_household_id,
                 rule_workbench_notice=request.session.pop("rule_workbench_notice",None),
                 roll_refresh_notice=request.session.pop("roll_refresh_notice",None))
             records=[]
@@ -2153,9 +2265,11 @@ def sim_profile(request: Request, sim_id: str):
         siblings=[item for item in all_sims if item.id!=sim.id and parent_ids.intersection({(item.data or {}).get("mother_id"),(item.data or {}).get("father_id")})]
         current_household=next((item for item in households if item.id==sim_data.get("current_household_id")),None)
         related_rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id).order_by(Record.global_day.desc()).limit(20)))
-        life_history=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="game_history",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id).order_by(Record.global_day.desc(),Record.created_at.desc()).limit(80)))
+        game_history=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="game_history",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id).order_by(Record.global_day.desc(),Record.created_at.desc()).limit(80)))
         illnesses=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="illness",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id).order_by(Record.global_day.desc()).limit(20)))
         pregnancies=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="pregnancy",Record.deleted.is_(False)).where((Record.data["mother_id"].as_string()==sim.id) | (Record.data["father_id"].as_string()==sim.id)).order_by(Record.global_day.desc()).limit(20)))
+        death_history=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id).order_by(Record.global_day.desc()).limit(10)))
+        life_history=sorted({item.id:item for item in [*game_history,*related_rolls,*illnesses,*pregnancies,*relationships,*death_history]}.values(),key=lambda item:(int_or_none(item.global_day) or -1,item.created_at),reverse=True)[:100]
         relationship_rows=[]
         for relationship in relationships:
             relationship_data=relationship.data or {}
@@ -2215,11 +2329,11 @@ async def add_sim(request: Request):
         name = " ".join(part for part in (title,first_name,last_name,suffix) if part)
         birth,birth_fields=resolve_birth_input(save,form.get("birth_global_day"),form.get("birth_year"),form.get("birth_game_hour"),form.get("birth_game_minute"));death=int_or_none(form.get("death_global_day"))
         birth_surname=str(form.get("surname_at_birth") or form.get("maiden_name") or last_name).strip();married_surname=str(form.get("married_surname") or form.get("married_name") or "").strip()
-        sim_data={"sim_number":sim_number,"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":int_or_none(form.get("generation")),"birth_global_day":birth,"death_global_day":death,"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"birth_circumstances":str(form.get("birth_circumstances") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":"include_in_family_tree" not in form or str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"birthplace":str(form.get("birthplace") or ""),"cause_of_death":str(form.get("cause_of_death") or ""),"death_place":str(form.get("death_place") or ""),"notes":str(form.get("notes") or "")}
+        sim_data={"sim_number":sim_number,"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":int_or_none(form.get("generation")),"birth_global_day":birth,"death_global_day":death,"game_age_stage":str(form.get("age_stage") or ""),"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"birth_circumstances":str(form.get("birth_circumstances") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":"include_in_family_tree" not in form or str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"birthplace":str(form.get("birthplace") or ""),"cause_of_death":str(form.get("cause_of_death") or ""),"death_place":str(form.get("death_place") or ""),"notes":str(form.get("notes") or "")}
         if sim_data["generation"] is not None: sim_data["generation_source"]="manual"
         sim_data.update(birth_fields);sim_data.update(death_calendar_fields(save,death,form.get("death_game_hour"),form.get("death_game_minute")))
         record = Record(save_id=save.id, kind="sim", label=name, global_day=birth, data=sim_data)
-        session.add(record); session.flush(); session.add(Change(save_id=save.id, device_id="local" if settings.local_mode else "web", record_id=record.id, kind="sim", operation="upsert", base_version=0, new_version=1, payload=sync.serialize(record))); save.revision += 1+domain.sync_generations(session,save); domain.schedule_rolls(session, save)
+        session.add(record); session.flush(); session.add(Change(save_id=save.id, device_id="local" if settings.local_mode else "web", record_id=record.id, kind="sim", operation="upsert", base_version=0, new_version=1, payload=sync.serialize(record))); save.revision += 1+domain.sync_generations(session,save); domain.schedule_rolls(session, save); domain.auto_pass_lifecycle_rolls_for_added_sim(session,save,record)
         return RedirectResponse(f"/sims/{record.id}", status_code=303)
 
 
@@ -3049,6 +3163,7 @@ async def accept_automation(request: Request, candidate_id: str):
             automation.resolve_parent_links(session,save)
             save.revision+=domain.sync_generations(session,save)
             domain.schedule_rolls(session,save)
+            if action=="new_sim": domain.auto_pass_lifecycle_rolls_for_added_sim(session,save,sim)
         elif action=="sim_identity_change" and sim:
             first=str(value("first_name",payload.get("first_name")) or "").strip();last=str(value("last_name",payload.get("last_name")) or "").strip();sex=str(value("sex",payload.get("sex")) or "").strip();name=" ".join(part for part in (first,last) if part) or sim.label
             base=sim.version;sim.label=name;sim.data={**sim.data,"first_name":first or name,"last_name":last,"sex":sex or sim.data.get("sex"),"game_sex":sex or sim.data.get("game_sex")};sim.version+=1;domain.journal(session,sim,"upsert",base);resolved_record=sim
@@ -4781,11 +4896,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.11-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.12-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.11-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.12-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

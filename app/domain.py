@@ -5073,7 +5073,8 @@ def failed(actual: int, bad_results: str) -> bool:
     return False
 
 
-def prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record) -> list[Record]:
+def prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record,
+                          through_global_day: int | None = None) -> list[Record]:
     """Return unfinished aging checks the Sim has already lived through."""
     if sim.kind != "sim" or sim.deleted:
         return []
@@ -5082,6 +5083,8 @@ def prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record) ->
         return []
     death = sim.data.get("death_global_day")
     lived_through = min(save.global_day, int(death)) if death is not None else save.global_day
+    if through_global_day is not None:
+        lived_through = min(lived_through, int(through_global_day))
     rows = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
         Record.data["sim_id"].as_string() == sim.id,
@@ -5095,7 +5098,8 @@ def prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record) ->
     ]
 
 
-def pass_prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record) -> dict:
+def pass_prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record,
+                               through_global_day: int | None = None) -> dict:
     """Record safe passing results for every earlier life-stage check."""
     # This is an explicit player action, so it remains useful even while the
     # save-wide automatic scheduling switch is paused.
@@ -5105,7 +5109,7 @@ def pass_prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Recor
     created = _schedule_sim_lifecycle_rolls(session, save, sim, rules)
     save.revision += created
     passed = skipped = 0
-    for roll in prior_lifecycle_rolls(session, save, sim):
+    for roll in prior_lifecycle_rolls(session, save, sim, through_global_day):
         data = dict(roll.data or {})
         match = re.search(r"(?:^|\b)d\s*(\d+)(?:\b|$)", str(data.get("die") or ""), re.IGNORECASE)
         faces = int(match.group(1)) if match else 20
@@ -5122,6 +5126,39 @@ def pass_prior_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Recor
         complete_roll(session, save, roll, safe, "Passed automatically — prior life stage")
         passed += 1
     return {"passed": passed, "skipped": skipped}
+
+
+def auto_pass_lifecycle_rolls_for_added_sim(session: Session, save: ChronicleSave, sim: Record) -> dict:
+    """Safely close checks from stages before a newly-added Sim's current stage.
+
+    Imported Sims should not receive a backlog of dice from a childhood the
+    player did not track. The current stage itself remains playable: only
+    earlier stage checks receive an automatic passing result.
+    """
+    data = sim.data or {}
+    try:
+        birth = int(data.get("birth_global_day", sim.global_day))
+    except (TypeError, ValueError):
+        return {"passed": 0, "skipped": 0}
+    raw_stage = str(data.get("game_age_stage") or data.get("life_stage") or "").replace("Age.", "").replace("_", " ").strip().casefold()
+    raw_stage = {"youngadult": "young adult", "beingborn": "being born"}.get(raw_stage.replace(" ", ""), raw_stage)
+    if raw_stage not in AGING_STAGE_OFFSETS:
+        current_age = max(0, save.global_day - birth)
+        eligible = [(stage.casefold(), offset) for stage, offset, _die, _bad in DEFAULT_STAGES if offset <= current_age and "elder" not in stage.casefold()]
+        raw_stage = max(eligible, key=lambda item: item[1], default=("being born", 0))[0]
+    stage_start = int(AGING_STAGE_OFFSETS.get(raw_stage, 0))
+    result = pass_prior_lifecycle_rolls(session, save, sim, birth + stage_start - 1)
+    if result["passed"]:
+        base = sim.version
+        sim.data = {**data,
+                    "automatic_lifecycle_catchup": True,
+                    "automatic_lifecycle_catchup_stage": raw_stage.title(),
+                    "automatic_lifecycle_catchup_global_day": save.global_day,
+                    "automatic_lifecycle_catchup_passed": result["passed"]}
+        sim.version += 1
+        journal(session, sim, "upsert", base)
+        save.revision += 1
+    return result
 
 
 def _event_death_cause(session: Session, roll: Record) -> str | None:

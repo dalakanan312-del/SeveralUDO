@@ -27,7 +27,7 @@ from app.clock import _game_illnesses, _store_game_portrait, attach_game_identit
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, preserve_delivery_maternal_rolls, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, restore_delivery_maternal_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import apply_married_surnames, auto_pass_lifecycle_rolls_for_added_sim, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, preserve_delivery_maternal_rolls, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, restore_delivery_maternal_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, confirmed_illness_name, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
@@ -1517,7 +1517,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.11")
+            self.assertEqual(health.json()["version"], "4.5.12")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1836,6 +1836,71 @@ class CoreSmokeTests(unittest.TestCase):
             client.post("/api/today/undo", follow_redirects=False)
             with SessionLocal() as session:
                 self.assertEqual(session.get(ChronicleSave, save_id).global_day, original)
+
+    def test_age_check_lists_living_sims_only(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                living=Record(save_id=save.id,kind="sim",label=f"Living age check {marker}",global_day=1,data={"birth_global_day":1})
+                scheduled_dead=Record(save_id=save.id,kind="sim",label=f"Scheduled death age check {marker}",global_day=1,data={"birth_global_day":1,"death_global_day":save.global_day})
+                clock_dead=Record(save_id=save.id,kind="sim",label=f"Clock death age check {marker}",global_day=1,data={"birth_global_day":1,"game_was_dead":True})
+                legacy_dead=Record(save_id=save.id,kind="sim",label=f"Legacy death age check {marker}",global_day=1,data={"birth_global_day":1,"death_confirmed":True})
+                session.add_all([living,scheduled_dead,clock_dead,legacy_dead]);session.commit()
+                record_ids=[living.id,scheduled_dead.id,clock_dead.id,legacy_dead.id]
+            response=client.get("/p/today?task=events")
+            self.assertEqual(response.status_code,200)
+            age_check=response.text.split('<details class="tool-drawer age-check"',1)[1].split("</details>",1)[0]
+            self.assertIn(f"Living age check {marker}",age_check)
+            self.assertNotIn(f"Scheduled death age check {marker}",age_check)
+            self.assertNotIn(f"Clock death age check {marker}",age_check)
+            self.assertNotIn(f"Legacy death age check {marker}",age_check)
+            with SessionLocal() as session:
+                session.execute(delete(Record).where(Record.id.in_(record_ids)))
+                session.commit()
+
+    def test_global_search_finds_profiles_and_uses_profile_links(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                sim=Record(save_id=save.id,kind="sim",label=f"Searchable Sim {marker}",global_day=1,data={"birth_global_day":1})
+                session.add(sim);session.commit();sim_id=sim.id
+            response=client.get(f"/api/search?q=Searchable%20Sim%20{marker}")
+            self.assertEqual(response.status_code,200)
+            result=next(item for item in response.json()["results"] if item["label"]==f"Searchable Sim {marker}")
+            self.assertEqual(result["href"],f"/sims/{sim_id}")
+            with SessionLocal() as session:
+                session.execute(delete(Record).where(Record.id==sim_id));session.commit()
+
+    def test_dashboard_renders_the_qol_hub(self):
+        with TestClient(app) as client:
+            response=client.get("/")
+            self.assertEqual(response.status_code,200)
+            for text in ("HOUSEHOLD FOCUS","UPCOMING CALENDAR","DATA HEALTH","resume-last-page","tracker-global-search"):
+                self.assertIn(text,response.text)
+
+    def test_today_household_focus_limits_the_work_list(self):
+        marker=uuid.uuid4().hex[:10]
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                home=Record(save_id=save.id,kind="household",label=f"Focus House {marker}",data={})
+                session.add(home);session.flush()
+                focused=Record(save_id=save.id,kind="sim",label=f"Focused Sim {marker}",global_day=1,data={"birth_global_day":1,"current_household_id":home.id})
+                elsewhere=Record(save_id=save.id,kind="sim",label=f"Elsewhere Sim {marker}",global_day=1,data={"birth_global_day":1})
+                session.add_all([focused,elsewhere]);session.flush()
+                focused_roll=Record(save_id=save.id,kind="roll",label=f"Focused roll {marker}",global_day=save.global_day,data={"sim_id":focused.id,"sim_name":focused.label,"roll_type":"Focus check","die":"d6","bad_results":"1","completed":False})
+                elsewhere_roll=Record(save_id=save.id,kind="roll",label=f"Elsewhere roll {marker}",global_day=save.global_day,data={"sim_id":elsewhere.id,"sim_name":elsewhere.label,"roll_type":"Other check","die":"d6","bad_results":"1","completed":False})
+                session.add_all([focused_roll,elsewhere_roll]);session.commit()
+                record_ids=[home.id,focused.id,elsewhere.id,focused_roll.id,elsewhere_roll.id];home_id=home.id
+            response=client.get(f"/p/today?task=rolls&household={home_id}")
+            self.assertEqual(response.status_code,200)
+            work=response.text.split('<section class="today-list',1)[1].split("</section>",1)[0]
+            self.assertIn(f"Focused Sim {marker}",work)
+            self.assertNotIn(f"Elsewhere Sim {marker}",work)
+            with SessionLocal() as session:
+                session.execute(delete(Record).where(Record.id.in_(record_ids)));session.commit()
 
     def test_today_death_confirmation_preserves_existing_date_and_time(self):
         marker=uuid.uuid4().hex[:10]
@@ -3171,6 +3236,26 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(len([roll for roll in rolls if (roll.data or {}).get("age_stage_catch_up")]),8)
                 self.assertTrue(all((roll.data or {}).get("completed") for roll in rolls if str((roll.data or {}).get("source") or "").startswith("aging:") and (roll.global_day or 0)<=save.global_day))
                 self.assertTrue(all(not (roll.data or {}).get("failed") for roll in rolls if (roll.data or {}).get("age_stage_catch_up")))
+                session.rollback()
+
+    def test_added_young_adult_automatically_passes_only_earlier_life_stage_checks(self):
+        with TestClient(app):
+            with SessionLocal() as session:
+                original=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                save=ChronicleSave(workspace_id=original.workspace_id,name="Automatic life-stage catch-up",global_day=100,start_year=1300,days_per_year=4)
+                session.add(save);session.flush();seed_defaults(session,save)
+                sim=Record(save_id=save.id,kind="sim",label="Imported Young Adult",global_day=28,data={"birth_global_day":28,"game_age_stage":"Age.YOUNGADULT"})
+                session.add(sim);session.flush()
+                result=auto_pass_lifecycle_rolls_for_added_sim(session,save,sim)
+                rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["sim_id"].as_string()==sim.id)))
+                passed=[roll for roll in rolls if (roll.data or {}).get("age_stage_catch_up")]
+                current=[roll for roll in rolls if (roll.data or {}).get("roll_type")=="Young Adult"]
+                self.assertEqual(result,{"passed":7,"skipped":0})
+                self.assertEqual(len(passed),7)
+                self.assertTrue(all((roll.data or {}).get("completed") for roll in passed))
+                self.assertEqual(len(current),1)
+                self.assertFalse(bool((current[0].data or {}).get("completed")))
+                self.assertEqual(sim.data["automatic_lifecycle_catchup_stage"],"Young Adult")
                 session.rollback()
 
     def test_healthcare_trait_hashes_detect_disease_but_not_immunization(self):
