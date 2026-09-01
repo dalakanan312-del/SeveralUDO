@@ -4537,6 +4537,119 @@ def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Re
     return created
 
 
+_HOGWARTS_FOUNDED_YEAR = 990
+_HOGWARTS_HOUSES_BY_D4 = {1: "Hufflepuff", 2: "Ravenclaw", 3: "Slytherin", 4: "Gryffindor"}
+
+
+def _is_hogwarts_sorting_roll(roll: Record) -> bool:
+    data = roll.data or {}
+    return bool(data.get("hp_hogwarts_sorting")) or str(data.get("source_rule_key") or "").casefold() == "hp_13"
+
+
+def _schedule_hogwarts_sorting_rolls(session: Session, save: ChronicleSave,
+                                     sims: list[Record]) -> int:
+    """Schedule one first-year Hogwarts sorting roll for each eligible Spellcaster.
+
+    Hogwarts is founded in 990. House assignment remains an optional Harry
+    Potter module, but once it is enabled the tracker owns the age-11
+    obligation and carries the resulting House onto the Sim profile.
+    """
+    selected = set((save.settings or {}).get("selected_rule_packs") or [])
+    if "harry_potter_decades" not in selected:
+        return 0
+    rule = session.scalar(select(Record).where(
+        Record.save_id == save.id, Record.kind == "addon_rule", Record.deleted.is_(False),
+        Record.data["rule_pack_id"].as_string() == "harry_potter_decades",
+        Record.data["code"].as_string() == "HP-13",
+    ).limit(1))
+    if not rule or not bool((rule.data or {}).get("active")):
+        return 0
+
+    existing = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        (Record.data["hp_hogwarts_sorting"].as_boolean().is_(True))
+        | (Record.data["source_rule_key"].as_string() == "hp_13"),
+    )))
+    existing_by_sim: dict[str, list[Record]] = defaultdict(list)
+    for item in existing:
+        sim_id = str((item.data or {}).get("sim_id") or "")
+        if sim_id:
+            existing_by_sim[sim_id].append(item)
+
+    days_per_year = max(1, int(save.days_per_year))
+    created = repaired = 0
+    for sim in sims:
+        data = sim.data or {}
+        birth = data.get("birth_global_day", sim.global_day)
+        try:
+            due = int(birth) + 11 * days_per_year
+        except (TypeError, ValueError):
+            continue
+        due_year = save.start_year + (due - 1) // days_per_year
+        ability = str(data.get("hp_magical_ability") or "").casefold()
+        eligible = (
+            due >= 1
+            and due_year >= _HOGWARTS_FOUNDED_YEAR
+            and "Spellcaster" in occult_rules.sim_occult_types(data)
+            and not bool(data.get("hp_hidden_squib"))
+            and ability not in {"squib", "muggle"}
+            and not str(data.get("hp_hogwarts_house") or "").strip()
+        )
+        death = data.get("death_global_day")
+        try:
+            eligible = eligible and (death in (None, "") or int(death) > due)
+        except (TypeError, ValueError):
+            pass
+
+        matches = existing_by_sim.get(sim.id, [])
+        completed = next((item for item in matches if bool((item.data or {}).get("completed"))), None)
+        automatic_pending = next((item for item in matches if not bool((item.data or {}).get("completed"))
+                                  and bool((item.data or {}).get("hp_hogwarts_sorting"))), None)
+        if completed:
+            continue
+        if not eligible:
+            if automatic_pending:
+                base = automatic_pending.version
+                automatic_pending.deleted = True
+                automatic_pending.data = {
+                    **(automatic_pending.data or {}),
+                    "retired_reason": "No longer eligible for Hogwarts sorting",
+                    "retired_global_day": save.global_day,
+                }
+                automatic_pending.version += 1
+                journal(session, automatic_pending, "delete", base)
+                repaired += 1
+            continue
+        if matches:
+            if automatic_pending and int(automatic_pending.global_day or due) != due:
+                base = automatic_pending.version
+                automatic_pending.global_day = due
+                automatic_pending.data = {**(automatic_pending.data or {}), "due_global_day": due}
+                automatic_pending.version += 1
+                journal(session, automatic_pending, "upsert", base)
+                repaired += 1
+            continue
+
+        source = f"harry-potter:hogwarts-sorting:{sim.id}"
+        payload = {
+            "sim_id": sim.id, "sim_name": sim.label, "source_id": rule.id,
+            "source_rule_id": rule.id, "source_rule_kind": "addon_rule",
+            "source_rule_key": "hp_13", "rule_generated": True,
+            "rule_family": "Harry Potter Decades", "roll_type": "Hogwarts Sorting",
+            "die": str((rule.data or {}).get("die") or "d4"), "bad_results": "",
+            "result_rules": str((rule.data or {}).get("result_rules") or "1: Hufflepuff; 2: Ravenclaw; 3: Slytherin; 4: Gryffindor"),
+            "nonlethal": True, "failure_is_lethal": False, "source": source,
+            "due_global_day": due, "completed": False, "hp_hogwarts_sorting": True,
+            "notes": "Automatically scheduled at age 11 for a Spellcaster after Hogwarts was founded.",
+        }
+        roll = Record(save_id=save.id, kind="roll", label=f"{sim.label} — Hogwarts Sorting", global_day=due, data=payload)
+        session.add(roll); session.flush(); journal(session, roll, "upsert", 0)
+        created += 1
+    if repaired:
+        save.revision += repaired
+    return created
+
+
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     if not automation_enabled(save):
         return 0
@@ -4550,6 +4663,7 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     created = 0
     for sim in sims:
         created += _schedule_sim_lifecycle_rolls(session, save, sim, rules)
+    created += _schedule_hogwarts_sorting_rolls(session, save, sims)
     if (save.settings or {}).get("maternal_rolls_enabled", True):
         maternal_rules = [rule for rule in rules if "maternal" in rule.label.casefold() and rule.data.get("active", True)]
         pregnancies = list(session.scalars(select(Record).where(
@@ -4750,6 +4864,8 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         is_bad = failed(actual, str(roll.data.get("bad_results") or ""))
         mapped_outcome = _mapped_roll_outcome(actual, str(roll.data.get("result_rules") or ""))
         automatic_outcome = mapped_outcome or (roll.data.get("failure_outcome") if is_bad else roll.data.get("success_outcome"))
+        if _is_hogwarts_sorting_roll(roll):
+            automatic_outcome = _HOGWARTS_HOUSES_BY_D4.get(int(actual), automatic_outcome)
         if roll.data.get("event_id") and is_bad:
             # Mixed event tables can contain both lethal and nonlethal failures.
             # The actual result controls death automation, not the event as a whole.
@@ -4759,6 +4875,22 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     roll.data = {**roll.data, "actual": actual, "outcome": outcome_override.strip() or automatic_outcome or ("Failed" if is_bad else "Passed"), "completed": True, "completed_global_day": save.global_day,
                  "triggered":rule_triggered if (roll.data.get("occult_roll") or roll.data.get("rule_generated")) and rule_trigger_results else roll.data.get("triggered")}
     allowance_changed = False
+    hogwarts_house_changed = False
+    if _is_hogwarts_sorting_roll(roll):
+        sim_id = str(roll.data.get("sim_id") or "")
+        sim = session.get(Record, sim_id) if sim_id else None
+        house = _HOGWARTS_HOUSES_BY_D4.get(int(actual))
+        if sim and not sim.deleted and house and not str((sim.data or {}).get("hp_hogwarts_house") or "").strip():
+            sim_base = sim.version
+            sim.data = {
+                **(sim.data or {}), "hp_hogwarts_house": house,
+                "hp_magical_school": str((sim.data or {}).get("hp_magical_school") or "Hogwarts"),
+                "hp_hogwarts_sorting_roll_id": roll.id,
+                "hp_hogwarts_sorted_global_day": int(roll.global_day or save.global_day),
+            }
+            sim.version += 1
+            journal(session, sim, "upsert", sim_base)
+            hogwarts_house_changed = True
     family_plan = None
     family_plan_changed = False
     family_plan_created = False
@@ -4904,13 +5036,14 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 save.revision += end_illnesses_for_death(session, save, sim, death_day)
                 death_changed = True
             save.revision += _retire_rolls_after_death(session, save, sim.id, death_day, roll.id)
-    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + occult_scheduled + automatic_followups
+    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(hogwarts_house_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + occult_scheduled + automatic_followups
     return {
         "outcome": roll.data["outcome"], "death": sync.serialize(death) if death else None,
         "death_created": death_created, "death_changed": death_changed, "pregnancy_count":pregnancy_count,
         "family_plan": sync.serialize(family_plan) if family_plan else None,
         "family_plan_changed": family_plan_changed,
         "family_plan_created": family_plan_created,
+        "hogwarts_house": roll.data.get("outcome") if _is_hogwarts_sorting_roll(roll) else None,
         "suggested_marriage_global_day": roll.data.get("suggested_marriage_global_day"),
         "automatic_followups": automatic_followups,
     }

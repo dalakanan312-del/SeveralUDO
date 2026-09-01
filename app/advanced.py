@@ -12,7 +12,7 @@ RULE_PACKS = (
     {"id": "occult_inheritance", "name": "Occult Inheritance", "description": "Inheritance, discovery, manifestation, ghost, and follow-up rules."},
     {"id": "healthcare_compatibility", "name": "Healthcare Compatibility", "description": "Optional illness telemetry and historically interpreted health episodes."},
     {"id": "avatar_decades", "name": "Avatar: The Last Airbender Decades — Add-on", "description": "Fifty independent bending, nation, Avatar, Spirit, war, and canon-timeline modules. Standard Decades rules remain in force."},
-    {"id": "harry_potter_decades", "name": "Harry Potter Decades — Add-on", "description": "Nineteen magical-family modules, three timeline modes, Wizarding history, and five recurring event tables."},
+    {"id": "harry_potter_decades", "name": "Harry Potter Decades — Add-on", "description": "Nineteen magical-family modules, three timeline modes, 53 dated canon events, and five recurring event tables."},
     {"id": "game_of_thrones_decades", "name": "Game of Thrones Decades — Add-on", "description": "Sixty-nine House, succession, court, war, religion, dragon, season, and supernatural modules with BC/AC history."},
 )
 

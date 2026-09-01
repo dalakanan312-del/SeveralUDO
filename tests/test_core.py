@@ -170,6 +170,11 @@ class CoreSmokeTests(unittest.TestCase):
     def test_harry_potter_catalog_has_all_modules_tables_and_timeline_modes(self):
         self.assertEqual(len(harry_potter_rules.MODULES),19)
         self.assertEqual(len(harry_potter_rules.EVENT_TABLES),5)
+        self.assertEqual(len(harry_potter_rules.CANON_EVENTS),53)
+        battle=next(item for item in harry_potter_rules.CANON_EVENTS if item["code"]=="HP-E19")
+        self.assertEqual((battle["start_year"],battle["die"]),(1998,"d8"))
+        self.assertEqual(battle["lethal_results"],"1")
+        self.assertIn("Dies",battle["rule_text"])
         self.assertEqual({mode[0] for mode in harry_potter_rules.TIMELINE_MODES},{"canon","canon_compatible","alternate"})
         self.assertEqual((harry_potter_rules.year_label(-500),harry_potter_rules.year_label(1692)),("500 BCE","1,692 CE"))
         self.assertIn("HP-05",harry_potter_rules.DEPENDENCIES["HP-06"])
@@ -182,9 +187,13 @@ class CoreSmokeTests(unittest.TestCase):
             with SessionLocal() as session:
                 save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Wizarding {marker}"));save_id=save.id
                 rules=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule",Record.data["rule_pack_id"].as_string()==harry_potter_rules.PACK_ID)))
-                self.assertEqual(len(rules),24)
+                self.assertEqual(len(rules),len(harry_potter_rules.ALL_RULES))
                 self.assertTrue(next(item for item in rules if item.data["code"]=="HP-04").data["active"])
                 self.assertFalse(next(item for item in rules if item.data["code"]=="HP-T04").data["active"])
+                self.assertTrue(next(item for item in rules if item.data["code"]=="HP-E19").data["active"])
+                calendar_events=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="event",Record.data["catalog_id"].as_string().like("hp-canon:%"))))
+                self.assertEqual(len(calendar_events),sum(item["end_year"]>=1300 for item in harry_potter_rules.CANON_EVENTS))
+                self.assertTrue(all((item.global_day or 0)>=1 for item in calendar_events))
             client.post("/api/harry-potter/modules/HP-13",data={"enabled":"true"},follow_redirects=False)
             client.post("/api/harry-potter/settings",data={"timeline_mode":"canon_compatible"},follow_redirects=False)
             client.post("/api/rule-packs",data={"rule_pack":["severaludo"]},follow_redirects=False)
@@ -194,6 +203,28 @@ class CoreSmokeTests(unittest.TestCase):
                 save=session.get(ChronicleSave,save_id);house=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule",Record.data["code"].as_string()=="HP-13"))
                 self.assertTrue(house.data["active"]);self.assertEqual(save.settings["harry_potter_timeline_mode"],"canon_compatible")
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
+
+    def test_hogwarts_sorting_roll_is_automatic_for_spellcasters_after_founding(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Hogwarts sorting");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Hogwarts sorting",start_year=989,days_per_year=4,global_day=50,settings={"selected_rule_packs":["severaludo","harry_potter_decades"]})
+            session.add(save);session.flush()
+            spellcaster=Record(save_id=save.id,kind="sim",label="Future Student",global_day=1,data={"birth_global_day":1,"species_occult":"Spellcaster"})
+            muggle=Record(save_id=save.id,kind="sim",label="Muggle Student",global_day=1,data={"birth_global_day":1,"species_occult":"Human"})
+            session.add_all([spellcaster,muggle]);session.flush()
+            harry_potter_rules.sync_pack(session,save,["severaludo","harry_potter_decades"])
+            house_rule=next(item for item in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="addon_rule")) if item.data["code"]=="HP-13")
+            self.assertFalse(house_rule.data["active"])
+            harry_potter_rules.set_module(session,save,"HP-13",True)
+            self.assertEqual(schedule_rolls(session,save),1)
+            roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["hp_hogwarts_sorting"].as_boolean().is_(True)))
+            self.assertEqual((roll.label,roll.global_day,roll.data["die"]),("Future Student — Hogwarts Sorting",45,"d4"))
+            self.assertEqual(schedule_rolls(session,save),0)
+            result=complete_roll(session,save,roll,4)
+            session.flush();student=session.get(Record,spellcaster.id)
+            self.assertEqual((result["outcome"],result["hogwarts_house"],student.data["hp_hogwarts_house"],student.data["hp_magical_school"]),("Gryffindor","Gryffindor","Gryffindor","Hogwarts"))
+            self.assertIsNone(session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["sim_id"].as_string()==muggle.id,Record.data["hp_hogwarts_sorting"].as_boolean().is_(True))))
+            session.rollback()
 
     def test_avatar_dates_and_module_catalog_match_the_addon(self):
         self.assertEqual((avatar_rules.date_label(-12),avatar_rules.date_label(0),avatar_rules.date_label(174)),("12 BG","0 AG","174 AG"))
@@ -1458,7 +1489,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.9")
+            self.assertEqual(health.json()["version"], "4.5.10")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1759,6 +1790,8 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertIn("Today’s work", simplified.text)
             self.assertIn("More from today", simplified.text)
             self.assertIn("tool-drawer", simplified.text)
+            self.assertIn("Age check", simplified.text)
+            self.assertIn("current age, life stage, and recorded birth day", simplified.text)
             self.assertIn("Pregnancy-count roll", simplified.text)
             self.assertIn("Today settings", simplified.text)
             self.assertIn("Refresh pending rolls", simplified.text)

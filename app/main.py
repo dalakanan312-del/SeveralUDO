@@ -147,7 +147,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.9")
+app = FastAPI(title="Decades Tracker", version="4.5.10")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1365,6 +1365,16 @@ def feature_page(request: Request, page: str):
         if not ctx["user"]: return RedirectResponse("/", status_code=303)
         save = ctx["save"]
         if save:
+            # Add newly shipped Harry Potter entries the first time an existing
+            # Harry Potter save opens its library.  This is idempotent and keeps
+            # a save's existing on/off choices intact.
+            if page == "harry-potter" and harry_potter_rules.PACK_ID in set((save.settings or {}).get("selected_rule_packs") or []):
+                hp_selected = list((save.settings or {}).get("selected_rule_packs") or [])
+                added_hp_rules = harry_potter_rules.sync_pack(session, save, hp_selected)
+                added_hp_events = harry_potter_rules.sync_canon_events(session, save, hp_selected)
+                if added_hp_rules or added_hp_events:
+                    save.revision += added_hp_rules + added_hp_events
+                    ctx["hp_catalog_added"] = added_hp_rules + added_hp_events
             # Run the shared, fact-only repair once after this release reaches a
             # save.  Clock Sync and save scans keep it current after that; this
             # initial pass also repairs existing saves that have not reported
@@ -1657,7 +1667,7 @@ def feature_page(request: Request, page: str):
         if page == "harry-potter" and save:
             settings_data=dict(save.settings or {});selected=set(settings_data.get("selected_rule_packs") or [])
             rules=sorted((item for item in view_records if item.kind=="addon_rule" and (item.data or {}).get("rule_pack_id")==harry_potter_rules.PACK_ID),key=lambda item:str((item.data or {}).get("code") or item.label))
-            ctx.update(hp_pack_enabled=harry_potter_rules.PACK_ID in selected,hp_modules=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-") and not str((item.data or {}).get("code") or "").startswith("HP-T")],hp_event_tables=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-T")],hp_timeline=[{"start":start,"end":end,"label":label,"text":text,"range":harry_potter_rules.range_label(start,end)} for start,end,label,text in harry_potter_rules.TIMELINE],hp_timeline_modes=harry_potter_rules.TIMELINE_MODES,hp_timeline_mode=str(settings_data.get("harry_potter_timeline_mode") or "alternate"),hp_current_year=insights.current_year(save),hp_current_label=harry_potter_rules.year_label(insights.current_year(save)),all_sims=sorted_sims((item for item in view_records if item.kind=="sim"),save),all_households=sorted((item for item in view_records if item.kind=="household"),key=lambda item:item.label.casefold()),hp_notice=request.session.pop("hp_notice",None));records=[]
+            ctx.update(hp_pack_enabled=harry_potter_rules.PACK_ID in selected,hp_modules=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-") and not str((item.data or {}).get("code") or "").startswith(("HP-T","HP-E"))],hp_event_tables=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-T")],hp_canon_events=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-E")],hp_timeline=[{"start":start,"end":end,"label":label,"text":text,"range":harry_potter_rules.range_label(start,end)} for start,end,label,text in harry_potter_rules.TIMELINE],hp_timeline_modes=harry_potter_rules.TIMELINE_MODES,hp_timeline_mode=str(settings_data.get("harry_potter_timeline_mode") or "alternate"),hp_current_year=insights.current_year(save),hp_current_label=harry_potter_rules.year_label(insights.current_year(save)),all_sims=sorted_sims((item for item in view_records if item.kind=="sim"),save),all_households=sorted((item for item in view_records if item.kind=="household"),key=lambda item:item.label.casefold()),hp_notice=request.session.pop("hp_notice",None));records=[]
         if page == "game-of-thrones" and save:
             settings_data=dict(save.settings or {});selected=set(settings_data.get("selected_rule_packs") or []);rules=sorted((item for item in view_records if item.kind=="addon_rule" and (item.data or {}).get("rule_pack_id")==game_of_thrones_rules.PACK_ID),key=lambda item:str((item.data or {}).get("code") or item.label));current_year=game_of_thrones_rules.lore_year(save)
             ctx.update(got_pack_enabled=game_of_thrones_rules.PACK_ID in selected,got_modules=[item for item in rules if not str((item.data or {}).get("code") or "").startswith("GOT-T")],got_event_tables=[item for item in rules if str((item.data or {}).get("code") or "").startswith("GOT-T")],got_timeline=[{"start":start,"end":end,"label":label,"text":text,"range":game_of_thrones_rules.range_label(start,end)} for start,end,label,text in game_of_thrones_rules.TIMELINE],got_timeline_modes=game_of_thrones_rules.TIMELINE_MODES,got_timeline_mode=str(settings_data.get("game_of_thrones_timeline_mode") or "original"),got_current_year=current_year,got_current_label=game_of_thrones_rules.year_label(current_year),all_sims=sorted_sims((item for item in view_records if item.kind=="sim"),save),all_households=sorted((item for item in view_records if item.kind=="household"),key=lambda item:item.label.casefold()),got_notice=request.session.pop("got_notice",None));records=[]
@@ -1847,9 +1857,29 @@ def feature_page(request: Request, page: str):
             raw_settings=dict(save.settings or {}); legacy=raw_settings.get("legacy_settings") or {}; id_map=raw_settings.get("legacy_id_map") or {}
             current_heir=raw_settings.get("current_heir_id") or id_map.get(legacy.get("current_heir_id"),legacy.get("current_heir_id"))
             main_household=raw_settings.get("main_household_id") or id_map.get(legacy.get("main_household_id"),legacy.get("main_household_id"))
+            # This derives entirely from the Sims already loaded for Today: no
+            # extra query and no portrait decoding on the main interaction path.
+            # A deceased Sim remains in the audit at the age they reached.
+            age_check=[]
+            for sim in all_sims:
+                sim_data=sim.data or {}
+                birth_day=int_or_none(sim_data.get("birth_global_day",sim.global_day))
+                death_day=int_or_none(sim_data.get("death_global_day"))
+                observed_day=min(g,death_day) if death_day is not None else g
+                age_days=max(0,observed_day-birth_day) if birth_day is not None else None
+                years,days=divmod(age_days,max(1,save.days_per_year)) if age_days is not None else (None,None)
+                age_label=(f"{years}y {days}d · {age_days} tracker days" if years is not None else "Birth day unknown")
+                if death_day is not None and death_day<=g and age_label!="Birth day unknown": age_label=f"{age_label} at death"
+                age_check.append({
+                    "sim":sim,"age_days":age_days,"age_label":age_label,
+                    "life_stage":insights.life_stage(sim,g),"status":sim_status(sim,save),
+                    "birth_label":challenge_date_label(save,birth_day) if birth_day is not None else "Birth day not recorded",
+                })
+            age_check.sort(key=lambda row:(row["age_days"] is None, -(row["age_days"] or 0), row["sim"].label.casefold()))
             digest_records=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="session_journal",Record.deleted.is_(False)).order_by(Record.global_day.desc(),Record.updated_at.desc()).limit(7)))
             ctx.update(all_sims=all_sims,living_sims=living_sims,all_households=all_households,due_scope=due_scope,task=task,density=density,roll_kind=roll_kind,preview_days=preview_days,
                 due_rolls=due_rolls,today_roll_results=today_roll_results,due_pregnancies=due_pregnancies,due_university=due_university,active_events=active_events,active_illnesses=active_illnesses,due_deaths=due_deaths,today_deaths=today_deaths,upcoming_deaths=upcoming_deaths,upcoming_rolls=upcoming_rolls,event_context=event_context,
+                age_check=age_check,
                 today_counts={"rolls":len([r for r in pending_rolls if int(r.global_day or g)<=g]),"pregnancies":len([p for p in all_pregnancies if int(p.data.get("due_global_day",p.global_day) or g)<=g and str(p.data.get("status") or "active").casefold() not in domain.CLOSED_PREGNANCIES]),"university":len([term for term in all_university_terms if university.term_is_open(term) and int_or_none((term.data or {}).get("end_global_day",term.global_day)) is not None and int((term.data or {}).get("end_global_day",term.global_day))<=g]),"events":len(active_events),"illnesses":len(active_illnesses),"deaths":len(today_deaths)},
                 roll_page=roll_page,roll_pages=roll_pages,current_heir=current_heir,main_household=main_household,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),today_undo=request.session.get("today_undo"),
                 daily_digest=digest_records[0] if digest_records else None,recent_digests=digest_records,
@@ -3548,11 +3578,11 @@ async def update_rule_packs(request: Request):
         ctx=context(request,session);save=ctx.get("save")
         if not save: raise HTTPException(400,"Open a save first.")
         values=dict(save.settings or {});values["selected_rule_packs"]=(raw_selected if legacy_core else selected);values["core_ruleset_id"]=chosen_core;values["rule_pack_selection_version"]=3;save.settings=values
-        save.revision+=1+core_rulesets.sync_rules(session,save)+avatar_rules.sync_pack(session,save,selected)+harry_potter_rules.sync_pack(session,save,selected)+game_of_thrones_rules.sync_pack(session,save,selected)
+        save.revision+=1+core_rulesets.sync_rules(session,save)+avatar_rules.sync_pack(session,save,selected)+harry_potter_rules.sync_pack(session,save,selected)+harry_potter_rules.sync_canon_events(session,save,selected)+game_of_thrones_rules.sync_pack(session,save,selected)
         save.revision+=domain.retire_inactive_core_rolls(session,save)
         domain.schedule_rolls(session,save)
         if avatar_rules.PACK_ID in selected: request.session["avatar_notice"]="Avatar Decades is installed. Recommended modules are on; optional and canon-only modules remain off until you enable them."
-        if harry_potter_rules.PACK_ID in selected: request.session["hp_notice"]="Harry Potter Decades is installed. Recommended modules are on; optional modules and event tables remain off until you enable them."
+        if harry_potter_rules.PACK_ID in selected: request.session["hp_notice"]="Harry Potter Decades is installed. Recommended modules and canon events are on; optional modules, expanded history, and recurring event tables remain off until you enable them."
         if game_of_thrones_rules.PACK_ID in selected: request.session["got_notice"]="Game of Thrones Decades is installed. Recommended modules are on; optional, supernatural, and timeline tables remain off until you enable them."
     return RedirectResponse("/",status_code=303)
 
@@ -3639,8 +3669,8 @@ async def update_hp_module(code: str, request: Request):
         if not save: raise HTTPException(400,"Open a save first.")
         record=harry_potter_rules.set_module(session,save,code.upper(),enabled)
         if not record: raise HTTPException(404,"Harry Potter module not found. Enable the add-on first.")
-        domain.journal(session,record,"upsert",record.version-1);save.revision+=1;request.session["hp_notice"]=f'{record.label} is now {"enabled" if enabled else "paused"}.'
-    return RedirectResponse("/p/harry-potter#modules",status_code=303)
+        domain.journal(session,record,"upsert",record.version-1);save.revision+=1+harry_potter_rules.sync_canon_events(session,save,list((save.settings or {}).get("selected_rule_packs") or []));domain.schedule_rolls(session,save);request.session["hp_notice"]=f'{record.label} is now {"enabled" if enabled else "paused"}.'
+    return RedirectResponse(f"/p/harry-potter#{harry_potter_rules.section_for(code)}",status_code=303)
 
 
 @app.post("/api/harry-potter/modules/{code}/edit")
@@ -3652,7 +3682,7 @@ async def edit_hp_module(code: str, request: Request):
         record=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="addon_rule",Record.deleted.is_(False),Record.data["code"].as_string()==code.upper()))
         if not record or (record.data or {}).get("rule_pack_id")!=harry_potter_rules.PACK_ID: raise HTTPException(404,"Harry Potter module not found.")
         data=dict(record.data or {});base=record.version;data.update({"category":str(form.get("category") or "").strip(),"die":str(form.get("die") or "").strip(),"trigger":str(form.get("trigger") or "").strip(),"rule_text":str(form.get("rule_text") or "").strip()});data["result_rules"]=data["rule_text"];record.data=data;record.version+=1;domain.journal(session,record,"upsert",base);save.revision+=1;request.session["hp_notice"]=f"Saved edits to {record.label}."
-    return RedirectResponse("/p/harry-potter#modules",status_code=303)
+    return RedirectResponse(f"/p/harry-potter#{harry_potter_rules.section_for(code)}",status_code=303)
 
 
 @app.post("/api/harry-potter/settings")
@@ -3662,7 +3692,7 @@ async def update_hp_settings(request: Request):
     with db() as session:
         ctx=context(request,session);save=ctx.get("save")
         if not save: raise HTTPException(400,"Open a save first.")
-        values=dict(save.settings or {});values["harry_potter_timeline_mode"]=mode;save.settings=values;save.revision+=1;request.session["hp_notice"]="Harry Potter timeline mode saved."
+        values=dict(save.settings or {});values["harry_potter_timeline_mode"]=mode;save.settings=values;save.revision+=1+harry_potter_rules.sync_canon_events(session,save,list(values.get("selected_rule_packs") or []));request.session["hp_notice"]="Harry Potter timeline mode saved."
     return RedirectResponse("/p/harry-potter#timeline",status_code=303)
 
 
@@ -3688,7 +3718,7 @@ async def update_hp_sim(sim_id: str, request: Request):
     with db() as session:
         ctx=context(request,session);save=ctx.get("save");sim=session.get(Record,sim_id)
         if not save or not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"Sim not found.")
-        data=dict(sim.data or {});base=sim.version;data.update({"hp_magical_ability":str(form.get("magical_ability") or "").strip(),"hp_blood_status":str(form.get("blood_status") or "").strip(),"hp_hidden_squib":str(form.get("hidden_squib") or "").casefold() in {"1","true","on","yes"},"hp_public_magical_status":str(form.get("public_magical_status") or "").strip(),"hp_magical_school":str(form.get("magical_school") or "").strip(),"hp_hogwarts_house":str(form.get("hogwarts_house") or "").strip(),"hp_obscurial_status":str(form.get("obscurial_status") or "").strip(),"hp_quidditch_status":str(form.get("quidditch_status") or "").strip(),"hp_war_allegiance":str(form.get("war_allegiance") or "").strip(),"hp_death_eater_status":str(form.get("death_eater_status") or "").strip(),"hp_resistance_status":str(form.get("resistance_status") or "").strip(),"hp_prisoner_missing_status":str(form.get("prisoner_missing_status") or "").strip(),"hp_secrecy_violation_count":max(0,int_or_none(form.get("secrecy_violation_count")) or 0)});sim.data=data;sim.version+=1;domain.journal(session,sim,"upsert",base);save.revision+=1;request.session["hp_notice"]=f"Saved Wizarding fields for {sim.label}."
+        data=dict(sim.data or {});base=sim.version;data.update({"hp_magical_ability":str(form.get("magical_ability") or "").strip(),"hp_blood_status":str(form.get("blood_status") or "").strip(),"hp_hidden_squib":str(form.get("hidden_squib") or "").casefold() in {"1","true","on","yes"},"hp_public_magical_status":str(form.get("public_magical_status") or "").strip(),"hp_magical_school":str(form.get("magical_school") or "").strip(),"hp_hogwarts_house":str(form.get("hogwarts_house") or "").strip(),"hp_obscurial_status":str(form.get("obscurial_status") or "").strip(),"hp_quidditch_status":str(form.get("quidditch_status") or "").strip(),"hp_war_allegiance":str(form.get("war_allegiance") or "").strip(),"hp_death_eater_status":str(form.get("death_eater_status") or "").strip(),"hp_resistance_status":str(form.get("resistance_status") or "").strip(),"hp_prisoner_missing_status":str(form.get("prisoner_missing_status") or "").strip(),"hp_secrecy_violation_count":max(0,int_or_none(form.get("secrecy_violation_count")) or 0)});sim.data=data;sim.version+=1;domain.journal(session,sim,"upsert",base);save.revision+=1;domain.schedule_rolls(session,save);request.session["hp_notice"]=f"Saved Wizarding fields for {sim.label}."
     return RedirectResponse("/p/harry-potter#people",status_code=303)
 
 
@@ -4751,11 +4781,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.9-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.10-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.9-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.10-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

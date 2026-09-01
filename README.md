@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.10` adds automatic Hogwarts Sorting: when the optional Hogwarts House Assignment rule is enabled, eligible Spellcaster Sims receive one D4 roll at age 11 from 990 onward. Completing the roll records their Hogwarts House on their profile.
+
 `4.5.9` adds a true light reading option. Daylight Chronicle provides a polished parchment-and-ink palette, and Custom palette can now be saved in either light or dark mode without dimming the selected canvas. The Appearance preview, cards, forms, navigation, Today, family tree, and other older feature surfaces follow the chosen mode.
 
 `4.5.8` refreshes the approved pre-1300 source documents, preserving existing 1200s event IDs while adding the missing historical entries and refreshed roll tables. It also expands the hosted Neon connection pool so simultaneous page loads and Clock Sync reports do not exhaust the web service and cause internal-server errors. Clock Sync remains 2.2.8.
