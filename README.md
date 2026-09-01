@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.11` automatically schedules every Harry Potter rule with a tracker-visible trigger when its module is enabled: magical/Squib birth determination, Squib discovery, higher-order magical multiples, accidental magic, American Muggle-Born Obscurial risk, Statute of Secrecy, annual wizarding-household and Hogwarts events, and Wizarding-War household events. Results update the relevant Sim, pregnancy, or household record automatically.
+
 `4.5.10` adds automatic Hogwarts Sorting: when the optional Hogwarts House Assignment rule is enabled, eligible Spellcaster Sims receive one D4 roll at age 11 from 990 onward. Completing the roll records their Hogwarts House on their profile.
 
 `4.5.9` adds a true light reading option. Daylight Chronicle provides a polished parchment-and-ink palette, and Custom palette can now be saved in either light or dark mode without dimming the selected canvas. The Appearance preview, cards, forms, navigation, Today, family tree, and other older feature surfaces follow the chosen mode.

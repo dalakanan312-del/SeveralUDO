@@ -216,7 +216,9 @@ class CoreSmokeTests(unittest.TestCase):
             house_rule=next(item for item in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="addon_rule")) if item.data["code"]=="HP-13")
             self.assertFalse(house_rule.data["active"])
             harry_potter_rules.set_module(session,save,"HP-13",True)
-            self.assertEqual(schedule_rolls(session,save),1)
+            # HP-05 is recommended, so the two in-challenge births also gain
+            # their automatic magical-status determinations.
+            self.assertEqual(schedule_rolls(session,save),3)
             roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["hp_hogwarts_sorting"].as_boolean().is_(True)))
             self.assertEqual((roll.label,roll.global_day,roll.data["die"]),("Future Student — Hogwarts Sorting",45,"d4"))
             self.assertEqual(schedule_rolls(session,save),0)
@@ -224,6 +226,32 @@ class CoreSmokeTests(unittest.TestCase):
             session.flush();student=session.get(Record,spellcaster.id)
             self.assertEqual((result["outcome"],result["hogwarts_house"],student.data["hp_hogwarts_house"],student.data["hp_magical_school"]),("Gryffindor","Gryffindor","Gryffindor","Hogwarts"))
             self.assertIsNone(session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["sim_id"].as_string()==muggle.id,Record.data["hp_hogwarts_sorting"].as_boolean().is_(True))))
+            session.rollback()
+
+    def test_enabled_harry_potter_rules_schedule_birth_childhood_pregnancy_and_household_rolls(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Automatic Wizarding rolls");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Automatic Wizarding rolls",start_year=1700,days_per_year=4,global_day=40,settings={"selected_rule_packs":["severaludo","harry_potter_decades"]})
+            session.add(save);session.flush();harry_potter_rules.sync_pack(session,save,["severaludo","harry_potter_decades"])
+            for code in ("HP-05","HP-06","HP-11","HP-14","HP-15","HP-19","HP-T01","HP-T05"):
+                harry_potter_rules.set_module(session,save,code,True)
+            household=Record(id="hp-auto-house",save_id=save.id,kind="household",label="Magical home",global_day=1,data={"hp_repeated_public_exposure":True,"name":"Magical home"})
+            mother=Record(id="hp-auto-mother",save_id=save.id,kind="sim",label="Magic Mother",global_day=1,data={"birth_global_day":1,"species_occult":"Spellcaster","current_household_id":household.id})
+            child=Record(id="hp-auto-child",save_id=save.id,kind="sim",label="New magical child",global_day=12,data={"birth_global_day":12,"mother_id":mother.id,"species_occult":"Human","current_household_id":household.id})
+            squib=Record(id="hp-auto-squib",save_id=save.id,kind="sim",label="Hidden squib",global_day=1,data={"birth_global_day":1,"hp_magical_ability":"Squib","hp_hidden_squib":True,"current_household_id":household.id})
+            school=Record(id="hp-auto-school",save_id=save.id,kind="sim",label="Hogwarts pupil",global_day=1,data={"birth_global_day":-4,"species_occult":"Spellcaster","hp_magical_ability":"Witch","hp_magical_school":"Hogwarts","current_household_id":household.id})
+            american=Record(id="hp-auto-american",save_id=save.id,kind="sim",label="American Muggle-Born",global_day=4,data={"birth_global_day":4,"species_occult":"Spellcaster","hp_magical_ability":"Witch","hp_blood_status":"Muggle-Born","birth_country":"United States"})
+            pregnancy=Record(id="hp-auto-pregnancy",save_id=save.id,kind="pregnancy",label="Triplets",global_day=16,data={"mother_id":mother.id,"due_global_day":20,"babies_expected":3})
+            session.add_all([household,mother,child,squib,school,american,pregnancy]);session.flush()
+            self.assertGreater(schedule_rolls(session,save),0)
+            rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False))))
+            codes={str((roll.data or {}).get("hp_rule_code") or "") for roll in rolls}
+            self.assertTrue({"HP-05","HP-06","HP-11","HP-14","HP-15","HP-19","HP-T01","HP-T05"}.issubset(codes))
+            birth_roll=next(roll for roll in rolls if (roll.data or {}).get("hp_rule_code")=="HP-05" and (roll.data or {}).get("sim_id")==child.id)
+            result=complete_roll(session,save,birth_roll,1);session.flush();updated=session.get(Record,child.id)
+            self.assertEqual((result["outcome"],updated.data["hp_magical_ability"],updated.data["hp_blood_status"]),("Squib","Squib","Half-Blood"))
+            self.assertTrue(updated.data["hp_hidden_squib"])
+            self.assertEqual(schedule_rolls(session,save),0)
             session.rollback()
 
     def test_avatar_dates_and_module_catalog_match_the_addon(self):
@@ -1489,7 +1517,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.10")
+            self.assertEqual(health.json()["version"], "4.5.11")
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)

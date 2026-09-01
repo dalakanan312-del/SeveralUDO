@@ -4650,6 +4650,353 @@ def _schedule_hogwarts_sorting_rolls(session: Session, save: ChronicleSave,
     return created
 
 
+def _hp_magical(sim: Record | None) -> bool:
+    """Use the most reliable magical identity available without changing game data."""
+    if not sim or sim.deleted:
+        return False
+    data = sim.data or {}
+    ability = str(data.get("hp_magical_ability") or "").casefold()
+    if ability in {"witch", "wizard", "magical", "muggle-born"}:
+        return True
+    return "Spellcaster" in occult_rules.sim_occult_types(data)
+
+
+def _hp_witch_or_wizard(data: dict) -> str:
+    sex = str(data.get("sex") or data.get("game_sex") or "").casefold()
+    return "Wizard" if "male" in sex or sex in {"man", "boy"} else "Witch"
+
+
+def _hp_country(data: dict) -> str:
+    return " ".join(str(data.get(key) or "") for key in (
+        "birth_country", "birthplace", "country", "location", "last_game_world",
+    )).casefold()
+
+
+def _hp_rule_roll(session: Session, save: ChronicleSave, rule: Record, sim: Record, due: int,
+                  source: str, *, die: str, result_rules: str, trigger_results: str = "",
+                  label: str = "", extra: dict | None = None) -> bool:
+    """Create one idempotent automatic Harry Potter obligation."""
+    if due < 1 or due > save.global_day:
+        return False
+    exists = session.scalar(select(Record.id).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+        Record.data["source"].as_string() == source,
+    ).limit(1))
+    if exists:
+        return False
+    rule_data = rule.data or {}
+    code = str(rule_data.get("code") or "").upper()
+    payload = {
+        "sim_id": sim.id, "sim_name": sim.label, "source_id": rule.id,
+        "source_rule_id": rule.id, "source_rule_kind": "addon_rule",
+        "source_rule_key": code.casefold().replace("-", "_"), "rule_generated": True,
+        "rule_family": "Harry Potter Decades", "hp_auto_roll": True, "hp_rule_code": code,
+        "roll_type": str(rule_data.get("name") or rule.label), "die": die,
+        "bad_results": trigger_results, "trigger_results": trigger_results,
+        "result_rules": result_rules, "nonlethal": True, "failure_is_lethal": False,
+        "source": source, "due_global_day": due, "completed": False,
+        "notes": str(rule_data.get("rule_text") or ""),
+    }
+    if extra:
+        payload.update(extra)
+    roll = Record(
+        save_id=save.id, kind="roll", label=label or f"{sim.label} — {payload['roll_type']}",
+        global_day=due, data=payload,
+    )
+    session.add(roll); session.flush(); journal(session, roll, "upsert", 0)
+    return True
+
+
+def _schedule_harry_potter_rolls(session: Session, save: ChronicleSave,
+                                 sims: list[Record]) -> int:
+    """Schedule every enabled HP rule whose trigger is already known to the tracker.
+
+    Scenario-only canon entries still wait for a player to nominate a participant;
+    this avoids silently putting a non-participant into a tournament, battle, or
+    dangerous-object search.  All birth, age, household, pregnancy and recorded
+    exposure triggers are automatic and idempotent.
+    """
+    from . import harry_potter_rules
+
+    if harry_potter_rules.PACK_ID not in set((save.settings or {}).get("selected_rule_packs") or []):
+        return 0
+    rules = {
+        str((item.data or {}).get("code") or "").upper(): item
+        for item in session.scalars(select(Record).where(
+            Record.save_id == save.id, Record.kind == "addon_rule", Record.deleted.is_(False),
+            Record.data["rule_pack_id"].as_string() == harry_potter_rules.PACK_ID,
+        ))
+        if bool((item.data or {}).get("active"))
+    }
+    if not rules:
+        return 0
+    days = max(1, int(save.days_per_year))
+    current_year = save.start_year + (save.global_day - 1) // days
+    year_start = max(1, (current_year - save.start_year) * days + 1)
+    by_id = {sim.id: sim for sim in sims}
+    households = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
+    )))
+    household_by_id = {item.id: item for item in households}
+    created = 0
+
+    def living(sim: Record) -> bool:
+        data = sim.data or {}; death = data.get("death_global_day")
+        try:
+            return not bool(data.get("game_was_dead") or data.get("death_confirmed")) and (death in (None, "") or int(death) > save.global_day)
+        except (TypeError, ValueError):
+            return not bool(data.get("game_was_dead") or data.get("death_confirmed"))
+
+    # HP-05: every in-challenge birth, with the applicable branch captured in
+    # the roll so completing it never asks the player to reconstruct parentage.
+    rule = rules.get("HP-05")
+    if rule:
+        for sim in sims:
+            data = sim.data or {}; birth = data.get("birth_global_day", sim.global_day)
+            try:
+                birth = int(birth)
+            except (TypeError, ValueError):
+                continue
+            if not (1 <= birth <= save.global_day) or not living(sim):
+                continue
+            parents = [by_id.get(str(data.get(key) or "")) for key in ("mother_id", "father_id")]
+            magical_parent = any(_hp_magical(parent) for parent in parents)
+            branch = "magical-parent" if magical_parent else "muggle-parent"
+            rules_text = (
+                "1: Squib; 2-20: Witch or Wizard" if magical_parent
+                else "1: Muggle-Born Witch or Wizard; 2-20: Muggle"
+            )
+            created += int(_hp_rule_roll(
+                session, save, rule, sim, birth, f"harry-potter:HP-05:{sim.id}",
+                die="d20", result_rules=rules_text, trigger_results="1",
+                extra={"hp_birth_branch": branch, "hp_parent_ids": [parent.id for parent in parents if parent]},
+            ))
+
+    # HP-06: a recorded squib becomes publicly known at age seven.  It is a
+    # confirmation prompt (D1) rather than an invented random chance.
+    rule = rules.get("HP-06")
+    if rule:
+        for sim in sims:
+            data = sim.data or {}; birth = data.get("birth_global_day", sim.global_day)
+            try:
+                due = int(birth) + 7 * days
+            except (TypeError, ValueError):
+                continue
+            if (str(data.get("hp_magical_ability") or "").casefold() != "squib"
+                    or not bool(data.get("hp_hidden_squib")) or not living(sim)):
+                continue
+            created += int(_hp_rule_roll(
+                session, save, rule, sim, due, f"harry-potter:HP-06:{sim.id}",
+                die="d1", result_rules="1: Squib status is discovered and recorded publicly",
+                extra={"hp_squib_discovery": True},
+            ))
+
+    pregnancies = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "pregnancy", Record.deleted.is_(False),
+    )))
+    # HP-11: only an already-recorded triplet-or-larger magical pregnancy gets
+    # an upgrade roll; it never overwrites an actual game pregnancy silently.
+    rule = rules.get("HP-11")
+    if rule:
+        for pregnancy in pregnancies:
+            pdata = pregnancy.data or {}; mother = by_id.get(str(pdata.get("mother_id") or ""))
+            expected = pdata.get("babies_delivered", pdata.get("babies_expected"))
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                continue
+            if not mother or not living(mother) or not _hp_magical(mother) or expected < 3 or expected >= 6:
+                continue
+            due = int(pdata.get("actual_delivery_global_day") or pdata.get("due_global_day") or pregnancy.global_day or save.global_day)
+            next_count = expected + 1
+            created += int(_hp_rule_roll(
+                session, save, rule, mother, due, f"harry-potter:HP-11:{pregnancy.id}:{expected}",
+                die="d20", result_rules=f"1: Pregnancy becomes {next_count} babies; 2-20: Remains {expected} babies",
+                trigger_results="1", extra={"hp_pregnancy_id": pregnancy.id, "hp_multiples_current": expected, "hp_multiples_next": next_count},
+                label=f"{mother.label} — Magical higher-order multiples",
+            ))
+
+    # HP-14: a yearly childhood check for magical children between three and
+    # ten.  We schedule each reached anniversary once, without pre-challenge
+    # backfill or dead-Sim work.
+    rule = rules.get("HP-14")
+    if rule:
+        for sim in sims:
+            data = sim.data or {}; birth = data.get("birth_global_day", sim.global_day)
+            try:
+                birth = int(birth)
+            except (TypeError, ValueError):
+                continue
+            if not living(sim) or not _hp_magical(sim) or str(data.get("hp_magical_ability") or "").casefold() == "squib":
+                continue
+            for age in range(3, 11):
+                due = birth + age * days
+                if due > save.global_day:
+                    break
+                created += int(_hp_rule_roll(
+                    session, save, rule, sim, due, f"harry-potter:HP-14:{sim.id}:{age}",
+                    die="d6", result_rules="1: Noticeable accidental magic; 2-6: No major accidental magic",
+                    trigger_results="1", extra={"hp_age_years": age, "hp_accidental_magic": True},
+                ))
+
+    # HP-15: the response table begins once a Muggle-Born magical child is
+    # known to be in the United States.  A configurable profile value can later
+    # refine the family response; the default is the source's supportive case.
+    rule = rules.get("HP-15")
+    if rule:
+        for sim in sims:
+            data = sim.data or {}
+            if (not living(sim) or not _hp_magical(sim)
+                    or str(data.get("hp_blood_status") or "").casefold() != "muggle-born"
+                    or not any(value in _hp_country(data) for value in ("united states", "america", "usa"))):
+                continue
+            due = max(1, int(data.get("birth_global_day", sim.global_day) or sim.global_day))
+            response = str(data.get("hp_obscurial_home_response") or "supportive").casefold()
+            bad = {"supportive": "1", "fearful": "1-2", "anti-magic": "1-3", "violent suppression": "1-4"}.get(response, "1")
+            created += int(_hp_rule_roll(
+                session, save, rule, sim, due, f"harry-potter:HP-15:{sim.id}", die="d6",
+                result_rules=f"{bad}: Magic is dangerously suppressed; remaining results: Safe magical support",
+                trigger_results=bad, extra={"hp_obscurial_response": response, "hp_obscurial_risk": True},
+            ))
+
+    # HP-19: one per exposed magical household after the Statute era begins.
+    rule = rules.get("HP-19")
+    if rule and current_year >= 1692:
+        members: dict[str, list[Record]] = defaultdict(list)
+        for sim in sims:
+            if living(sim) and _hp_magical(sim):
+                members[str((sim.data or {}).get("current_household_id") or f"unhoused-{sim.id}")].append(sim)
+        for household_id, group in members.items():
+            household = household_by_id.get(household_id)
+            hdata = household.data if household else {}
+            if not bool(hdata.get("hp_repeated_public_exposure")):
+                continue
+            representative = sorted(group, key=lambda item: item.label.casefold())[0]
+            created += int(_hp_rule_roll(
+                session, save, rule, representative, save.global_day,
+                f"harry-potter:HP-19:{household_id}:{current_year}", die="d6",
+                result_rules="1-2: Ministry intervention; 3-6: Secrecy preserved",
+                trigger_results="1-2", label=f"International Statute of Secrecy — {hdata.get('name') or representative.label}",
+                extra={"hp_household_id": household_id, "eligible_magical_sim_ids": [item.id for item in group]},
+            ))
+
+    # Enabled HP event tables with deterministic triggers are now automatic.
+    magical_households: dict[str, list[Record]] = defaultdict(list)
+    for sim in sims:
+        if living(sim) and _hp_magical(sim):
+            magical_households[str((sim.data or {}).get("current_household_id") or f"unhoused-{sim.id}")].append(sim)
+    for code, die, text, years in (
+        ("HP-T01", "d20", "1: Accidental magic witnessed; 2: Magical illness; 3: Dangerous object; 4: Creature incident; 5: Ministry investigation; 6: Blood-status dispute; 7: School event; 8: Quidditch; 9: Unusual birth; 10: Family secret; 11: Forbidden experiment; 12: Muggle relative discovers magic; 13: Business; 14: Visitor; 15: Heir dispute; 16: Dark Wizard; 17: Helpful discovery; 18: Friendship, courtship, or betrothal; 19-20: No major event", None),
+        ("HP-T04", "d12", "1: Death; 2: Imprisonment or capture; 3: Disappearance; 4: Property attack; 5: Ordered collaboration; 6: Resistance; 7: Hiding; 8: Betrayal; 9: Protects target; 10: Intelligence; 11: Avoids major harm; 12: Gains influence", {(1970, 1981), (1995, 1998)}),
+    ):
+        rule = rules.get(code)
+        if not rule or (years and not any(start <= current_year <= end for start, end in years)):
+            continue
+        for household_id, group in magical_households.items():
+            representative = sorted(group, key=lambda item: item.label.casefold())[0]
+            household = household_by_id.get(household_id)
+            created += int(_hp_rule_roll(
+                session, save, rule, representative, year_start, f"harry-potter:{code}:{household_id}:{current_year}",
+                die=die, result_rules=text, label=f"{(rule.data or {}).get('name') or rule.label} — {(household.data or {}).get('name') if household else representative.label}",
+                extra={"hp_household_id": household_id, "eligible_magical_sim_ids": [item.id for item in group], "hp_annual_year": current_year},
+            ))
+
+    rule = rules.get("HP-T05")
+    if rule:
+        for sim in sims:
+            data = sim.data or {}; birth = data.get("birth_global_day", sim.global_day)
+            try:
+                age = (save.global_day - int(birth)) // days
+            except (TypeError, ValueError):
+                continue
+            if not (living(sim) and _hp_magical(sim) and str(data.get("hp_magical_school") or "").casefold() == "hogwarts" and 11 <= age <= 17):
+                continue
+            created += int(_hp_rule_roll(
+                session, save, rule, sim, year_start, f"harry-potter:HP-T05:{sim.id}:{current_year}", die="d12",
+                result_rules="1: Serious accident; 2: Discipline; 3: House rivalry; 4: Forbidden Forest; 5: Secret passage or object; 6: Quidditch; 7: Academic distinction; 8: Friendship or romance; 9: Professor conflict; 10: Creature encounter; 11: Family interruption; 12: Uneventful", extra={"hp_annual_year": current_year},
+            ))
+    return created
+
+
+def _hp_roll_outcome(roll: Record, actual: int) -> str | None:
+    """Return the concrete outcome text for automatic HP modules."""
+    data = roll.data or {}; code = str(data.get("hp_rule_code") or "").upper()
+    if code == "HP-05":
+        if data.get("hp_birth_branch") == "magical-parent":
+            return "Squib" if actual == 1 else "Witch or Wizard"
+        return "Muggle-Born Witch or Wizard" if actual == 1 else "Muggle"
+    if code == "HP-06":
+        return "Squib status is discovered and recorded publicly"
+    if code == "HP-11":
+        return f"Pregnancy becomes {data.get('hp_multiples_next')} babies" if actual == 1 else f"Remains {data.get('hp_multiples_current')} babies"
+    if code == "HP-14":
+        return "Noticeable accidental magic" if actual == 1 else "No major accidental magic"
+    if code == "HP-15":
+        return "Magic is dangerously suppressed" if failed(actual, str(data.get("trigger_results") or "")) else "Safe magical support"
+    if code == "HP-19":
+        return "Ministry intervention" if actual in {1, 2} else "Secrecy preserved"
+    return None
+
+
+def _apply_hp_roll_result(session: Session, save: ChronicleSave, roll: Record, actual: int) -> int:
+    """Persist only deterministic tracker-side consequences from an HP roll."""
+    data = roll.data or {}; code = str(data.get("hp_rule_code") or "").upper()
+    sim_id = str(data.get("sim_id") or ""); sim = session.get(Record, sim_id) if sim_id else None
+    changed = 0
+    if code == "HP-05" and sim and not sim.deleted:
+        sim_data = dict(sim.data or {}); magical_parent = data.get("hp_birth_branch") == "magical-parent"
+        if magical_parent and actual == 1:
+            parents = [session.get(Record, parent_id) for parent_id in data.get("hp_parent_ids") or []]
+            magical_count = sum(_hp_magical(parent) for parent in parents)
+            updates = {"hp_magical_ability": "Squib", "hp_hidden_squib": True,
+                       "hp_blood_status": "Pureblood" if magical_count >= 2 else "Half-Blood" if magical_count else "Magical ancestry",
+                       "hp_birth_roll_id": roll.id, "hp_birth_roll_global_day": int(roll.global_day or save.global_day)}
+        elif magical_parent:
+            parents = [session.get(Record, parent_id) for parent_id in data.get("hp_parent_ids") or []]
+            magical_count = sum(_hp_magical(parent) for parent in parents)
+            updates = {"hp_magical_ability": _hp_witch_or_wizard(sim_data), "hp_hidden_squib": False,
+                       "hp_blood_status": "Pureblood" if magical_count >= 2 else "Half-Blood",
+                       "hp_birth_roll_id": roll.id, "hp_birth_roll_global_day": int(roll.global_day or save.global_day)}
+        elif actual == 1:
+            updates = {"hp_magical_ability": _hp_witch_or_wizard(sim_data), "hp_hidden_squib": False,
+                       "hp_blood_status": "Muggle-Born", "hp_birth_roll_id": roll.id,
+                       "hp_birth_roll_global_day": int(roll.global_day or save.global_day)}
+        else:
+            updates = {"hp_magical_ability": "Muggle", "hp_hidden_squib": False,
+                       "hp_blood_status": "Muggle", "hp_birth_roll_id": roll.id,
+                       "hp_birth_roll_global_day": int(roll.global_day or save.global_day)}
+        if any(sim_data.get(key) != value for key, value in updates.items()):
+            base = sim.version; sim.data = {**sim_data, **updates}; sim.version += 1; journal(session, sim, "upsert", base); changed += 1
+    elif code == "HP-06" and sim and not sim.deleted:
+        sim_data = dict(sim.data or {}); updates = {"hp_hidden_squib": False, "hp_public_magical_status": "Squib",
+                                                     "hp_squib_discovery_roll_id": roll.id, "hp_squib_discovered_global_day": int(roll.global_day or save.global_day)}
+        if any(sim_data.get(key) != value for key, value in updates.items()):
+            base = sim.version; sim.data = {**sim_data, **updates}; sim.version += 1; journal(session, sim, "upsert", base); changed += 1
+    elif code == "HP-11" and actual == 1:
+        pregnancy_id = str(data.get("hp_pregnancy_id") or ""); pregnancy = session.get(Record, pregnancy_id) if pregnancy_id else None
+        if pregnancy and not pregnancy.deleted:
+            pdata = dict(pregnancy.data or {}); next_count = int(data.get("hp_multiples_next") or 0)
+            if next_count > int(pdata.get("babies_expected") or 0):
+                base = pregnancy.version; pregnancy.data = {**pdata, "babies_expected": next_count,
+                    "hp_magical_multiples_roll_id": roll.id, "hp_magical_multiples_level": next_count}; pregnancy.version += 1
+                journal(session, pregnancy, "upsert", base); changed += 1
+    elif code == "HP-14" and sim and not sim.deleted and actual == 1:
+        sim_data = dict(sim.data or {}); updates = {"hp_accidental_magic_count": int(sim_data.get("hp_accidental_magic_count") or 0) + 1,
+                                                     "hp_last_accidental_magic_global_day": int(roll.global_day or save.global_day),
+                                                     "hp_last_accidental_magic_roll_id": roll.id}
+        base = sim.version; sim.data = {**sim_data, **updates}; sim.version += 1; journal(session, sim, "upsert", base); changed += 1
+    elif code == "HP-15" and sim and not sim.deleted and failed(actual, str(data.get("trigger_results") or "")):
+        sim_data = dict(sim.data or {}); updates = {"hp_obscurial_status": "At risk", "hp_obscurial_risk_roll_id": roll.id}
+        base = sim.version; sim.data = {**sim_data, **updates}; sim.version += 1; journal(session, sim, "upsert", base); changed += 1
+    elif code == "HP-19":
+        household_id = str(data.get("hp_household_id") or ""); household = session.get(Record, household_id) if household_id else None
+        if household and not household.deleted and actual in {1, 2}:
+            hdata = dict(household.data or {}); updates = {"hp_secrecy_violation_count": int(hdata.get("hp_secrecy_violation_count") or 0) + 1,
+                                                             "hp_last_secrecy_roll_id": roll.id, "hp_last_secrecy_global_day": int(roll.global_day or save.global_day)}
+            base = household.version; household.data = {**hdata, **updates}; household.version += 1; journal(session, household, "upsert", base); changed += 1
+    return changed
+
+
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     if not automation_enabled(save):
         return 0
@@ -4664,6 +5011,7 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     for sim in sims:
         created += _schedule_sim_lifecycle_rolls(session, save, sim, rules)
     created += _schedule_hogwarts_sorting_rolls(session, save, sims)
+    created += _schedule_harry_potter_rolls(session, save, sims)
     if (save.settings or {}).get("maternal_rolls_enabled", True):
         maternal_rules = [rule for rule in rules if "maternal" in rule.label.casefold() and rule.data.get("active", True)]
         pregnancies = list(session.scalars(select(Record).where(
@@ -4866,6 +5214,9 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         automatic_outcome = mapped_outcome or (roll.data.get("failure_outcome") if is_bad else roll.data.get("success_outcome"))
         if _is_hogwarts_sorting_roll(roll):
             automatic_outcome = _HOGWARTS_HOUSES_BY_D4.get(int(actual), automatic_outcome)
+        hp_outcome = _hp_roll_outcome(roll, actual)
+        if hp_outcome:
+            automatic_outcome = hp_outcome
         if roll.data.get("event_id") and is_bad:
             # Mixed event tables can contain both lethal and nonlethal failures.
             # The actual result controls death automation, not the event as a whole.
@@ -4891,6 +5242,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             sim.version += 1
             journal(session, sim, "upsert", sim_base)
             hogwarts_house_changed = True
+    hp_changed = _apply_hp_roll_result(session, save, roll, actual) if automate else 0
     family_plan = None
     family_plan_changed = False
     family_plan_created = False
@@ -4932,6 +5284,11 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         if occult_changed and str(roll.data.get("occult_effect") or "") == "set_occult_alignment"
         else 0
     )
+    hp_scheduled = _schedule_harry_potter_rolls(
+        session, save, list(session.scalars(select(Record).where(
+            Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+        )))
+    ) if hp_changed else 0
     if automate:
         automatic_followups += _schedule_event_followup(session, save, roll, actual)
     service_changed = _record_campaign_service(session, save, roll) if automate else False
@@ -5036,7 +5393,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 save.revision += end_illnesses_for_death(session, save, sim, death_day)
                 death_changed = True
             save.revision += _retire_rolls_after_death(session, save, sim.id, death_day, roll.id)
-    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(hogwarts_house_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + occult_scheduled + automatic_followups
+    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(hogwarts_house_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + occult_scheduled + hp_changed + hp_scheduled + automatic_followups
     return {
         "outcome": roll.data["outcome"], "death": sync.serialize(death) if death else None,
         "death_created": death_created, "death_changed": death_changed, "pregnancy_count":pregnancy_count,
@@ -5044,6 +5401,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         "family_plan_changed": family_plan_changed,
         "family_plan_created": family_plan_created,
         "hogwarts_house": roll.data.get("outcome") if _is_hogwarts_sorting_roll(roll) else None,
+        "harry_potter_updates": hp_changed,
         "suggested_marriage_global_day": roll.data.get("suggested_marriage_global_day"),
         "automatic_followups": automatic_followups,
     }
