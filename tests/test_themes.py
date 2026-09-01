@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import unittest
 import uuid
+from types import SimpleNamespace
 
 os.environ["DATABASE_URL"] = "sqlite:///./data/automated-tests.db"
 os.environ["DECADES_SKIP_STARTUP_MIGRATIONS"] = "1"
@@ -12,8 +13,8 @@ from starlette.datastructures import FormData
 
 from app import themes
 from app.db import SessionLocal
-from app.main import app
-from app.models import ChronicleSave
+from app.main import app, hogwarts_profile_theme
+from app.models import ChronicleSave, Record
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,36 @@ class ThemeTests(unittest.TestCase):
         self.assertIn('body[data-theme-mode] :is(.today-hero-date', css)
         self.assertIn('.storyline-current-year', css)
         self.assertNotIn('body[data-theme-mode="light"] :is(.today-hero-date', css)
+
+    def test_sorted_hogwarts_sims_get_a_local_profile_house_theme(self):
+        save = SimpleNamespace(settings={"selected_rule_packs": ["severaludo", "harry_potter_decades"]})
+        sim = SimpleNamespace(data={"hp_hogwarts_house": " Ravenclaw "})
+        theme = hogwarts_profile_theme(save, sim)
+        self.assertEqual((theme["label"], theme["css_class"]), ("Ravenclaw", "hogwarts-house-ravenclaw"))
+        self.assertIsNone(hogwarts_profile_theme(SimpleNamespace(settings={}), sim))
+        self.assertIsNone(hogwarts_profile_theme(save, SimpleNamespace(data={"hp_hogwarts_house": ""})))
+        css = (ROOT / "app" / "static" / "theme.css").read_text(encoding="utf-8")
+        self.assertIn("hogwarts-house-gryffindor", css)
+        self.assertIn("hogwarts-house-slytherin", css)
+
+    def test_sorted_house_is_rendered_on_the_sim_profile(self):
+        marker = uuid.uuid4().hex[:10]
+        save_name = f"House theme {marker}"
+        with TestClient(app) as client:
+            client.post("/saves", data={"name": save_name, "start_year": "1991", "days_per_year": "4", "pregnancy_days": "4"}, follow_redirects=False)
+            with SessionLocal() as session:
+                save = session.scalar(select(ChronicleSave).where(ChronicleSave.name == save_name))
+                save.settings = {**(save.settings or {}), "selected_rule_packs": ["harry_potter_decades"]}
+                sim = Record(save_id=save.id, kind="sim", label="Raven Theme", global_day=1,
+                             data={"birth_global_day": 1, "hp_hogwarts_house": "Ravenclaw"})
+                session.add(sim)
+                session.commit()
+                sim_id, save_id = sim.id, save.id
+            profile = client.get(f"/sims/{sim_id}")
+            self.assertEqual(profile.status_code, 200)
+            self.assertIn("hogwarts-profile hogwarts-house-ravenclaw", profile.text)
+            self.assertIn("Ravenclaw · Hogwarts", profile.text)
+            client.post(f"/saves/{save_id}/delete", data={"confirm": save_name}, follow_redirects=False)
 
     def test_custom_theme_rejects_css_injection_and_corrects_contrast(self):
         resolved = themes.resolve({

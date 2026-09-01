@@ -65,6 +65,22 @@ body[data-theme-mode] :is(.profile-card:hover,.list-row:hover,.choice:hover,.rul
 body[data-theme-mode] :is(.occult-quick-control.is-on,.automation-master-control.is-on,.occult-today-control.is-on){border-color:var(--gold-dim)!important;background:rgba(var(--accent-rgb),.14)!important}
 body[data-theme-mode] :is(.story-hook.danger,.sim-dossier-hero.is-deceased,.death-row,.roll-result-item.failed){border-left-color:var(--red)!important}
 
+/* A sorted Hogwarts Sim gets a self-contained House palette.  It only lives
+   inside that Sim's profile, so the selected save-wide appearance stays intact
+   everywhere else in the tracker. */
+.hogwarts-profile{position:relative;--hp-house-glow:rgba(var(--accent-rgb),.18)}
+.hogwarts-profile.hogwarts-house-gryffindor{--paper:#18050a;--panel:#2d0d17;--panel-raised:#3c1320;--panel-soft:#240a12;--surface-2:#421521;--line:#713040;--line-soft:rgba(255,239,231,.10);--ink:#fff4ed;--text:#fff4ed;--muted:#ddc4c7;--gold:#e7b94d;--gold-bright:#ffe19a;--gold-dim:#84313f;--accent-rgb:169,34,51;--panel-rgb:45,13,23;--paper-rgb:24,5,10;--hp-house-glow:rgba(169,34,51,.30)}
+.hogwarts-profile.hogwarts-house-hufflepuff{--paper:#1b1604;--panel:#2e2708;--panel-raised:#3b3210;--panel-soft:#251f07;--surface-2:#443a11;--line:#76621d;--line-soft:rgba(255,247,206,.10);--ink:#fff8dc;--text:#fff8dc;--muted:#ddd2a8;--gold:#e4ba38;--gold-bright:#ffe895;--gold-dim:#816717;--accent-rgb:228,186,56;--panel-rgb:46,39,8;--paper-rgb:27,22,4;--hp-house-glow:rgba(228,186,56,.22)}
+.hogwarts-profile.hogwarts-house-ravenclaw{--paper:#061629;--panel:#0b2748;--panel-raised:#10345e;--panel-soft:#09213e;--surface-2:#123d69;--line:#2d6494;--line-soft:rgba(228,242,255,.10);--ink:#edf7ff;--text:#edf7ff;--muted:#bbd0e0;--gold:#c9933d;--gold-bright:#f6cd83;--gold-dim:#245f95;--accent-rgb:31,102,161;--panel-rgb:11,39,72;--paper-rgb:6,22,41;--hp-house-glow:rgba(31,102,161,.31)}
+.hogwarts-profile.hogwarts-house-slytherin{--paper:#04170f;--panel:#0a3021;--panel-raised:#0e402d;--panel-soft:#082719;--surface-2:#13533a;--line:#2d7c57;--line-soft:rgba(232,250,241,.10);--ink:#eefaf4;--text:#eefaf4;--muted:#bdd8ca;--gold:#b9c8c2;--gold-bright:#e0eee8;--gold-dim:#25714f;--accent-rgb:26,128,82;--panel-rgb:10,48,33;--paper-rgb:4,23,15;--hp-house-glow:rgba(26,128,82,.33)}
+.hogwarts-profile .sim-dossier-hero{border-color:var(--gold-dim)!important;background:radial-gradient(circle at 12% 24%,var(--hp-house-glow),transparent 35%),linear-gradient(135deg,var(--panel-raised),var(--paper) 78%)!important;box-shadow:0 18px 42px rgba(var(--paper-rgb),.38)}
+.hogwarts-profile .sim-dossier-hero:after{border-color:rgba(var(--accent-rgb),.28)}
+.hogwarts-profile .sim-dossier-hero.is-deceased{background:radial-gradient(circle at 12% 24%,rgba(143,63,67,.28),transparent 35%),linear-gradient(135deg,var(--panel-raised),var(--paper) 78%)!important}
+.hogwarts-profile .dossier-portrait{border-color:var(--gold-dim)!important;background:var(--panel-soft)!important;box-shadow:0 18px 42px rgba(var(--paper-rgb),.45)}
+.hogwarts-profile .dossier-portrait>span{color:var(--gold)!important}.hogwarts-profile .name-history{color:var(--muted)!important}
+.hogwarts-house-chip{border-color:var(--gold-dim)!important;background:rgba(var(--accent-rgb),.18)!important;color:var(--gold-bright)!important}
+.hogwarts-profile .profile-back,.hogwarts-profile .profile-back:hover,.hogwarts-profile .section-heading>a,.hogwarts-profile .connected-list em{color:var(--gold)!important}
+
 body[data-theme-density="compact"] .app-main{padding-top:25px}
 body[data-theme-density="compact"] .hero{min-height:165px;margin-bottom:18px;padding:27px 31px}
 body[data-theme-density="compact"] .panel{padding:15px;margin-bottom:10px}

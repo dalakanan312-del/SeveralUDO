@@ -8,6 +8,7 @@
 {% endmacro %}
 {% block body %}
 {% set deceased=sim_status(sim,save)=='Deceased' %}
+<div class="sim-profile-shell {% if hogwarts_profile_theme %}hogwarts-profile {{hogwarts_profile_theme.css_class}}{% endif %}"{% if hogwarts_profile_theme %} data-hogwarts-house="{{hogwarts_profile_theme.label|lower}}"{% endif %}>
 <a class="profile-back" href="/p/sims">← All Sims</a>
 
 <header class="sim-dossier-hero {{'is-deceased' if deceased else 'is-living'}}">
@@ -24,6 +25,7 @@
       <span>{{profile_summary.life_stage}}</span>
       <span>{{(sim.data.get('sex') or 'Unspecified')|replace('Gender.','')|title}}</span>
       <span>{{sim.data.get('species_occult') or 'Human'}}</span>
+      {% if hogwarts_profile_theme %}<span class="hogwarts-house-chip">{{hogwarts_profile_theme.symbol}} {{hogwarts_profile_theme.label}} · Hogwarts</span>{% endif %}
     </div>
     <div class="vital-line">
       <div><small>Born</small><strong>{{sim_birth_display(save,sim)}}{% if sim.data.get('birth_time') %} · {{sim.data.get('birth_time')}}{% endif %}</strong><span>{% if sim.data.get('birth_year_only') %}Estimated Global Day {{sim.data.get('birth_global_day','unknown')}} for scheduling{% else %}Global Day {{sim.data.get('birth_global_day','unknown')}}{% endif %}</span></div>
@@ -153,4 +155,5 @@
 </details>
 
 <section class="profile-safety"><details class="panel danger"><summary>Archive this Sim</summary><p>Archiving hides this profile without erasing its data. It can be restored from the Sims page.</p><form action="/records/{{sim.id}}/delete" method="post" onsubmit="return confirm('Archive this Sim?')"><button>Archive Sim</button></form></details><details class="panel danger-zone" id="delete-sim" {% if delete_impact %}open{% endif %}><summary>Permanently delete an accidental Sim</summary><p>This cannot be undone. The tracker will archive dependent rolls, pregnancies, illnesses, relationships and detected changes; detach this Sim from other profiles and households; remove portraits; and clear heir/founder settings that point here.</p>{% if delete_impact %}<div class="metric-strip four"><article><span>Dependent records archived</span><strong>{{delete_impact.dependent|length}}</strong></article><article><span>Other records detached</span><strong>{{delete_impact.detached|length}}</strong></article><article><span>Portraits removed</span><strong>{{delete_impact.portraits|length}}</strong></article><article><span>Sim profile</span><strong>1</strong></article></div>{% if delete_impact.dependent_counts %}<p><strong>Dependent records:</strong> {% for kind,count in delete_impact.dependent_counts.items() %}{{count}} {{kind|replace('_',' ')}}{{', ' if not loop.last else ''}}{% endfor %}</p>{% endif %}<form action="/sims/{{sim.id}}/purge" method="post" onsubmit="return confirm('Permanently delete {{sim.label}} and clean linked records? This cannot be undone.')"><label>Type the full displayed name “{{sim.label}}”<input name="confirm_name" autocomplete="off" required></label><button class="danger">Permanently delete Sim</button></form>{% else %}<a class="button" href="/sims/{{sim.id}}?delete=1#delete-sim">Review exactly what would be removed</a>{% endif %}</details></section>
+</div>
 {% endblock %}

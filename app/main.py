@@ -552,6 +552,24 @@ def sim_status(record: Record, save: ChronicleSave) -> str:
     return "Alive · death scheduled" if death is not None else "Alive"
 
 
+_HOGWARTS_PROFILE_HOUSES = {
+    "gryffindor": {"label": "Gryffindor", "css_class": "hogwarts-house-gryffindor", "symbol": "🦁"},
+    "hufflepuff": {"label": "Hufflepuff", "css_class": "hogwarts-house-hufflepuff", "symbol": "🦡"},
+    "ravenclaw": {"label": "Ravenclaw", "css_class": "hogwarts-house-ravenclaw", "symbol": "🦅"},
+    "slytherin": {"label": "Slytherin", "css_class": "hogwarts-house-slytherin", "symbol": "🐍"},
+}
+
+
+def hogwarts_profile_theme(save: ChronicleSave, sim: Record) -> dict | None:
+    """Return a local profile palette only for sorted Sims in an active HP save."""
+    packs = {str(item).casefold() for item in ((save.settings or {}).get("selected_rule_packs") or [])}
+    if harry_potter_rules.PACK_ID not in packs:
+        return None
+    raw_house = str((sim.data or {}).get("hp_hogwarts_house") or "").strip().casefold()
+    house_key = re.sub(r"[^a-z]", "", raw_house)
+    return _HOGWARTS_PROFILE_HOUSES.get(house_key)
+
+
 def sorted_sims(records, save: ChronicleSave) -> list[Record]:
     """Apply the save's menu preference everywhere a Sim chooser is built."""
     order = str((save.settings or {}).get("sim_menu_order") or "highest_id").casefold()
@@ -2328,7 +2346,7 @@ def sim_profile(request: Request, sim_id: str):
         sim_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==sim.id).order_by(Portrait.created_at)))
         delete_impact=domain.sim_delete_impact(session,sim) if request.query_params.get("delete")=="1" else None
         name_history={"surname_at_birth":domain.surname_at_birth(sim),"married_surname":domain.married_surname(sim)}
-        ctx = context(request, session, sim=sim, name_history=name_history, all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, partner_relationship_rows=partner_relationship_rows, other_relationship_rows=other_relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,university_profile=university_profile,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,catchup_roll_count=catchup_roll_count,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
+        ctx = context(request, session, sim=sim, name_history=name_history, hogwarts_profile_theme=hogwarts_profile_theme(save,sim), all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, partner_relationship_rows=partner_relationship_rows, other_relationship_rows=other_relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,university_profile=university_profile,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,catchup_roll_count=catchup_roll_count,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
         return templates.TemplateResponse(request, "sim_profile.html", ctx)
 
 
