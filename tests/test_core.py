@@ -1877,7 +1877,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             response=client.get("/")
             self.assertEqual(response.status_code,200)
-            for text in ("HOUSEHOLD FOCUS","UPCOMING CALENDAR","DATA HEALTH","resume-last-page","tracker-global-search"):
+            for text in ("HOUSEHOLD FOCUS","UPCOMING CALENDAR","DATA HEALTH","WHILE THE GAME IS CLOSED","Shape the next chapter","resume-last-page","tracker-global-search"):
                 self.assertIn(text,response.text)
 
     def test_today_household_focus_limits_the_work_list(self):
