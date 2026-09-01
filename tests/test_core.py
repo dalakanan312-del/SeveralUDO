@@ -1880,6 +1880,34 @@ class CoreSmokeTests(unittest.TestCase):
             for text in ("HOUSEHOLD FOCUS","UPCOMING CALENDAR","DATA HEALTH","WHILE THE GAME IS CLOSED","Shape the next chapter","resume-last-page","tracker-global-search"):
                 self.assertIn(text,response.text)
 
+    def test_sims_are_in_birth_order_and_can_filter_living_or_dead(self):
+        marker=uuid.uuid4().hex[:10]
+        older=f"Older Sim {marker}"; deceased=f"Deceased Sim {marker}"; younger=f"Younger Sim {marker}"
+        with TestClient(app) as client:
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                older_birth=max(0,save.global_day-1)
+                rows=[
+                    Record(save_id=save.id,kind="sim",label=older,global_day=older_birth,data={"birth_global_day":older_birth}),
+                    Record(save_id=save.id,kind="sim",label=deceased,global_day=save.global_day,data={"birth_global_day":save.global_day,"game_was_dead":True}),
+                    Record(save_id=save.id,kind="sim",label=younger,global_day=save.global_day,data={"birth_global_day":save.global_day}),
+                ]
+                session.add_all(rows);session.commit();record_ids=[row.id for row in rows]
+            everyone=client.get(f"/p/sims?q={marker}")
+            self.assertEqual(everyone.status_code,200)
+            profiles=everyone.text.split('<section class="profile-grid">',1)[1].split("</section>",1)[0]
+            self.assertLess(profiles.index(older),profiles.index(deceased))
+            self.assertLess(profiles.index(older),profiles.index(younger))
+            living=client.get(f"/p/sims?q={marker}&record_status=living")
+            living_profiles=living.text.split('<section class="profile-grid">',1)[1].split("</section>",1)[0]
+            self.assertIn(older,living_profiles);self.assertIn(younger,living_profiles);self.assertNotIn(deceased,living_profiles)
+            self.assertLess(living_profiles.index(older),living_profiles.index(younger))
+            dead=client.get(f"/p/sims?q={marker}&record_status=dead")
+            dead_profiles=dead.text.split('<section class="profile-grid">',1)[1].split("</section>",1)[0]
+            self.assertIn(deceased,dead_profiles);self.assertIn("Deceased",dead_profiles);self.assertNotIn(older,dead_profiles);self.assertNotIn(younger,dead_profiles)
+            with SessionLocal() as session:
+                session.execute(delete(Record).where(Record.id.in_(record_ids)));session.commit()
+
     def test_today_household_focus_limits_the_work_list(self):
         marker=uuid.uuid4().hex[:10]
         with TestClient(app) as client:

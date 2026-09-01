@@ -540,10 +540,16 @@ def structured_form_data(form) -> dict:
     return data
 
 
+def sim_is_deceased(record: Record, save: ChronicleSave) -> bool:
+    data = record.data or {}
+    death = int_or_none(data.get("death_global_day"))
+    return bool(data.get("game_was_dead") or data.get("death_confirmed") or (death is not None and death <= save.global_day))
+
+
 def sim_status(record: Record, save: ChronicleSave) -> str:
     death = int_or_none((record.data or {}).get("death_global_day"))
-    if death is None: return "Alive"
-    return "Deceased" if death <= save.global_day else "Alive · death scheduled"
+    if sim_is_deceased(record, save): return "Deceased"
+    return "Alive · death scheduled" if death is not None else "Alive"
 
 
 def sorted_sims(records, save: ChronicleSave) -> list[Record]:
@@ -555,6 +561,19 @@ def sorted_sims(records, save: ChronicleSave) -> list[Record]:
     if order == "alphabetical":
         return sorted(sims, key=lambda item: (item.label.casefold(), -insights.sim_number(item)))
     return sorted(sims, key=lambda item: (insights.sim_number(item), item.label.casefold()), reverse=True)
+
+
+def sims_by_birthdate(records, save: ChronicleSave) -> list[Record]:
+    """Chronological profile ordering, with incomplete migration dates last."""
+    def key(sim: Record):
+        data = sim.data or {}
+        birth = int_or_none(data.get("birth_global_day"))
+        if birth is None:
+            year = int_or_none(data.get("birth_year"))
+            if year is not None:
+                birth = (year - save.start_year) * save.days_per_year + 1
+        return (birth is None, birth if birth is not None else 10**12, sim.label.casefold(), sim.id)
+    return sorted(records, key=key)
 
 
 def navigation_counts(session, save: ChronicleSave) -> dict[str, int]:
@@ -575,8 +594,8 @@ def navigation_counts(session, save: ChronicleSave) -> dict[str, int]:
 
 
 def _living_sim(sim: Record, save: ChronicleSave) -> bool:
-    data = sim.data or {}; birth = int_or_none(data.get("birth_global_day", sim.global_day)); death = int_or_none(data.get("death_global_day"))
-    return not bool(data.get("game_was_dead") or data.get("death_confirmed")) and (birth is None or birth <= save.global_day) and (death is None or death > save.global_day)
+    data = sim.data or {}; birth = int_or_none(data.get("birth_global_day", sim.global_day))
+    return not sim_is_deceased(sim, save) and (birth is None or birth <= save.global_day)
 
 
 def _ancestor_ids(sim_id: str, by_id: dict[str, Record], limit: int = 3) -> dict[str, int]:
@@ -1520,7 +1539,9 @@ def feature_page(request: Request, page: str):
                 )))
                 listed=[item for item in support_rows_cache if item.kind=="sim" and not item.deleted]
                 if list_q: listed=[item for item in listed if list_q.casefold() in item.label.casefold()]
-                listed = sorted_sims(listed, save)
+                if list_status == "living": listed=[item for item in listed if _living_sim(item, save)]
+                elif list_status == "dead": listed=[item for item in listed if sim_is_deceased(item, save)]
+                listed = sims_by_birthdate(listed, save)
                 record_count=len(listed);list_pages=max(1,(record_count+list_size-1)//list_size);list_page=min(list_page,list_pages)
                 records=listed[(list_page-1)*list_size:list_page*list_size]
             else:
