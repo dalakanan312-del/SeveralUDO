@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.16` makes hosted sync forward-compatible with the desktop tracker’s Clock Sync journal. Game-history, Clock Sync diagnostic and protocol records, and illness-detection dismissals now reach online saves instead of blocking the entire sync queue. Maternal delivery checks are per baby delivered, and occult Sims use the original SeveralUDO aging chart except where a supplied source explicitly replaces ordinary aging (Servo).
+
 `4.5.15` corrects household-wide witch trials: every eligible Spellcaster receives an individual accusation roll, and older completed trial rolls are repaired once without duplicating existing accusations.
 
 `4.5.14` adds Save-a-Sims: a configurable credit ledger that earns one credit after every ten deaths, once when every recorded Sim has a scheduled death date, and from optional player-defined rule conditions. Credits can be spent to withdraw a scheduled death and restore its future obligations. Family plans created from a pregnancy-count roll now track pregnancies independently from children, so twins and triplets use one allowance.
