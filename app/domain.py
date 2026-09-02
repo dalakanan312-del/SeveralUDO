@@ -17,7 +17,7 @@ from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
 from .early_event_catalog_data import EARLY_EVENT_LIBRARY_GZIP_BASE64
 
 
-DEFAULTS_SCHEMA_VERSION = "4.5.4-occult-alignment"
+DEFAULTS_SCHEMA_VERSION = "4.5.16-delivery-multiples-original-occult-aging"
 
 # Authoritative pre-1700 SeveralUDO mortality table recovered from the
 # original Rules Config. The age offsets remain challenge-day milestones;
@@ -41,6 +41,7 @@ LEGACY_INCORRECT_STAGES = {
 }
 
 AGING_STAGE_OFFSETS = {stage.casefold(): age for stage, age, _die, _bad in DEFAULT_STAGES}
+ORIGINAL_AGING_CHART = "Original SeveralUDO lifecycle mortality chart"
 
 
 def automation_enabled(save: ChronicleSave) -> bool:
@@ -1369,6 +1370,35 @@ def pregnancy_retires_maternal_roll(status: object) -> bool:
     return str(status or "").strip().casefold() in MATERNAL_ROLL_RETIRE_PREGNANCIES
 
 
+def maternal_delivered_baby_count(pregnancy_data: dict | None, status: object = None) -> int:
+    """Return how many maternal checks a pregnancy has earned so far.
+
+    Maternal mortality is a delivery risk, not a pregnancy-wide checkbox.  A
+    multiple birth therefore needs one check per baby actually delivered.  A
+    few legacy records recorded only ``Delivered`` and an expected count, so
+    completed deliveries safely use that count as a backwards-compatible
+    fallback.  Active pregnancies with no delivered baby create no obligation.
+    """
+    data = pregnancy_data or {}
+    try:
+        delivered = max(0, int(data.get("babies_delivered") or 0))
+    except (TypeError, ValueError):
+        delivered = 0
+    if delivered:
+        return delivered
+    if pregnancy_keeps_maternal_roll(status if status is not None else data.get("status")):
+        try:
+            return max(1, int(data.get("babies_expected") or 1))
+        except (TypeError, ValueError):
+            return 1
+    return 0
+
+
+def maternal_roll_source(pregnancy_id: str, rule_id: str, baby_index: int) -> str:
+    """Stable per-baby maternal identity, safe to use across refreshes/sync."""
+    return f"maternal:{pregnancy_id}:{rule_id}:baby:{max(1, int(baby_index))}"
+
+
 def _delivery_retirement_reason(reason: object) -> bool:
     text = str(reason or "").strip().casefold()
     return any(token in text for token in (
@@ -1426,7 +1456,7 @@ def preserve_delivery_maternal_rolls(
     restore_retired: bool = False,
     create_missing: bool = True,
 ) -> int:
-    """Keep unfinished maternal obligations visible after delivery acceptance.
+    """Keep one unfinished maternal obligation per delivered baby visible.
 
     Existing pending rolls are re-anchored to the confirmed delivery day.  If
     a delivery is received before periodic scheduling had created its roll, a
@@ -1437,6 +1467,9 @@ def preserve_delivery_maternal_rolls(
     """
     pregnancy_data = dict(pregnancy.data or {})
     if not pregnancy_data.get("maternal_rolls_required", True):
+        return 0
+    delivered_babies = maternal_delivered_baby_count(pregnancy_data)
+    if delivered_babies < 1:
         return 0
     day = int(
         delivery_day
@@ -1477,19 +1510,31 @@ def preserve_delivery_maternal_rolls(
         data = dict(roll.data or {})
         if roll.deleted and roll.id != restorable_id:
             continue
+        # Pre-4.5.16 maternal rolls had no baby identity.  They represented
+        # the first delivery and remain valid history; simply label them so a
+        # second or third baby can receive its own obligation.
+        try:
+            baby_index = max(1, int(data.get("maternal_baby_index") or 1))
+        except (TypeError, ValueError):
+            baby_index = 1
         updates = {
             "source_id": pregnancy.id,
             "due_global_day": day,
             "delivery_global_day": day,
             "delivery_confirmed": True,
             "maternal_roll_preserved_after_delivery": True,
+            "maternal_baby_index": baby_index,
+            "maternal_babies_delivered": delivered_babies,
         }
         if mother:
             updates.update({"sim_id": mother.id, "sim_name": mother.label})
         new_data = {**data, **updates}
         new_data.pop("retired_reason", None)
         new_data.pop("retired_global_day", None)
-        new_label = f"{mother.label} — {data.get('roll_type')}" if mother and data.get("roll_type") else roll.label
+        new_label = (
+            f"{mother.label} — {data.get('roll_type')} · Baby {baby_index}"
+            if mother and data.get("roll_type") else roll.label
+        )
         if not roll.deleted and roll.global_day == day and roll.label == new_label and new_data == data:
             continue
         base = roll.version
@@ -1500,11 +1545,18 @@ def preserve_delivery_maternal_rolls(
         roll.version += 1
         journal(session, roll, "upsert", base)
         changed += 1
-    # When there is already a completed or retired history record, preserve
-    # that history rather than creating a second pending maternal roll.  A
-    # genuinely missing record is safe to create only in the live delivery
-    # workflow; broad historic repair remains revive-only.
-    if create_missing and not all_matching_rolls and mother and not mother.deleted:
+    # When a live delivery reports twins or triplets, create only the missing
+    # per-baby obligations. Existing completed and legacy single-baby records
+    # count as baby one, so a refresh never rewrites history or duplicates it.
+    known_baby_indexes: set[int] = set()
+    for roll in all_matching_rolls:
+        data = roll.data or {}
+        try:
+            baby_index = max(1, int(data.get("maternal_baby_index") or 1))
+        except (TypeError, ValueError):
+            baby_index = 1
+        known_baby_indexes.add(baby_index)
+    if create_missing and mother and not mother.deleted:
         mother_data = mother.data or {}
         mother_death = mother_data.get("death_global_day")
         try:
@@ -1529,32 +1581,38 @@ def preserve_delivery_maternal_rolls(
             ]
             rule = maternal_rule_for_day(save, rules, mother, day)
             if rule:
-                roll = Record(
-                    save_id=save.id,
-                    kind="roll",
-                    label=f"{mother.label} — {rule.label}",
-                    global_day=day,
-                    data={
-                        "sim_id": mother.id,
-                        "sim_name": mother.label,
-                        "source_id": pregnancy.id,
-                        "roll_type": rule.label,
-                        "die": (rule.data or {}).get("die"),
-                        "bad_results": (rule.data or {}).get("bad_results"),
-                        "source": f"maternal:{pregnancy.id}:{rule.id}",
-                        "due_global_day": day,
-                        "delivery_global_day": day,
-                        "delivery_confirmed": True,
-                        "maternal_roll_preserved_after_delivery": True,
-                        "completed": False,
-                        "core_ruleset_id": (rule.data or {}).get("core_ruleset_id"),
-                        "core_source_rule_id": (rule.data or {}).get("source_rule_id"),
-                    },
-                )
-                session.add(roll)
-                session.flush()
-                journal(session, roll, "upsert", 0)
-                changed += 1
+                for baby_index in range(1, delivered_babies + 1):
+                    if baby_index in known_baby_indexes:
+                        continue
+                    roll = Record(
+                        save_id=save.id,
+                        kind="roll",
+                        label=f"{mother.label} — {rule.label} · Baby {baby_index}",
+                        global_day=day,
+                        data={
+                            "sim_id": mother.id,
+                            "sim_name": mother.label,
+                            "source_id": pregnancy.id,
+                            "roll_type": rule.label,
+                            "die": (rule.data or {}).get("die"),
+                            "bad_results": (rule.data or {}).get("bad_results"),
+                            "source": maternal_roll_source(pregnancy.id, rule.id, baby_index),
+                            "due_global_day": day,
+                            "delivery_global_day": day,
+                            "delivery_confirmed": True,
+                            "maternal_roll_preserved_after_delivery": True,
+                            "maternal_baby_index": baby_index,
+                            "maternal_babies_delivered": delivered_babies,
+                            "completed": False,
+                            "core_ruleset_id": (rule.data or {}).get("core_ruleset_id"),
+                            "core_source_rule_id": (rule.data or {}).get("source_rule_id"),
+                        },
+                    )
+                    session.add(roll)
+                    session.flush()
+                    journal(session, roll, "upsert", 0)
+                    known_baby_indexes.add(baby_index)
+                    changed += 1
     return changed
 
 
@@ -1855,6 +1913,11 @@ def repair_default_aging_tables(session: Session, save: ChronicleSave) -> int:
         changed += 1
 
     if canonical_rules:
+        sims_by_id = {
+            sim.id: sim for sim in session.scalars(select(Record).where(
+                Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+            ))
+        }
         pending = session.scalars(select(Record).where(
             Record.save_id == save.id,
             Record.kind == "roll",
@@ -1872,10 +1935,19 @@ def repair_default_aging_tables(session: Session, save: ChronicleSave) -> int:
             if not rule:
                 continue
             rule_data = rule.data or {}
+            sim = sims_by_id.get(str(data.get("sim_id") or ""))
+            profile = occult_aging_profile(sim) if sim else {
+                "chart": ORIGINAL_AGING_CHART,
+                "mode": "original-chart-unmodified",
+                "occult_types": (),
+            }
             updates = {
                 "die": rule_data.get("die"),
                 "bad_results": rule_data.get("bad_results"),
                 "death_age_rng": bool(rule_data.get("death_age_rng")),
+                "aging_chart": profile["chart"],
+                "occult_aging_mode": profile["mode"],
+                "occult_types_at_scheduling": list(profile["occult_types"]),
                 "core_ruleset_id": rule_data.get("core_ruleset_id"),
             }
             if all(data.get(field) == value for field, value in updates.items()):
@@ -2310,7 +2382,18 @@ def refresh_pending_rolls(session: Session, save: ChronicleSave) -> dict[str, in
 
         source = str(data.get("source") or "")
         if source.startswith(("aging:", "maternal:")):
-            rule = session.get(Record, source.rsplit(":", 1)[-1])
+            # New delivery checks use ``maternal:<pregnancy>:<rule>:baby:<n>``.
+            # Keep the rule lookup anchored to the rule segment rather than the
+            # final baby number, while retaining support for legacy maternal
+            # and aging source identifiers.
+            source_parts = source.split(":")
+            rule_id = (
+                source_parts[2]
+                if source.startswith("maternal:") and len(source_parts) >= 5
+                and source_parts[-2] == "baby"
+                else source_parts[-1]
+            )
+            rule = session.get(Record, rule_id)
             if rule and rule.save_id == save.id and rule.kind == "roll_rule" and not rule.deleted:
                 rule_data = rule.data or {}
                 updates = {
@@ -4507,14 +4590,72 @@ def retire_inactive_core_rolls(session: Session, save: ChronicleSave) -> int:
     return changed
 
 
+def occult_aging_profile(sim: Record) -> dict:
+    """Describe how an occult changes the original SeveralUDO aging chart.
+
+    The supplied occult rules do not introduce a second life-stage mortality
+    table. Every supernatural Sim keeps the original SeveralUDO chart unless a
+    source explicitly says otherwise. At present that exception is Servo: its
+    source replaces disease, famine, drowning, ordinary aging and pregnancy
+    danger with its mechanical-failure sequence.
+    """
+    detected = tuple(occult_rules.sim_occult_types(sim.data))
+    if "Servo" in detected:
+        return {
+            "chart": ORIGINAL_AGING_CHART,
+            "mode": "servo-mechanical-failure-replaces-ordinary-aging",
+            "ordinary_aging_exempt": True,
+            "occult_types": detected,
+        }
+    return {
+        "chart": ORIGINAL_AGING_CHART,
+        "mode": "original-chart-unmodified",
+        "ordinary_aging_exempt": False,
+        "occult_types": detected,
+    }
+
+
+def retire_occult_exempt_aging_rolls(session: Session, save: ChronicleSave,
+                                     sims: list[Record] | None = None) -> int:
+    """Retire only pending ordinary-aging rolls excluded by a source rule."""
+    sims = sims if sims is not None else list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    )))
+    exempt_ids = {sim.id for sim in sims if occult_aging_profile(sim)["ordinary_aging_exempt"]}
+    if not exempt_ids:
+        return 0
+    changed = 0
+    for roll in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+    )):
+        data = dict(roll.data or {})
+        if (data.get("completed") or data.get("sim_id") not in exempt_ids
+                or not str(data.get("source") or "").startswith("aging:")):
+            continue
+        base = roll.version
+        roll.deleted = True
+        roll.data = {
+            **data,
+            "retired_reason": "Servo source rules replace ordinary aging with mechanical-failure rolls",
+            "retired_global_day": save.global_day,
+            "aging_chart": ORIGINAL_AGING_CHART,
+            "occult_aging_mode": "servo-mechanical-failure-replaces-ordinary-aging",
+        }
+        roll.version += 1
+        journal(session, roll, "delete", base)
+        changed += 1
+    return changed
+
+
 def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record,
                                   rules: list[Record]) -> int:
     """Create only one Sim's aging obligations, without unrelated automation."""
     birth = sim.data.get("birth_global_day", sim.global_day)
     death = sim.data.get("death_global_day")
+    aging_profile = occult_aging_profile(sim)
     if (bool((sim.data or {}).get("game_was_dead"))
             or (death is not None and int(death) <= save.global_day)
-            or "Servo" in occult_rules.sim_occult_types(sim.data)
+            or aging_profile["ordinary_aging_exempt"]
             or birth is None):
         return 0
     created = 0
@@ -4559,6 +4700,9 @@ def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Re
             "sim_id": sim.id, "roll_type": rule.label, "die": rule.data.get("die"),
             "bad_results": rule.data.get("bad_results"), "source": source,
             "due_global_day": due, "completed": False,
+            "aging_chart": aging_profile["chart"],
+            "occult_aging_mode": aging_profile["mode"],
+            "occult_types_at_scheduling": list(aging_profile["occult_types"]),
             "core_ruleset_id":rule.data.get("core_ruleset_id"),
             "core_source_rule_id":rule.data.get("source_rule_id"),
             "death_age_rng":bool(rule.data.get("death_age_rng")),
@@ -5040,49 +5184,35 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     sims = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False))))
     save.revision += retire_prechallenge_rolls(session, save)
     save.revision += retire_dead_sim_rolls(session, save, sims)
+    save.revision += retire_occult_exempt_aging_rolls(session, save, sims)
     created = 0
     for sim in sims:
         created += _schedule_sim_lifecycle_rolls(session, save, sim, rules)
     created += _schedule_hogwarts_sorting_rolls(session, save, sims)
     created += _schedule_harry_potter_rolls(session, save, sims)
     if (save.settings or {}).get("maternal_rolls_enabled", True):
-        maternal_rules = [rule for rule in rules if "maternal" in rule.label.casefold() and rule.data.get("active", True)]
         pregnancies = list(session.scalars(select(Record).where(
             Record.save_id == save.id, Record.kind == "pregnancy", Record.deleted.is_(False),
         )))
         for pregnancy in pregnancies:
-            status = str(pregnancy.data.get("status") or "active").casefold()
-            if pregnancy.data.get("maternal_rolls_required") is False or status in {"miscarriage", "cancelled", "canceled"}:
+            pregnancy_data = pregnancy.data or {}
+            status = str(pregnancy_data.get("status") or "active").casefold()
+            if pregnancy_data.get("maternal_rolls_required") is False or status in MATERNAL_ROLL_RETIRE_PREGNANCIES:
                 continue
-            due = pregnancy.data.get("due_global_day", pregnancy.global_day)
-            mother = session.get(Record, pregnancy.data.get("mother_id"))
-            birth = mother.data.get("birth_global_day", mother.global_day) if mother else None
-            mother_death = mother.data.get("death_global_day") if mother else None
-            if due is None or int(due) < 1 or birth is None or (mother and (bool((mother.data or {}).get("game_was_dead")) or "Servo" in occult_rules.sim_occult_types(mother.data))) or (mother_death is not None and int(mother_death) <= save.global_day) or (status in CLOSED_PREGNANCIES and int(due) < save.global_day):
+            # Maternal rolls are now delivery obligations. An active pregnancy
+            # creates none until its first baby is recorded; each additional
+            # baby adds exactly one more check at that same delivery moment.
+            if maternal_delivered_baby_count(pregnancy_data, status) < 1:
                 continue
-            rule = maternal_rule_for_day(save, maternal_rules, mother, int(due))
-            if not rule:
-                continue
-            source = f"maternal:{pregnancy.id}:{rule.id}"
-            exists = session.scalar(select(Record.id).where(
-                Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
-                (Record.data["source"].as_string() == source) |
-                (
-                    (Record.data["source_id"].as_string() == pregnancy.id) &
-                    (Record.data["roll_type"].as_string() == rule.label) &
-                    (Record.global_day == int(due))
-                ),
-            ).limit(1))
-            if exists:
-                continue
-            roll = Record(save_id=save.id,kind="roll",label=f"{mother.label} — {rule.label}",global_day=int(due),data={
-                "sim_id":mother.id,"sim_name":mother.label,"source_id":pregnancy.id,"roll_type":rule.label,
-                "die":rule.data.get("die"),"bad_results":rule.data.get("bad_results"),"source":source,
-                "due_global_day":int(due),"completed":False,
-                "core_ruleset_id":rule.data.get("core_ruleset_id"),
-                "core_source_rule_id":rule.data.get("source_rule_id"),
-            })
-            session.add(roll);session.flush();journal(session,roll,"upsert",0);created += 1
+            delivery_day = (
+                pregnancy_data.get("actual_delivery_global_day")
+                or pregnancy_data.get("delivery_global_day")
+                or pregnancy_data.get("due_global_day")
+                or pregnancy.global_day
+            )
+            created += preserve_delivery_maternal_rolls(
+                session, save, pregnancy, delivery_day, create_missing=True,
+            )
     marriage_created, marriage_retired = _schedule_marriage_rolls(session, save, sims)
     created += marriage_created
     remarriage_created, remarriage_retired = _schedule_remarriage_rolls(session, save, sims)

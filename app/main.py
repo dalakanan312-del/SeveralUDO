@@ -2787,9 +2787,11 @@ def add_pregnancy_newborn(request: Request, pregnancy_id: str, first_name: str =
         name=" ".join(part.strip() for part in (first_name,last_name) if part.strip());sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first_name.strip(),"last_name":last_name.strip(),"surname_at_birth":last_name.strip(),"maiden_name":last_name.strip(),"sex":sex,"birth_global_day":birth,"birthplace":resolved_birthplace,"birth_country":maternal_location["country"],"birth_location_source":maternal_location["source"] if not birthplace.strip() else "Reviewed manual birthplace","legitimacy":legitimacy.strip(),"birth_status":suggested["birth_status"] or "Live birth","multiple_birth_status":suggested["multiple_birth_status"],"birth_circumstances":circumstances,"birth_circumstance_tags":suggested["tags"] if circumstances==suggested["summary"] else [],"birth_circumstances_source":"Reviewed suggestion" if reviewed else "Automatic tracker inference","death_global_day":None,"mother_id":mother.id,"father_id":father.id if father else None,"current_household_id":mother.data.get("current_household_id"),"species_occult":"Human","pregnancy_id":pregnancy.id,"newborn_rolls_required":bool(data.get("birth_newborn_rolls_required",True)),"notes":notes}
         newborn=Record(save_id=save.id,kind="sim",label=name,global_day=birth,data=sim_data);session.add(newborn);session.flush();domain.journal(session,newborn,"upsert",0)
         base=pregnancy.version;delivered=int(data.get("babies_delivered") or 0)+1;expected=max(1,int(data.get("babies_expected") or 1));will_deliver=delivered>=expected
-        if will_deliver and data.get("maternal_rolls_required",True): domain.schedule_rolls(session,save)
         data.update({"babies_delivered":delivered,"actual_delivery_global_day":birth,"delivery_global_day":birth,"status":"Delivered" if will_deliver else "Active","outcome":data.get("outcome") or "Live birth"});pregnancy.data=data;pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=2+domain.sync_generations(session,save)
-        if data["status"]=="Delivered": save.revision+=domain.preserve_delivery_maternal_rolls(session,save,pregnancy,birth)
+        if data.get("maternal_rolls_required",True):
+            # Each newborn earns its own maternal check, including the first
+            # baby of a multiple pregnancy before its siblings are added.
+            save.revision+=domain.preserve_delivery_maternal_rolls(session,save,pregnancy,birth)
         domain.schedule_rolls(session,save)
     return RedirectResponse(f"/pregnancies/{pregnancy_id}",status_code=303)
 

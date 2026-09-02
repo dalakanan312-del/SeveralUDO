@@ -27,7 +27,7 @@ from app.clock import _game_illnesses, _store_game_portrait, attach_game_identit
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import apply_married_surnames, auto_pass_lifecycle_rolls_for_added_sim, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, preserve_delivery_maternal_rolls, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, restore_delivery_maternal_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import ORIGINAL_AGING_CHART, apply_married_surnames, auto_pass_lifecycle_rolls_for_added_sim, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, preserve_delivery_maternal_rolls, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, restore_delivery_maternal_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, confirmed_illness_name, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
@@ -1505,6 +1505,7 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(grouped, [{"death_group":"Adult", "causes":["Fever","Accident"], "active":True}])
         self.assertIn("event_rule", sync.SYNC_KINDS)
         self.assertIn("roll_rule_era", sync.SYNC_KINDS)
+        self.assertTrue({"game_history", "clock_diagnostic", "clock_protocol_state", "illness_suppression"}.issubset(sync.SYNC_KINDS))
 
     def test_bad_roll_parser_supports_imported_lists_and_ranges(self):
         self.assertTrue(failed(5, "1 5"))
@@ -1517,7 +1518,7 @@ class CoreSmokeTests(unittest.TestCase):
         with TestClient(app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "4.5.12")
+            self.assertEqual(health.json()["version"], app.version)
             self.assertTrue(health.json()["clock_sync_ready"])
             self.assertEqual(client.get("/").status_code, 200)
             self.assertEqual(client.get("/p/sims").status_code, 200)
@@ -1710,6 +1711,10 @@ class CoreSmokeTests(unittest.TestCase):
             pushed = client.post("/api/sync/push", headers={"Authorization": f"Bearer {device['token']}"}, json={"after": 0, "changes": [{"change_id": change_id, "record_id": record_id, "kind": "sim", "operation": "upsert", "base_version": 0, "payload": {"label": "Ada Test", "global_day": 1, "birth_global_day": 1}}]})
             self.assertEqual(pushed.status_code, 200)
             self.assertEqual(pushed.json()["results"][0]["status"], "applied")
+            history_id, history_change = uuid.uuid4().hex, uuid.uuid4().hex
+            history = client.post("/api/sync/push", headers={"Authorization": f"Bearer {device['token']}"}, json={"after": 0, "changes": [{"change_id": history_change, "record_id": history_id, "kind": "game_history", "operation": "upsert", "base_version": 0, "payload": {"label": "Ada reached a milestone", "global_day": 1, "data": {"category": "milestone", "sim_name": "Ada Test"}}}]})
+            self.assertEqual(history.status_code, 200)
+            self.assertEqual(history.json()["results"][0]["status"], "applied")
             duplicate = client.post("/api/sync/push", headers={"Authorization": f"Bearer {device['token']}"}, json={"after": 0, "changes": [{"change_id": change_id, "record_id": record_id, "kind": "sim", "operation": "upsert", "base_version": 0, "payload": {"label": "Ada Test"}}]})
             self.assertEqual(duplicate.json()["results"][0]["status"], "duplicate")
             conflict_change = uuid.uuid4().hex
@@ -2326,9 +2331,9 @@ class CoreSmokeTests(unittest.TestCase):
                 stale=Record(save_id=save.id,kind="roll",label="Old pending obligation",global_day=-8,data={"sim_id":sim.id,"roll_type":"Old roll","due_global_day":-8,"source":"event:old","completed":False})
                 completed=Record(save_id=save.id,kind="roll",label="Completed historical result",global_day=-7,data={"sim_id":sim.id,"roll_type":"Historical roll","due_global_day":-7,"source":"aging:old","completed":True})
                 session.add_all([pre_pregnancy,post_pregnancy,pre_event,post_event,stale,completed]);session.flush()
-                self.assertEqual(schedule_rolls(session,save),3)
+                self.assertEqual(schedule_rolls(session,save),2)
                 active_rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False))))
-                self.assertEqual(sorted(int(roll.global_day) for roll in active_rolls),[-7,3,4,10])
+                self.assertEqual(sorted(int(roll.global_day) for roll in active_rolls),[-7,3,10])
                 self.assertTrue(completed in active_rolls);self.assertTrue(stale.deleted)
                 self.assertNotIn("Earlier plague",{roll.label.split(" — ",1)[0] for roll in active_rolls})
                 self.assertEqual(schedule_rolls(session,save),0)
@@ -2358,7 +2363,7 @@ class CoreSmokeTests(unittest.TestCase):
                 mother=Record(save_id=save.id,kind="sim",label="Test Mother",global_day=1,data={"birth_global_day":1})
                 rule=Record(save_id=save.id,kind="roll_rule",label="Maternal — Preteen",data={"die":"d20","bad_results":"1 5","active":True})
                 session.add_all([mother,rule]);session.flush()
-                active=Record(save_id=save.id,kind="pregnancy",label="Active",global_day=20,data={"mother_id":mother.id,"due_global_day":20,"status":"Active","maternal_rolls_required":True})
+                active=Record(save_id=save.id,kind="pregnancy",label="Delivered",global_day=20,data={"mother_id":mother.id,"due_global_day":20,"actual_delivery_global_day":20,"status":"Delivered","babies_delivered":1,"maternal_rolls_required":True})
                 miscarriage=Record(save_id=save.id,kind="pregnancy",label="Loss",global_day=20,data={"mother_id":mother.id,"due_global_day":20,"status":"Miscarriage","maternal_rolls_required":True})
                 session.add_all([active,miscarriage]);session.flush()
                 self.assertEqual(schedule_rolls(session,save),1)
@@ -2385,11 +2390,61 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertEqual(preserve_delivery_maternal_rolls(session,save,pregnancy,30),1)
             roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll"))
             self.assertEqual((roll.global_day,roll.data["due_global_day"]),(30,30))
-            self.assertEqual(roll.data["source"],f"maternal:{pregnancy.id}:{rule.id}")
+            self.assertEqual(roll.data["source"],f"maternal:{pregnancy.id}:{rule.id}:baby:1")
+            self.assertEqual(roll.data["maternal_baby_index"],1)
             self.assertTrue(roll.data["delivery_confirmed"])
             self.assertFalse(roll.data["completed"])
             self.assertEqual(preserve_delivery_maternal_rolls(session,save,pregnancy,30),0)
             self.assertEqual(len(list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll")))),1)
+            session.rollback()
+
+    def test_maternal_rolls_are_created_once_for_each_delivered_baby(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Multiple delivery maternal rolls");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Multiple delivery maternal rolls",global_day=30,start_year=1550,days_per_year=4,settings={"maternal_rolls_enabled":True})
+            session.add(save);session.flush()
+            mother=Record(save_id=save.id,kind="sim",label="Triplet Parent",global_day=1,data={"birth_global_day":1})
+            rule=Record(save_id=save.id,kind="roll_rule",label="Maternal — Preteen",data={"die":"d20","bad_results":"1-8","active":True})
+            session.add_all([mother,rule]);session.flush()
+            pregnancy=Record(save_id=save.id,kind="pregnancy",label="Triplet delivery",global_day=30,data={"mother_id":mother.id,"status":"Delivered","actual_delivery_global_day":30,"babies_expected":3,"babies_delivered":3,"maternal_rolls_required":True})
+            session.add(pregnancy);session.flush()
+            self.assertEqual(preserve_delivery_maternal_rolls(session,save,pregnancy,30),3)
+            rolls=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False)).order_by(Record.label)))
+            self.assertEqual([roll.data["maternal_baby_index"] for roll in rolls],[1,2,3])
+            self.assertEqual({roll.data["source"] for roll in rolls},{
+                f"maternal:{pregnancy.id}:{rule.id}:baby:1",
+                f"maternal:{pregnancy.id}:{rule.id}:baby:2",
+                f"maternal:{pregnancy.id}:{rule.id}:baby:3",
+            })
+            self.assertEqual(preserve_delivery_maternal_rolls(session,save,pregnancy,30),0)
+            # The maintenance refresh must still find the rule segment in the
+            # per-baby source identifier, rather than mistaking the baby index
+            # for a rule id.
+            rule.data={**rule.data,"die":"d12","bad_results":"1-3"}
+            refreshed=refresh_pending_rolls(session,save)
+            self.assertEqual(refreshed["maternal"],3)
+            self.assertTrue(all(roll.data["die"]=="d12" for roll in rolls))
+            session.rollback()
+
+    def test_occults_keep_the_original_aging_chart_except_servo(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Occult aging chart");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Occult aging chart",global_day=2,start_year=1550,days_per_year=4)
+            session.add(save);session.flush()
+            vampire=Record(save_id=save.id,kind="sim",label="Vampire child",global_day=1,data={"birth_global_day":1,"species_occult":"Vampire"})
+            servo=Record(save_id=save.id,kind="sim",label="Servo child",global_day=1,data={"birth_global_day":1,"species_occult":"Servo"})
+            rule=Record(save_id=save.id,kind="roll_rule",label="Infant",data={"age_days":1,"die":"d20","bad_results":"17","active":True})
+            session.add_all([vampire,servo,rule]);session.flush()
+            obsolete_servo_roll=Record(save_id=save.id,kind="roll",label="Servo child — Infant",global_day=2,data={"sim_id":servo.id,"roll_type":"Infant","source":f"aging:{servo.id}:{rule.id}","completed":False})
+            session.add(obsolete_servo_roll);session.flush()
+            schedule_rolls(session,save)
+            vampire_roll=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),Record.data["sim_id"].as_string()==vampire.id))
+            self.assertIsNotNone(vampire_roll)
+            self.assertEqual((vampire_roll.data["die"],vampire_roll.data["bad_results"]),("d20","17"))
+            self.assertEqual(vampire_roll.data["aging_chart"],ORIGINAL_AGING_CHART)
+            self.assertEqual(vampire_roll.data["occult_aging_mode"],"original-chart-unmodified")
+            self.assertTrue(obsolete_servo_roll.deleted)
+            self.assertIn("Servo source rules",obsolete_servo_roll.data["retired_reason"])
             session.rollback()
 
     def test_roll_refresh_restores_only_maternal_rolls_hidden_by_delivery(self):
@@ -2409,7 +2464,9 @@ class CoreSmokeTests(unittest.TestCase):
             loss_roll=Record(save_id=save.id,kind="roll",label="Hidden loss roll",global_day=28,deleted=True,data={"sim_id":mother.id,"source_id":miscarriage.id,"source":f"maternal:{miscarriage.id}:rule","roll_type":"Maternal — Adult","completed":False,"retired_reason":"Pregnancy reviewed as Miscarriage","retired_global_day":28})
             session.add_all([delivery_roll,active_replacement,replaced_old_roll,loss_roll]);session.flush()
             result=refresh_pending_rolls(session,save)
-            self.assertEqual(result["maternal"],1)
+            # One historic roll is revived and the active legacy record is
+            # upgraded with its baby-one identity.
+            self.assertEqual(result["maternal"],2)
             self.assertFalse(delivery_roll.deleted)
             self.assertEqual((delivery_roll.global_day,delivery_roll.data["due_global_day"]),(30,30))
             self.assertNotIn("retired_reason",delivery_roll.data)

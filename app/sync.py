@@ -15,6 +15,10 @@ SYNC_KINDS = {
     "campaign", "service", "migration", "play_rotation", "family_plan", "portrait_meta",
     "task", "source_archive", "death_causes", "planner_rule", "detection_candidate",
     "death", "era_guidance", "game_candidate", "session_journal", "family_plan", "addon_rule",
+    # Clock Sync journals these records from the desktop edition. They must be
+    # accepted by hosted saves as well, or one newer local record blocks the
+    # entire queued sync batch.
+    "game_history", "clock_diagnostic", "clock_protocol_state", "illness_suppression",
     "save_metadata", "portrait_blob", "dice_audit_record", "clock_state", "story_entry", "name_entry", "multiple_birth_rule", "illness_signature", "occult_rule", "household_portrait", "decade_snapshot",
     "era_check", "estate_plan", "economy_entry", "education_plan", "reputation_event",
     "migration_plan", "memorial", "heirloom", "correspondence",
