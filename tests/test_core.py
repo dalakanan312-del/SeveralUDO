@@ -3895,12 +3895,13 @@ class CoreSmokeTests(unittest.TestCase):
                 home=Record(save_id=save.id,kind="household",label="Chain House",data={});session.add(home);session.flush()
                 vampire=Record(save_id=save.id,kind="sim",label="Vampire",global_day=1,data={"birth_global_day":1,"species_occult":"Vampire","current_household_id":home.id})
                 spellcaster=Record(save_id=save.id,kind="sim",label="Spellcaster",global_day=1,data={"birth_global_day":1,"species_occult":"Spellcaster","current_household_id":home.id})
+                second_spellcaster=Record(save_id=save.id,kind="sim",label="Second Spellcaster",global_day=1,data={"birth_global_day":1,"species_occult":"Spellcaster","current_household_id":home.id})
                 human=Record(save_id=save.id,kind="sim",label="Human",global_day=1,data={"birth_global_day":1,"species_occult":"Human","current_household_id":home.id})
-                session.add_all([vampire,spellcaster,human]);session.flush();seed_occult_rules(session,save)
+                session.add_all([vampire,spellcaster,second_spellcaster,human]);session.flush();seed_occult_rules(session,save)
 
-                def resolve(rule_key, sim, actual):
+                def resolve(rule_key, sim, actual, extra_data=None):
                     rule=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="occult_rule",Record.data["rule_key"].as_string()==rule_key))
-                    roll=Record(save_id=save.id,kind="roll",label=f"{sim.label} — {rule.label}",global_day=save.global_day,data={"sim_id":sim.id,"occult_roll":True,"occult_rule_key":rule_key,"source_rule_key":rule_key,"die":rule.data.get("die"),"trigger_results":rule.data.get("trigger_results"),"result_rules":rule.data.get("result_rules"),"bad_results":"","completed":False})
+                    roll=Record(save_id=save.id,kind="roll",label=f"{sim.label} — {rule.label}",global_day=save.global_day,data={"sim_id":sim.id,"occult_roll":True,"occult_rule_key":rule_key,"source_rule_key":rule_key,"die":rule.data.get("die"),"trigger_results":rule.data.get("trigger_results"),"result_rules":rule.data.get("result_rules"),"bad_results":"","completed":False,**(extra_data or {})})
                     session.add(roll);session.flush();result=complete_roll(session,save,roll,actual)
                     children=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.data["origin_roll_id"].as_string()==roll.id)))
                     return result,roll,children
@@ -3912,8 +3913,15 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(false_accusation.data["sim_id"],human.id)
                 self.assertEqual(complete_roll(session,save,false_accusation,18)["automatic_followups"],1)
 
-                result,trial,trial_children=resolve("spellcaster_witch_trial",spellcaster,3)
-                self.assertEqual(result["automatic_followups"],2)
+                result,trial,trial_children=resolve("spellcaster_witch_trial",spellcaster,3,{
+                    "eligible_occult_sim_ids":[spellcaster.id,second_spellcaster.id],
+                    # A completed witch trial from the representative-only
+                    # implementation must be repaired when the tracker sees it.
+                    "automatic_followup_processed":["spellcaster_witch_trial:0:spellcaster_accused:triggered"],
+                })
+                self.assertEqual(result["automatic_followups"],3)
+                actual_accusations=[item for item in trial_children if item.data["occult_rule_key"]=="spellcaster_accused"]
+                self.assertEqual({item.data["sim_id"] for item in actual_accusations},{spellcaster.id,second_spellcaster.id})
                 false_trial=next(item for item in trial_children if item.data["occult_rule_key"]=="spellcaster_false_accusation")
                 self.assertNotEqual(false_trial.data["sim_id"],spellcaster.id)
                 self.assertEqual(complete_roll(session,save,false_trial,4)["automatic_followups"],1)

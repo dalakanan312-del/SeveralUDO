@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.15` corrects household-wide witch trials: every eligible Spellcaster receives an individual accusation roll, and older completed trial rolls are repaired once without duplicating existing accusations.
+
 `4.5.14` adds Save-a-Sims: a configurable credit ledger that earns one credit after every ten deaths, once when every recorded Sim has a scheduled death date, and from optional player-defined rule conditions. Credits can be spent to withdraw a scheduled death and restore its future obligations. Family plans created from a pregnancy-count roll now track pregnancies independently from children, so twins and triplets use one allowance.
 
 `4.5.13` broadens save-level visual themes across the remaining legacy pages, adds seven more polished light and dark palettes, sorts the Sims ledger by birth date with living/deceased filters, and gives a sorted Sim in an active Harry Potter save a House-specific profile palette and Hogwarts badge.

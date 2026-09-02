@@ -81,7 +81,10 @@ AUTOMATIC_OCCULT_FOLLOW_UP_SPECS = {
         {"rule_key":"alien_discovery_death", "target":"origin"},
     ),
     "spellcaster_witch_trial": (
-        {"rule_key":"spellcaster_accused", "target":"origin"},
+        # A witch-trial occurrence is rolled once for the household, but every
+        # spellcaster living there faces their own accusation check.  Using the
+        # household representative here silently skipped the other spellcasters.
+        {"rule_key":"spellcaster_accused", "target":"eligible_occult_members", "occult":"Spellcaster"},
         {"rule_key":"spellcaster_false_accusation", "target":"living_non_spellcaster"},
     ),
     "spellcaster_accused": ({"rule_key":"spellcaster_verdict", "target":"origin"},),

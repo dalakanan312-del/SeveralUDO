@@ -3959,20 +3959,25 @@ def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, r
 
     for index, spec in enumerate(specs):
         token = str(spec.get("rule_id") or f"{parent_key}:{index}:{spec.get('rule_key')}:{spec.get('when','triggered')}")
-        if token in processed:
+        target_strategy = str(spec.get("target") or "origin")
+        # Version the completion marker for every fan-out follow-up.  This lets
+        # existing household rolls that were completed under the former
+        # representative-only behavior receive their missing member rolls once,
+        # while later scheduling remains a no-op.
+        processed_token = f"{token}:eligible-members-v2" if target_strategy == "eligible_occult_members" else token
+        if processed_token in processed:
             continue
         when = str(spec.get("when") or "triggered")
         triggered = bool(data.get("triggered"))
         if (when == "triggered" and not triggered) or (when == "not_triggered" and triggered):
-            processed.add(token); continue
+            processed.add(processed_token); continue
         if spec.get("minimum_year") is not None and parent_year < int(spec["minimum_year"]):
-            processed.add(token); continue
+            processed.add(processed_token); continue
         wanted_alignment = str(spec.get("actor_alignment") or "")
         actor = session.get(Record, actor_id) if actor_id else None
         if wanted_alignment and (not actor or not occult_rules.aligned(actor.data, wanted_alignment)):
-            processed.add(token); continue
+            processed.add(processed_token); continue
 
-        target_strategy = str(spec.get("target") or "origin")
         targets: list[Record] = []
         if target_strategy == "eligible_occult_members":
             wanted = str(spec.get("occult") or "")
@@ -3993,7 +3998,7 @@ def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, r
             targets = [selected] if selected else []
         if not targets:
             skipped.append({"rule_key":child_key, "reason":"No eligible Sim was available", "global_day":save.global_day})
-            processed.add(token); continue
+            processed.add(processed_token); continue
 
         # The original werewolf rule selects a random victim before asking
         # whether kinship changes the attack. Do not preferentially select kin.
@@ -4060,7 +4065,7 @@ def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, r
                                        "vampire_suspicion_consumed_global_day":save.global_day}
                         target.version += 1; journal(session, target, "upsert", target_base)
         if matched_target:
-            processed.add(token)
+            processed.add(processed_token)
 
     complete = not missing_rule
     roll.data = {
