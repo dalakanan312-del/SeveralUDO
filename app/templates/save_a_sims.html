@@ -1,0 +1,66 @@
+{% extends "base.html" %}{% block title %}Save-a-Sims · Decades Tracker{% endblock %}{% block body %}
+<header class="hero compact save-a-sim-hero"><p class="eyebrow">CHALLENGE MERCY LEDGER</p><h1>Save-a-Sims</h1><p>Track every earned rescue, apply your rule-specific conditions, and spend a credit before an unconfirmed scheduled death.</p></header>
+
+{% if save_a_sim_notice %}<div class="notice" role="status">{{save_a_sim_notice}}</div>{% endif %}
+
+<section class="metric-strip four save-a-sim-metrics" aria-label="Save-a-Sim balance">
+  <article class="save-a-sim-balance"><span>Available now</span><strong>{{save_a_sim.balance}}</strong><small>Save-a-Sim credit{{'' if save_a_sim.balance==1 else 's'}}</small></article>
+  <article><span>Earned</span><strong>{{save_a_sim.earned + save_a_sim.opening_allowance}}</strong><small>{{save_a_sim.opening_allowance}} opening · {{save_a_sim.earned}} tracked</small></article>
+  <article><span>Used</span><strong>{{save_a_sim.spent}}</strong><small>Withdrawn scheduled deaths</small></article>
+  <article><span>Next death milestone</span><strong>{{save_a_sim.next_milestone}}</strong><small>{{save_a_sim.deaths_until_next}} confirmed death{{'' if save_a_sim.deaths_until_next==1 else 's'}} away</small></article>
+</section>
+
+<section class="save-a-sim-grid">
+  <article class="panel save-a-sim-card">
+    <div class="section-heading"><div><p class="eyebrow">AUTOMATIC EARNINGS</p><h2>What the tracker awards</h2></div><form action="/api/save-a-sims/refresh" method="post"><button>Refresh credits</button></form></div>
+    <div class="save-a-sim-progress"><div><strong>{{save_a_sim.death_count}}</strong><span>confirmed deaths</span></div><div class="save-a-sim-track" aria-label="{{save_a_sim.death_count % 10}} of 10 deaths toward the next credit"><span style="width:{{(save_a_sim.death_count % 10) * 10}}%"></span></div><small>One credit is added at every 10 confirmed deaths. Existing history is checked once too, without duplicates.</small></div>
+    <div class="condition-status {% if save_a_sim.all_scheduled %}complete{% endif %}"><span aria-hidden="true">{{'✓' if save_a_sim.all_scheduled else '○'}}</span><div><strong>All current Sims are scheduled to die</strong><small>{% if save_a_sim.all_scheduled %}{{save_a_sim.scheduled_count}} of {{save_a_sim.living_count}} active Sims have a death date. This roster has been checked for its one credit.{% else %}{{save_a_sim.scheduled_count}} of {{save_a_sim.living_count}} active Sims currently have a death date. A credit is added when every current Sim is scheduled.{% endif %}</small></div></div>
+    <p class="context-line">A confirmed or observed in-game death cannot be undone here. A credit is for withdrawing a scheduled challenge death before you confirm it.</p>
+  </article>
+
+  <article class="panel save-a-sim-card" id="rescue">
+    <p class="eyebrow">SPEND A CREDIT</p><h2>Save a scheduled Sim</h2>
+    {% if save_a_sim.rescuable_sims %}
+      <form action="/api/save-a-sims/spend" method="post" class="form-grid save-a-sim-spend">
+        <label class="wide">Sim with an unconfirmed scheduled death<select name="sim_id" required>{% for sim in save_a_sim.rescuable_sims %}<option value="{{sim.id}}">{{sim.label}} · GD {{sim.data.get('death_global_day')}} · {{sim.data.get('cause_of_death') or 'Cause pending'}}</option>{% endfor %}</select></label>
+        <label class="wide">Why was this Sim saved? <input name="reason" maxlength="500" placeholder="Optional rule note, story reason, or intervention"></label>
+        <div class="wide save-a-sim-spend-note"><span>1 credit</span><small>This clears the Sim’s unconfirmed death schedule and restores future rolls that were retired because of that source roll.</small></div>
+        <button class="primary wide" {% if not save_a_sim.balance %}disabled title="Earn or add an opening Save-a-Sim first"{% endif %}>Use {{'a' if save_a_sim.balance==1 else 'one'}} Save-a-Sim</button>
+      </form>
+    {% else %}
+      <div class="empty"><h3>No scheduled Sims can be saved right now.</h3><p>When a roll schedules a death, it appears here until it is confirmed or withdrawn.</p></div>
+    {% endif %}
+  </article>
+</section>
+
+<section class="panel" id="conditions">
+  <div class="section-heading"><div><p class="eyebrow">RULE-SPECIFIC CONDITIONS</p><h2>Make the rules work for your save</h2><p>Create your own award conditions for any Save-a-Sim clause in the rules you use. Conditions can be confirmed manually or earn a credit automatically from a matching completed roll.</p></div></div>
+  <details class="inline-tool" open><summary><span>＋ Add a Save-a-Sim condition</span><small>Manual or automatic from a roll</small></summary>
+    <form action="/api/save-a-sims/rules" method="post" class="form-grid">
+      <label class="wide">Condition name<input name="label" required placeholder="Example: Divine intervention after a failed battle"></label>
+      <label>How it earns a credit<select name="trigger_type"><option value="manual">I will confirm it manually</option><option value="roll_result">A completed roll matches it</option></select></label>
+      <label>Credits awarded<input name="amount" type="number" min="1" max="9" value="1"></label>
+      <label>Roll name contains<input name="match_roll" placeholder="Example: vampire hunt"></label>
+      <label>Outcome contains<input name="match_outcome" placeholder="Example: survives"></label>
+      <label class="wide check"><input name="repeatable" type="checkbox" value="true"> Repeat this condition for each matching roll (otherwise it can award once)</label>
+      <label class="wide">Rule note / source<textarea name="notes" placeholder="Write the actual rule text or any limits so the decision remains clear later."></textarea></label>
+      <p class="wide context-line">For automatic conditions, fill in at least a roll name or outcome phrase. Matching is case-insensitive and does not change any dice result.</p>
+      <button class="primary wide">Add condition</button>
+    </form>
+  </details>
+  <div class="save-a-sim-rule-list">
+    {% for rule in save_a_sim.rules %}{% set data=rule.data or {} %}
+      <details class="compact-record save-a-sim-rule" {% if loop.first %}open{% endif %}><summary><span><strong>{{rule.label}}</strong><small>{{'Automatic roll match' if data.get('trigger_type')=='roll_result' else 'Manual confirmation'}} · {{data.get('amount',1)}} credit{{'' if data.get('amount',1)==1 else 's'}}{% if not data.get('active',True) %} · Paused{% endif %}</small></span><span>{{'Repeatable' if data.get('repeatable') else 'One-time'}}</span></summary>
+        <div class="save-a-sim-rule-body">
+          {% if data.get('trigger_type')=='roll_result' %}<p><strong>Match:</strong> {% if data.get('match_roll') %}roll containing “{{data.get('match_roll')}}”{% endif %}{% if data.get('match_roll') and data.get('match_outcome') %} · {% endif %}{% if data.get('match_outcome') %}outcome containing “{{data.get('match_outcome')}}”{% endif %}</p>{% else %}<p>Confirm this only after its named rule condition has been met in play.</p>{% endif %}
+          {% if data.get('notes') %}<p class="context-line">{{data.get('notes')}}</p>{% endif %}
+          <div class="button-row">{% if data.get('trigger_type')=='manual' and data.get('active',True) %}<form action="/api/save-a-sims/rules/{{rule.id}}/award" method="post"><button class="primary">Confirm and add credit</button></form>{% endif %}<form action="/records/{{rule.id}}/delete" method="post" onsubmit="return confirm('Archive this Save-a-Sim condition? Existing credits will remain in the ledger.')"><button>Archive condition</button></form></div>
+          <details class="nested-drawer"><summary>Edit condition</summary><form action="/api/save-a-sims/rules/{{rule.id}}" method="post" class="form-grid"><label class="wide">Condition name<input name="label" value="{{rule.label}}" required></label><label>How it earns<select name="trigger_type"><option value="manual" {% if data.get('trigger_type')!='roll_result' %}selected{% endif %}>Manual confirmation</option><option value="roll_result" {% if data.get('trigger_type')=='roll_result' %}selected{% endif %}>Matching completed roll</option></select></label><label>Credits<input name="amount" type="number" min="1" max="9" value="{{data.get('amount',1)}}"></label><label>Roll name contains<input name="match_roll" value="{{data.get('match_roll','')}}"></label><label>Outcome contains<input name="match_outcome" value="{{data.get('match_outcome','')}}"></label><label class="check"><input name="repeatable" type="checkbox" value="true" {% if data.get('repeatable') %}checked{% endif %}> Repeatable</label><label class="check"><input name="active" type="checkbox" value="true" {% if data.get('active',True) %}checked{% endif %}> Active</label><label class="wide">Rule note<textarea name="notes">{{data.get('notes','')}}</textarea></label><button class="primary wide">Save condition</button></form></details>
+        </div>
+      </details>
+    {% else %}<div class="empty"><h3>No extra conditions yet.</h3><p>Add a condition above for any rule set’s special Save-a-Sim clause.</p></div>{% endfor %}
+  </div>
+</section>
+
+<section class="panel save-a-sim-ledger" id="ledger"><div class="section-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>Credit ledger</h2><p>All credit changes sync with the save and remain visible after a condition or death record is archived.</p></div></div><div class="save-a-sim-ledger-list">{% for entry in save_a_sim.entries %}{% set data=entry.data or {} %}<article class="list-row"><span><strong>{{entry.label}}</strong><small>GD {{entry.global_day}} · {{data.get('award_reason') or data.get('spent_reason') or data.get('entry_type','Recorded')}}</small>{% if data.get('sim_name') %}<small>Sim: {{data.get('sim_name')}}</small>{% endif %}</span><b class="save-a-sim-amount {{'earned' if data.get('amount',0)>0 else 'spent'}}">{{'+' if data.get('amount',0)>0 else ''}}{{data.get('amount',0)}}</b></article>{% else %}<div class="empty"><h3>Your ledger is ready.</h3><p>Opening credits, earned milestones, custom conditions, and rescues will appear here.</p></div>{% endfor %}</div></section>
+{% endblock %}

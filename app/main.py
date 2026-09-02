@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
+from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -45,6 +45,7 @@ FEATURES = {
     "historical-life": ("Historical Life", "Era preparation, estates, education, reputation, service, memorials and family strategy"),
     "life-records": ("Life Records", "Dowries, guardians, milestones, law, wellbeing and chronicle reliability"),
     "challenge": ("Challenge Management", "Succession, matchmaking and campaigns"),
+    "save-a-sims": ("Save-a-Sims", "Earn, track and spend death-prevention credits"),
     "world": ("World & Migration", "Birth countries, moves, historical locations and migration routes"),
     "legacy-lab": ("Legacy Lab", "Progress, biographies, compatibility, consistency and safe rule experiments"),
     "avatar": ("Avatar Add-on", "Bending, nations, Spirits, the Avatar Cycle and the BG/AG timeline"),
@@ -101,7 +102,7 @@ NAVIGATION_GROUPS = (
         "label": "Challenge & Rules",
         "description": "Rulesets, succession and play aids",
         "icon": "⚖",
-        "pages": ("challenge", "rules", "roll-tables", "historical-guidance", "occult-rules", "guides", "plants", "names", "avatar", "harry-potter", "game-of-thrones"),
+        "pages": ("challenge", "save-a-sims", "rules", "roll-tables", "historical-guidance", "occult-rules", "guides", "plants", "names", "avatar", "harry-potter", "game-of-thrones"),
     },
     {
         "id": "insights",
@@ -147,7 +148,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.13")
+app = FastAPI(title="Decades Tracker", version="4.5.14")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -667,7 +668,7 @@ def succession_ranking(sims: list[Record], save: ChronicleSave) -> list[dict]:
     return rows
 
 
-def planner_analysis(sims: list[Record], plans: list[Record], save: ChronicleSave) -> tuple[list[dict], list[dict]]:
+def planner_analysis(sims: list[Record], pregnancies: list[Record], plans: list[Record], save: ChronicleSave) -> tuple[list[dict], list[dict]]:
     by_id = {item.id:item for item in sims}; adulthood = int((save.settings or {}).get("adulthood_age_days") or 72)
     plan_rows = []
     for plan in plans:
@@ -678,6 +679,19 @@ def planner_analysis(sims: list[Record], plans: list[Record], save: ChronicleSav
         pending = max(0, len(children) - survived - died_young); spacing = int_or_none(data.get("min_birth_spacing_days")) or 0
         births = [int((child.data or {}).get("birth_global_day")) for child in children if int_or_none((child.data or {}).get("birth_global_day")) is not None]
         target = int_or_none(data.get("target_children")) or 0
+        target_pregnancies = int_or_none(data.get("target_pregnancies"))
+        pregnancy_plan = str(data.get("target_measure") or "").casefold() == "pregnancies" or target_pregnancies is not None
+        plan_year = int_or_none(data.get("planner_year"))
+        counted_pregnancies = []
+        if sim and pregnancy_plan:
+            counted_pregnancies = [
+                pregnancy for pregnancy in pregnancies
+                if str((pregnancy.data or {}).get("mother_id") or "") == sim.id
+                and domain.counts_against_pregnancy_allowance(pregnancy)
+                and (plan_year is None or domain.pregnancy_allowance_year(save, pregnancy) == plan_year)
+            ]
+        pregnancies_used = len(counted_pregnancies)
+        pregnancies_remaining = max(0, (target_pregnancies or 0) - pregnancies_used)
         forecast = []
         if sim:
             birth = int_or_none((sim.data or {}).get("birth_global_day"))
@@ -687,7 +701,7 @@ def planner_analysis(sims: list[Record], plans: list[Record], save: ChronicleSav
                     if due >= save.global_day: forecast.append({"label":label.title(),"global_day":due})
                 marriage_due = birth + int((save.settings or {}).get("marriage_min_age_days") or 72)
                 if marriage_due >= save.global_day: forecast.append({"label":"Marriage eligibility","global_day":marriage_due})
-        plan_rows.append({"record":plan,"sim":sim,"children":len(children),"survived":survived,"died_young":died_young,"pending":pending,"remaining":max(0,target-len(children)),"next_conception":max(births)+spacing if births and spacing else None,"forecast":sorted(forecast,key=lambda item:item["global_day"])[:12]})
+        plan_rows.append({"record":plan,"sim":sim,"children":len(children),"survived":survived,"died_young":died_young,"pending":pending,"remaining":pregnancies_remaining if pregnancy_plan else max(0,target-len(children)),"next_conception":max(births)+spacing if births and spacing else None,"forecast":sorted(forecast,key=lambda item:item["global_day"])[:12],"pregnancy_plan":pregnancy_plan,"pregnancies_used":pregnancies_used,"target_pregnancies":target_pregnancies or 0,"pregnancies_remaining":pregnancies_remaining})
     dynasties: dict[str, dict] = {}
     for sim in sims:
         surname = str((sim.data or {}).get("surname_at_birth") or (sim.data or {}).get("maiden_name") or (sim.data or {}).get("last_name") or sim.label.split()[-1] or "Unknown")
@@ -1585,7 +1599,7 @@ def feature_page(request: Request, page: str):
             "pregnancies":{"sim","pregnancy","roll"}, "illnesses":{"illness","sim"},
             "university":{"sim","university_enrollment","university_term","university_performance","game_history"},
             "households":{"household","sim","game_history","pregnancy","illness"},
-            "planner":{"sim","household","play_rotation","family_plan","roll"},
+            "planner":{"sim","household","play_rotation","family_plan","pregnancy","roll"},
             "historical-life":{"sim","household","relationship","event","campaign","service","migration","era_guidance","era_rule","era_check","estate_plan","economy_entry","education_plan","reputation_event","migration_plan","memorial","heirloom","correspondence"},
             "life-records":{"sim","household","relationship","pregnancy","illness","roll","event","death","migration","family_plan","dowry_plan","guardianship","birth_privilege","coming_of_age","dispersal_plan","social_mobility","legal_case","absence","disability","mourning","wellbeing","medical_treatment","recovery_restriction","saved_view","newspaper"},
             "challenge":{"sim","household","relationship","roll","planner_rule","campaign","service","era_guidance","era_rule"},
@@ -1740,7 +1754,8 @@ def feature_page(request: Request, page: str):
                 living=sum((sim.data or {}).get("current_household_id")==home.id and (int_or_none((sim.data or {}).get("death_global_day")) is None or int((sim.data or {}).get("death_global_day"))>save.global_day) for sim in sims)
                 recommendations.append({"household":home,"last":last_played.get(home.id),"living":living})
             recommendations.sort(key=lambda item:((item["last"].global_day if item["last"] else -10**9),item["household"].label.casefold()))
-            plan_analysis,dynasty_analysis=planner_analysis(sims,plans,save)
+            pregnancies=[item for item in view_records if item.kind=="pregnancy"]
+            plan_analysis,dynasty_analysis=planner_analysis(sims,pregnancies,plans,save)
             ctx.update(planner_recommendations=recommendations,rotation_records=sorted(rotations,key=lambda item:item.global_day or 0,reverse=True),family_plans=plans,family_plan_analysis=plan_analysis,dynasty_analysis=dynasty_analysis,all_sims=sorted_sims(sims,save),all_households=sorted(households,key=lambda item:item.label.casefold()));records=[]
         if page == "historical-life" and save:
             ctx.update(historical_life=historical_life.build(view_records or [], save),
@@ -1756,6 +1771,12 @@ def feature_page(request: Request, page: str):
             records=[]
         if page == "appearance" and save:
             ctx.update(theme_presets=themes.presets_for_ui())
+            records=[]
+        if page == "save-a-sims" and save:
+            ctx.update(
+                save_a_sim=save_a_sims.dashboard(session, save),
+                save_a_sim_notice=request.session.pop("save_a_sim_notice", None),
+            )
             records=[]
         if page == "challenge" and save:
             year=insights.current_year(save);challenge_location=str((save.settings or {}).get("challenge_location") or "").casefold();guidance_by_key={}
@@ -2212,7 +2233,7 @@ def feature_page(request: Request, page: str):
             "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "roll-tables":"roll_tables.html", "occult-rules":"occult_rules.html", "historical-guidance":"historical_guidance.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
             "world":"world.html", "legacy-lab":"legacy_lab.html", "historical-life":"historical_life.html", "life-records":"life-records.html",
-            "clock":"clock.html", "sync":"sync.html", "account":"account.html", "appearance":"appearance.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html",
+            "clock":"clock.html", "sync":"sync.html", "account":"account.html", "appearance":"appearance.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html", "save-a-sims":"save_a_sims.html",
         }
         return templates.TemplateResponse(request, dedicated.get(page, "feature.html"), ctx)
 
@@ -3300,6 +3321,8 @@ async def accept_automation(request: Request, candidate_id: str):
                     if end_second is not None: end_fields["end_game_second"]=end_second
                     rel_base=rel.version;rel.data={**rel.data,"status":end_status,"end_global_day":end_day,**end_fields,"historical_end_date":historical_end,"legally_married":bool((rel.data or {}).get("legally_married")) and end_status.casefold()=="widowed","end_source":"Clock Sync relationship transition","source_candidate_id":item.id};rel.version+=1;domain.journal(session,rel,"upsert",rel_base);resolved_record=rel;save.revision+=1+domain.sync_generations(session,save);domain.schedule_marriage_rolls(session,save)
         automation.resolve_parent_links(session,save)
+        if action=="sim_death":
+            save_a_sims.sync_automatic_awards(session,save)
         reviewed={key:str(value) for key,value in form.multi_items() if key not in {"confirm"}}
         acceptance_changes=list(session.scalars(select(Change).where(
             Change.save_id==save.id,Change.sequence>accept_change_floor,Change.record_id!=item.id,
@@ -4419,7 +4442,92 @@ def confirm_today_death(request: Request, sim_id: str, cause_of_death: str = For
             request.session["today_undo"].setdefault("delete_ids",[])
             request.session["today_undo"]["delete_ids"].extend(item.id for item in grief_reviews)
         domain.schedule_rolls(session,save)
+        save_a_sims.sync_automatic_awards(session, save)
     return RedirectResponse("/p/today?task=deaths",status_code=303)
+
+
+@app.post("/api/save-a-sims/refresh")
+def refresh_save_a_sims(request: Request):
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        result=save_a_sims.sync_automatic_awards(session,save)
+        request.session["save_a_sim_notice"]=(
+            f"Checked Save-a-Sims: {len(result['created'])} new credit"
+            f"{'s' if len(result['created'])!=1 else ''} added."
+        )
+    return RedirectResponse("/p/save-a-sims",status_code=303)
+
+
+@app.post("/api/save-a-sims/rules")
+def create_save_a_sim_rule(request: Request, label: str = Form(...), trigger_type: str = Form("manual"),
+                           match_roll: str = Form(""), match_outcome: str = Form(""),
+                           amount: int = Form(1), repeatable: str = Form(""), notes: str = Form("")):
+    if trigger_type not in {"manual","roll_result"}: raise HTTPException(400,"Choose how this condition is earned.")
+    if trigger_type=="roll_result" and not (match_roll.strip() or match_outcome.strip()):
+        raise HTTPException(400,"Automatic conditions need a roll name or outcome phrase to match.")
+    clean_label=label.strip()
+    if not clean_label: raise HTTPException(400,"Name the rule condition.")
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        rule=Record(save_id=save.id,kind=save_a_sims.RULE_KIND,label=clean_label,global_day=save.global_day,data={
+            "active":True,"trigger_type":trigger_type,"match_roll":match_roll.strip(),
+            "match_outcome":match_outcome.strip(),"amount":max(1,min(9,int(amount))),
+            "repeatable":repeatable in {"1","true","on","yes"},"notes":notes.strip()[:1000],
+        })
+        session.add(rule);session.flush();domain.journal(session,rule,"upsert",0);save.revision+=1
+        request.session["save_a_sim_notice"]=(
+            f"Added “{rule.label}”. "
+            + ("Matching future rolls will award it automatically." if trigger_type=="roll_result" else "Confirm it here when the condition is met.")
+        )
+    return RedirectResponse("/p/save-a-sims#conditions",status_code=303)
+
+
+@app.post("/api/save-a-sims/rules/{rule_id}")
+def update_save_a_sim_rule(request: Request, rule_id: str, label: str = Form(...), trigger_type: str = Form("manual"),
+                           match_roll: str = Form(""), match_outcome: str = Form(""), amount: int = Form(1),
+                           repeatable: str = Form(""), active: str = Form(""), notes: str = Form("")):
+    if trigger_type not in {"manual","roll_result"}: raise HTTPException(400,"Choose how this condition is earned.")
+    if trigger_type=="roll_result" and not (match_roll.strip() or match_outcome.strip()):
+        raise HTTPException(400,"Automatic conditions need a roll name or outcome phrase to match.")
+    with db() as session:
+        rule=session.get(Record,rule_id)
+        if not rule or rule.kind!=save_a_sims.RULE_KIND or rule.deleted: raise HTTPException(404)
+        save=owned_save(request,session,rule.save_id);base=rule.version
+        rule.label=label.strip() or rule.label
+        rule.data={**(rule.data or {}),"active":active in {"1","true","on","yes"},"trigger_type":trigger_type,
+                   "match_roll":match_roll.strip(),"match_outcome":match_outcome.strip(),"amount":max(1,min(9,int(amount))),
+                   "repeatable":repeatable in {"1","true","on","yes"},"notes":notes.strip()[:1000]}
+        rule.version+=1;domain.journal(session,rule,"upsert",base);save.revision+=1
+        request.session["save_a_sim_notice"]=f"Updated “{rule.label}”."
+    return RedirectResponse("/p/save-a-sims#conditions",status_code=303)
+
+
+@app.post("/api/save-a-sims/rules/{rule_id}/award")
+def award_save_a_sim_rule(request: Request, rule_id: str):
+    with db() as session:
+        rule=session.get(Record,rule_id)
+        if not rule or rule.kind!=save_a_sims.RULE_KIND: raise HTTPException(404)
+        save=owned_save(request,session,rule.save_id)
+        try: entry,created=save_a_sims.award_manual_rule(session,save,rule)
+        except ValueError as exc: raise HTTPException(409,str(exc)) from exc
+        request.session["save_a_sim_notice"]=(f"{entry.label} {'was added to' if created else 'is already in'} the ledger.")
+    return RedirectResponse("/p/save-a-sims#conditions",status_code=303)
+
+
+@app.post("/api/save-a-sims/spend")
+def spend_save_a_sim(request: Request, sim_id: str = Form(...), reason: str = Form("")):
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save");sim=session.get(Record,sim_id)
+        if not save or not sim or sim.save_id!=save.id: raise HTTPException(400,"Choose a Sim from the active save.")
+        try: result=save_a_sims.spend_on_sim(session,save,sim,reason)
+        except ValueError as exc: raise HTTPException(409,str(exc)) from exc
+        request.session["save_a_sim_notice"]=(
+            f"{sim.label} has been saved. The death scheduled for GD {result['withdrawn_death_global_day']} was withdrawn"
+            + (f" and {result['restored_rolls']} future roll{'s' if result['restored_rolls']!=1 else ''} restored." if result["restored_rolls"] else ".")
+        )
+    return RedirectResponse("/p/save-a-sims",status_code=303)
 
 
 @app.post("/api/rolls/{roll_id}/complete")
@@ -4935,11 +5043,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.13-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.14-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.13-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.14-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

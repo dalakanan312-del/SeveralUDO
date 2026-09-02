@@ -2933,6 +2933,33 @@ def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Reco
     return roll, True
 
 
+def counts_against_pregnancy_allowance(pregnancy: Record) -> bool:
+    """Whether one pregnancy record consumes one pregnancy allowance.
+
+    This deliberately does not inspect ``babies_expected`` or
+    ``babies_delivered``.  A twin or triplet pregnancy is still one pregnancy;
+    only entries explicitly cancelled or archived are excluded.
+    """
+    if pregnancy.kind != "pregnancy" or pregnancy.deleted:
+        return False
+    data = pregnancy.data or {}
+    if bool(data.get("archived")):
+        return False
+    return str(data.get("status") or "").strip().casefold() not in {"cancelled", "canceled"}
+
+
+def pregnancy_allowance_year(save: ChronicleSave, pregnancy: Record) -> int | None:
+    """Return the challenge year of a pregnancy's conception for allowance use."""
+    data = pregnancy.data or {}
+    day = data.get("conception_global_day")
+    if day in (None, ""):
+        due = data.get("due_global_day", pregnancy.global_day)
+        day = int(due) - save.pregnancy_days if due not in (None, "") else pregnancy.global_day
+    if day in (None, ""):
+        return None
+    return save.start_year + (int(day) - 1) // max(1, save.days_per_year)
+
+
 def pregnancy_allowance_status(session: Session, save: ChronicleSave, sim: Record) -> dict:
     """Return each recorded annual allowance with live used and remaining counts."""
     stored = (sim.data or {}).get("pregnancy_allowances") or {}
@@ -2960,16 +2987,12 @@ def pregnancy_allowance_status(session: Session, save: ChronicleSave, sim: Recor
         Record.data["mother_id"].as_string() == sim.id,
     ))
     for pregnancy in pregnancies:
-        data = pregnancy.data or {}
-        if str(data.get("status") or "").strip().casefold() in {"cancelled", "canceled"}:
+        if not counts_against_pregnancy_allowance(pregnancy):
             continue
-        day = data.get("conception_global_day")
-        if day in (None, ""):
-            due = data.get("due_global_day", pregnancy.global_day)
-            day = int(due) - save.pregnancy_days if due not in (None, "") else pregnancy.global_day
-        if day is None:
+        year_value = pregnancy_allowance_year(save, pregnancy)
+        if year_value is None:
             continue
-        year = str(save.start_year + (int(day) - 1) // max(1, save.days_per_year))
+        year = str(year_value)
         used_by_year[year] = used_by_year.get(year, 0) + 1
     rows = []
     for year,value in allowances.items():
@@ -2996,24 +3019,29 @@ def sync_family_plan_from_pregnancy_roll(session: Session, save: ChronicleSave, 
         "sim_id": sim.id,
         "sim_name": sim.label,
         "target_pregnancies": max(0, int(pregnancy_count)),
-        # The existing planner forecasts children, so one child per allotted
-        # pregnancy is the transparent baseline until actual births replace it.
-        "target_children": max(0, int(pregnancy_count)),
+        "target_measure": "pregnancies",
         "min_birth_spacing_days": max(0, int(save.pregnancy_days)),
         "planner_year": year,
         "source": source,
         "source_pregnancy_roll_id": roll.id,
         "automatic": True,
         "active": True,
-        "notes": f"Created automatically from the {year} pregnancy-count roll; adjust the targets if a multiple birth changes the family goal.",
+        "notes": f"Created automatically from the {year} pregnancy-count roll. Multiple births still use one pregnancy allowance.",
     }
     label = f"{sim.label} family plan · {year}"
     if plan:
         current = plan.data or {}
-        if plan.label == label and all(current.get(key) == value for key, value in payload.items()):
+        legacy_child_mirror = current.get("source_pregnancy_roll_id") == roll.id and "target_children" in current
+        if plan.label == label and not legacy_child_mirror and all(current.get(key) == value for key, value in payload.items()):
             return plan, False, False
         base = plan.version; plan.label = label; plan.global_day = int(roll.global_day or save.global_day)
-        plan.data = {**current, **payload}; plan.version += 1; journal(session, plan, "upsert", base)
+        # Earlier automatic plans mirrored the count into target_children,
+        # which made twins look as if they consumed two allowances.  Keep any
+        # manually entered child goal separate, but remove that legacy mirror.
+        updated = {**current, **payload}
+        if current.get("source_pregnancy_roll_id") == roll.id:
+            updated.pop("target_children", None)
+        plan.data = updated; plan.version += 1; journal(session, plan, "upsert", base)
         return plan, True, False
     plan = Record(save_id=save.id, kind="family_plan", label=label,
                   global_day=int(roll.global_day or save.global_day), data=payload)
@@ -5430,6 +5458,13 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 save.revision += end_illnesses_for_death(session, save, sim, death_day)
                 death_changed = True
             save.revision += _retire_rolls_after_death(session, save, sim.id, death_day, roll.id)
+    # Save-a-Sim awards are driven by completed facts, not by a page visit.
+    # The import is intentionally local: this function is the domain module's
+    # core roll path and the credit ledger reuses ``journal`` from this module.
+    from . import save_a_sims
+    automatic_save_a_sims = save_a_sims.sync_automatic_awards(session, save)
+    rule_save_a_sims = save_a_sims.award_matching_roll_rules(session, save, roll)
+    save_a_sim_awards = len(automatic_save_a_sims["created"]) + len(rule_save_a_sims)
     save.revision += 1 + int(death_changed) + int(allowance_changed) + int(hogwarts_house_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + occult_scheduled + hp_changed + hp_scheduled + automatic_followups
     return {
         "outcome": roll.data["outcome"], "death": sync.serialize(death) if death else None,
@@ -5441,4 +5476,5 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         "harry_potter_updates": hp_changed,
         "suggested_marriage_global_day": roll.data.get("suggested_marriage_global_day"),
         "automatic_followups": automatic_followups,
+        "save_a_sim_awards": save_a_sim_awards,
     }

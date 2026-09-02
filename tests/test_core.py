@@ -2018,7 +2018,7 @@ class CoreSmokeTests(unittest.TestCase):
                 sim=Record(save_id=save.id,kind="sim",label=f"Planner Sim {marker}",global_day=10,data={"birth_global_day":10})
                 rule=Record(save_id=save.id,kind="planner_rule",label="Imported planner rules",data={"rule_key":"side_pregnancy","start_year":1500,"end_year":1699,"die":"d12","bad_results":"1-10: Schedule that many pregnancies; 11-12: No pregnancy","active":True})
                 session.add_all([sim,rule]);session.flush()
-                active=Record(save_id=save.id,kind="pregnancy",label="Counted active pregnancy",global_day=83,data={"mother_id":sim.id,"conception_global_day":79,"due_global_day":83,"status":"Active"})
+                active=Record(save_id=save.id,kind="pregnancy",label="Counted twin pregnancy",global_day=83,data={"mother_id":sim.id,"conception_global_day":79,"due_global_day":83,"status":"Delivered","babies_expected":2,"babies_delivered":2})
                 loss=Record(save_id=save.id,kind="pregnancy",label="Counted miscarriage",global_day=82,data={"mother_id":sim.id,"conception_global_day":78,"due_global_day":82,"status":"Miscarriage"})
                 cancelled=Record(save_id=save.id,kind="pregnancy",label="Excluded cancellation",global_day=81,data={"mother_id":sim.id,"conception_global_day":77,"due_global_day":81,"status":"Cancelled"})
                 session.add_all([active,loss,cancelled]);session.commit();save_id,sim_id=save.id,sim.id
@@ -2039,10 +2039,10 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertEqual(roll.data["pregnancy_count"],7);self.assertEqual(roll.data["outcome"],"7 pregnancies");self.assertIsNone(sim.data.get("death_global_day"))
                 self.assertEqual(sim.data["pregnancy_allowance_count"],7);self.assertEqual(sim.data["pregnancy_allowance_year"],1519);self.assertEqual(sim.data["pregnancy_allowances"]["1519"]["roll_id"],roll_id)
                 plan=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="family_plan",Record.data["source_pregnancy_roll_id"].as_string()==roll_id))
-                self.assertIsNotNone(plan);self.assertEqual((plan.data["target_pregnancies"],plan.data["target_children"]),(7,7))
+                self.assertIsNotNone(plan);self.assertEqual(plan.data["target_pregnancies"],7);self.assertNotIn("target_children",plan.data)
             profile=client.get(f"/sims/{sim_id}")
             self.assertEqual(profile.status_code,200);self.assertIn("Pregnancy allowance",profile.text);self.assertIn("<span>Allowed</span><strong>7</strong>",profile.text);self.assertIn("<span>Used</span><strong>2</strong>",profile.text);self.assertIn("<span>Remaining</span><strong>5</strong>",profile.text)
-            planner=client.get("/p/planner");self.assertEqual(planner.status_code,200);self.assertIn(f"Planner Sim {marker} family plan",planner.text)
+            planner=client.get("/p/planner");self.assertEqual(planner.status_code,200);self.assertIn(f"Planner Sim {marker} family plan",planner.text);self.assertIn("2/7</b> pregnancies",planner.text);self.assertIn("0</b> children",planner.text)
             with SessionLocal() as session:
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()
 
