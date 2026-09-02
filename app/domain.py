@@ -42,6 +42,21 @@ LEGACY_INCORRECT_STAGES = {
 
 AGING_STAGE_OFFSETS = {stage.casefold(): age for stage, age, _die, _bad in DEFAULT_STAGES}
 ORIGINAL_AGING_CHART = "Original SeveralUDO lifecycle mortality chart"
+RECORD_LABEL_MAX_LENGTH = 240
+
+
+def record_label(value: object, *, maximum: int = RECORD_LABEL_MAX_LENGTH) -> str:
+    """Return a database-safe display label without losing source text.
+
+    PostgreSQL enforces Record.label's 240-character limit while SQLite does
+    not. Historical catalogues can contain paragraph-length source titles, so
+    the full title is kept in record data and only the indexed display label is
+    shortened.
+    """
+    text = " ".join(str(value or "").split())
+    if len(text) <= maximum:
+        return text
+    return f"{text[: max(1, maximum - 1)].rstrip()}…"
 
 
 def automation_enabled(save: ChronicleSave) -> bool:
@@ -2004,6 +2019,8 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
     changed = 0
     for row in rows:
         catalog_id = str(row.get("event_id") or "")
+        source_event_name = str(row.get("event_name") or catalog_id)
+        display_label = record_label(source_event_name)
         notes = str(row.get("notes") or "")
         updated_source_event = catalog_id.startswith(("EVT-PRE1000-", "EVT-1000S-", "EVT-1100S-", "EVT-1200S-")) or str(row.get("source") or "") in refreshed_sources
         override = {
@@ -2048,8 +2065,8 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
                 record_changed = False
                 if updated_source_event:
                     source_start, source_end = rebase(row.get("start_global_day")), rebase(row.get("end_global_day"))
-                    if record.label != str(row.get("event_name") or catalog_id):
-                        record.label = str(row.get("event_name") or catalog_id)
+                    if record.label != display_label:
+                        record.label = display_label
                         record_changed = True
                     if record.global_day != source_start:
                         record.global_day = source_start
@@ -2064,6 +2081,7 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
                         "location": row.get("location") or "Global",
                         "affected_class": row.get("affected_class") or "All applicable Sims",
                         "source": row.get("source") or "Recovered approved catalog",
+                        "source_event_name": source_event_name,
                         "notes": notes,
                         "original_roll_required": original_roll_required,
                         "roll_required_source": "Original SeveralUDO event rules" if original_roll_required else "",
@@ -2125,6 +2143,7 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
             "scope": row.get("scope") or "Historical event", "location": row.get("location") or "Global",
             "roll_required": original_roll_required, "affected_class": row.get("affected_class") or "All applicable Sims",
             "active": bool(row.get("active", 1)), "source": row.get("source") or "Recovered approved catalog",
+            "source_event_name": source_event_name,
             "notes": notes,
             "original_roll_required": original_roll_required,
             "roll_required_source": "Original SeveralUDO event rules" if original_roll_required else "",
@@ -2137,7 +2156,7 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
                 "source_roll_plan_version": 4,
             })
         data.update(override)
-        record = Record(save_id=save.id, kind="event", label=str(row.get("event_name") or catalog_id), global_day=start, data=data)
+        record = Record(save_id=save.id, kind="event", label=display_label, global_day=start, data=data)
         session.add(record); session.flush(); journal(session, record, "upsert", 0); changed += 1
     # A revised source may deliberately remove a catalogue row. Deactivate
     # (rather than delete) only source entries covered by the revised documents so history,
