@@ -2017,6 +2017,7 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
         return (absolute_year - save.start_year) * save.days_per_year + min(challenge_day, save.days_per_year)
 
     changed = 0
+    new_records: list[Record] = []
     for row in rows:
         catalog_id = str(row.get("event_id") or "")
         source_event_name = str(row.get("event_name") or catalog_id)
@@ -2157,7 +2158,16 @@ def seed_event_catalog(session: Session, save: ChronicleSave, *, force: bool = F
             })
         data.update(override)
         record = Record(save_id=save.id, kind="event", label=display_label, global_day=start, data=data)
-        session.add(record); session.flush(); journal(session, record, "upsert", 0); changed += 1
+        session.add(record)
+        new_records.append(record)
+        changed += 1
+    # A fresh source catalog can contain hundreds of historical records.
+    # Flush them once before journaling, rather than making page opening wait
+    # for one database round-trip per event.
+    if new_records:
+        session.flush()
+        for record in new_records:
+            journal(session, record, "upsert", 0)
     # A revised source may deliberately remove a catalogue row. Deactivate
     # (rather than delete) only source entries covered by the revised documents so history,
     # custom notes and completed rolls remain recoverable.
