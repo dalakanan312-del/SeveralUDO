@@ -1679,3 +1679,14 @@ _core._send_payload = _send_payload_v22
 _core._report_payload = _report_payload_v22
 _core._post_day = _post_day_v22
 _core._poll_clock = _poll_clock_v22
+
+# ``core`` starts its alarm while it is imported by the compatibility layer.
+# Replacing ``_poll_clock`` afterwards is not enough: that alarm keeps a
+# reference to the old callback for the whole game session.  Cancel and create
+# the normal clock alarm once more so the installed 2.2.x poller is the one
+# that runs at every in-game interval.  This is intentionally best-effort;
+# failure to schedule must never interrupt the rest of the game's mod loading.
+try:
+    _core._start_clock_sync()
+except Exception as error:
+    _core.LOGGER.exception("Clock Sync 2.2 could not refresh its polling alarm: {}", error)
