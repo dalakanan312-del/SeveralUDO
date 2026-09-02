@@ -1620,6 +1620,42 @@ def _post_day_v22(config, game_day, game_hour, game_minute, household_name, memb
 
 
 _last_full_population_game_day = None
+_last_active_life_marker = None
+_last_active_snapshot_signature = None
+
+
+def _active_life_marker():
+    """Return inexpensive, stable facts that warrant an immediate full scan.
+
+    The ordinary in-day delta intentionally avoids rebuilding the full played
+    population on every alarm.  Pregnancy progress changes every few minutes,
+    however, so it must not be included verbatim here.  These stable fields
+    catch a newly detected pregnancy, trimester/labour change, and expected
+    multiple count without turning a routine clock heartbeat into a full scan.
+    """
+    household = _safe_call(_core.services, "active_household")
+    rows = []
+    for sim_info in _household_members(household):
+        try:
+            pregnancy, _supported = _pregnancy_details(sim_info)
+            active = bool(
+                pregnancy.get("pregnancy_stage")
+                or pregnancy.get("is_in_labor")
+                or pregnancy.get("pregnancy_hours_remaining") is not None
+                or pregnancy.get("pregnancy_progress_percentage") is not None
+            )
+            rows.append({
+                "game_sim_id": str(getattr(sim_info, "sim_id", "") or ""),
+                "pregnant": active,
+                "stage": pregnancy.get("pregnancy_stage") if active else None,
+                "in_labor": bool(pregnancy.get("is_in_labor")) if active else False,
+                "babies_expected": pregnancy.get("babies_expected") if active else None,
+            })
+        except Exception:
+            continue
+    return hashlib.sha256(json.dumps(
+        _json_safe(rows), ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
 
 
 def _queue_worker(config, payload, game_day):
@@ -1635,7 +1671,7 @@ def _queue_worker(config, payload, game_day):
 
 
 def _poll_clock_v22(_alarm_handle=None):
-    global _last_full_population_game_day
+    global _last_full_population_game_day, _last_active_life_marker, _last_active_snapshot_signature
     try:
         config = _core._load_config()
         if config is None or _core._send_in_progress:
@@ -1643,25 +1679,37 @@ def _poll_clock_v22(_alarm_handle=None):
         game_day = _core._absolute_game_day()
         game_hour, game_minute = _core._game_clock()
         active_name, active_members = _previous_household_snapshot()
+        life_marker = _active_life_marker()
+        life_changed = life_marker != _last_active_life_marker
         active_signature = hashlib.sha256(json.dumps(_json_safe([
             {key:value for key,value in member.items() if key != "portrait_image_base64"}
             for member in active_members
         ]), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        active_data_changed = active_signature != _last_active_snapshot_signature
         full_due = (_last_full_population_game_day != game_day or
                     _load_protocol_state().get("last_full_game_day") != game_day)
-        signature = (game_day, active_signature, bool(full_due))
+        # Keep the clock as live as the original relay while avoiding its old
+        # full-household upload every minute.  The current game minute forces
+        # a tiny heartbeat; people are sent only on a meaningful data change.
+        time_bucket = (int(game_hour) * 60) + int(game_minute)
+        signature = (game_day, active_signature, life_marker, bool(full_due), time_bucket)
         if signature == _core._last_report_signature:
             return
-        if full_due:
+        if full_due or life_changed:
             household_name, members, complete, household_rows = _played_population_snapshot()
-            _last_full_population_game_day = game_day
-        else:
+            if full_due:
+                _last_full_population_game_day = game_day
+        elif active_data_changed:
             household_name, members, complete, household_rows = active_name, active_members, False, []
+        else:
+            household_name, members, complete, household_rows = active_name, [], False, []
         report = _protocol_report(game_day, game_hour, game_minute, household_name, members,
                                   complete, household_rows, full_due, config)
         payload = json.dumps(report, separators=(",", ":")).encode("utf-8")
         _core._last_reported_day = game_day
         _core._last_report_signature = signature
+        _last_active_life_marker = life_marker
+        _last_active_snapshot_signature = active_signature
         _core._send_in_progress = True
         worker = threading.Thread(target=_queue_worker, args=(config, payload, game_day))
         worker.daemon = True
