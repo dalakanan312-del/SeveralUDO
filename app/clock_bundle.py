@@ -9,7 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from .config import ROOT
 
 
-CLOCK_SYNC_VERSION = "2.2.9"
+CLOCK_SYNC_VERSION = "2.2.10"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
 CLOCK_SYNC_REQUIRED_FILES = (

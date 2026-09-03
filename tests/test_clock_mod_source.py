@@ -202,7 +202,7 @@ class ClockModSourceTests(unittest.TestCase):
         )
         result = module._extended_snapshot(sim, None)
         self.assertEqual(result["telemetry_version"], 6)
-        self.assertEqual(result["clock_sync_version"], "2.2.9")
+        self.assertEqual(result["clock_sync_version"], "2.2.10")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)

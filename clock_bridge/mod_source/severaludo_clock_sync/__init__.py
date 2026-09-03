@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.9 reliable, queued life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.10 reliable, queued life-history telemetry for The Sims 4."""
 
 import base64
 import hashlib
@@ -12,7 +12,7 @@ import time
 from . import compat_201 as _compat
 
 
-VERSION = "2.2.9"
+VERSION = "2.2.10"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -1867,15 +1867,21 @@ _core._report_payload = _report_payload_v22
 _core._post_day = _post_day_v22
 _core._poll_clock = _poll_clock_v22
 
-# ``core`` starts its alarm while it is imported by the compatibility layer.
-# Replacing ``_poll_clock`` afterwards is not enough: that alarm keeps a
-# reference to the old callback for the whole game session.  Cancel and create
-# the normal clock alarm once more so the installed 2.2.x poller is the one
-# that runs at every in-game interval.  This is intentionally best-effort;
-# failure to schedule must never interrupt the rest of the game's mod loading.
+# ``core`` normally starts its alarm while it is imported by the compatibility
+# layer.  Some current game builds import Script Mods before ``services`` has
+# created a time service.  Calling the legacy restarter at that moment tries to
+# dereference ``None.time_service`` and produces a Last Exception before a save
+# can load.  Only refresh the callback when the live time service is already
+# available; otherwise retain core's ordinary load-time alarm instead of
+# forcing a second, unsafe start during import.
 try:
+    service_api = _services_api()
+    live_time_service = _safe_call(service_api, "time_service")
     restart_clock = getattr(_core, "_start_clock_sync", None)
-    if callable(restart_clock):
+    if service_api is not None and live_time_service is not None and callable(restart_clock):
+        # The 2.0.1 core caches its services module.  Keep it pointed at the
+        # live module before asking it to refresh the alarm.
+        _core.services = service_api
         restart_clock()
 except Exception as error:
     logger = getattr(_core, "LOGGER", None)

@@ -802,6 +802,91 @@ def timeline_overview(records: list[Record], save: ChronicleSave) -> dict:
     return {"lifespans":sorted(rows,key=lambda item:(item["birth"],item["sim"].label))[:100],"decades":sorted(decades.items()),"low_year":historical_year(save,low),"high_year":historical_year(save,high)}
 
 
+def timeline_visual(entries: list[dict], save: ChronicleSave) -> dict:
+    """Build a compact, date-scaled map for the Chronicle page.
+
+    The full chronicle can contain hundreds of event and roll records on the
+    same challenge day.  The visual surface intentionally groups those into a
+    single, linkable moment so it stays quick to render and remains readable on
+    a phone.  The normal ledger below it still exposes every individual entry.
+    """
+    dated = [item for item in entries if integer(item.get("day")) is not None]
+    if not dated:
+        return {"markers": [], "years": [], "kind_counts": [], "total": 0}
+
+    by_day: dict[int, list[dict]] = defaultdict(list)
+    for item in dated:
+        by_day[int(item["day"])].append(item)
+
+    current_day = max(1, int(save.global_day))
+    low_day = min(by_day)
+    high_day = max(max(by_day), current_day)
+    span = max(1, high_day - low_day)
+    kind_priority = {
+        "death": 0, "birth": 1, "relationship": 2, "pregnancy": 3,
+        "illness": 4, "event": 5, "roll": 6,
+    }
+
+    markers = []
+    lane_end = [-100.0] * 6
+    gap = 5.2 if len(by_day) <= 65 else 3.7 if len(by_day) <= 130 else 2.4
+    for position, day in enumerate(sorted(by_day)):
+        moments = sorted(by_day[day], key=lambda item: (
+            kind_priority.get(str(item.get("kind") or ""), 9),
+            str(item.get("label") or "").casefold(),
+        ))
+        primary = moments[0]
+        left = round((day - low_day) * 100 / span, 3)
+        lane = next((index for index, end in enumerate(lane_end) if left - end >= gap), position % len(lane_end))
+        lane_end[lane] = left
+        labels = [str(item.get("label") or "Untitled moment") for item in moments]
+        markers.append({
+            "day": day,
+            "left": left,
+            "lane": lane,
+            "kind": str(primary.get("kind") or "record"),
+            "label": labels[0],
+            "details": str(primary.get("details") or ""),
+            "anchor": primary.get("anchor") or "",
+            "count": len(moments),
+            "more": max(0, len(moments) - 1),
+            "title": " · ".join(labels[:4]) + (f" · and {len(labels) - 4} more" if len(labels) > 4 else ""),
+            "is_current": day == current_day,
+            "is_future": day > current_day,
+        })
+
+    low_year = historical_year(save, low_day) or save.start_year
+    high_year = historical_year(save, high_day) or low_year
+    year_step = 1 if high_year - low_year <= 18 else 5 if high_year - low_year <= 70 else 10
+    first_year = low_year if year_step == 1 else ((low_year + year_step - 1) // year_step) * year_step
+    years = []
+    for year in range(first_year, high_year + 1, year_step):
+        year_day = 1 + (year - save.start_year) * max(1, save.days_per_year)
+        years.append({
+            "year": year,
+            "left": round(max(0, min(100, (year_day - low_day) * 100 / span)), 3),
+        })
+    if not years or years[0]["year"] != low_year:
+        years.insert(0, {"year": low_year, "left": 0})
+    if years[-1]["year"] != high_year:
+        years.append({"year": high_year, "left": 100})
+
+    kind_counts = sorted(Counter(str(item.get("kind") or "record") for item in dated).items(), key=lambda pair: (-pair[1], pair[0]))
+    return {
+        "markers": markers,
+        "years": years,
+        "kind_counts": kind_counts,
+        "total": len(dated),
+        "moments": len(markers),
+        "low_day": low_day,
+        "high_day": high_day,
+        "low_year": low_year,
+        "high_year": high_year,
+        "current_day": current_day,
+        "current_left": round(max(0, min(100, (current_day - low_day) * 100 / span)), 3),
+    }
+
+
 def health_report(records: list[Record], save: ChronicleSave) -> dict:
     active = [item for item in records if not item.deleted]
     sims = {item.id: item for item in active if item.kind == "sim"}

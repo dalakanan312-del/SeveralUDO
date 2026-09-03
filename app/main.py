@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.17")
+app = FastAPI(title="Decades Tracker", version="4.5.18")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1653,9 +1653,15 @@ def feature_page(request: Request, page: str):
         if page == "timeline" and save:
             requested_kinds = {value for value in request.query_params.getlist("kind") if value}
             start_year = int_or_none(request.query_params.get("start_year")); end_year = int_or_none(request.query_params.get("end_year"))
-            ctx.update(timeline_entries=insights.timeline(view_records, save, kinds=requested_kinds or None, start_year=start_year, end_year=end_year, query=request.query_params.get("q", "")),
+            timeline_entries=insights.timeline(view_records, save, kinds=requested_kinds or None, start_year=start_year, end_year=end_year, query=request.query_params.get("q", ""))
+            # A stable local anchor lets the visual map jump directly into the
+            # detailed ledger without a second lookup or client-side state.
+            for index, entry in enumerate(timeline_entries):
+                entry["anchor"] = f"timeline-entry-{index}"
+            ctx.update(timeline_entries=timeline_entries,
                        timeline_kinds=sorted({item.kind for item in view_records if item.global_day is not None}), selected_timeline_kinds=requested_kinds,
-                       timeline_start=start_year, timeline_end=end_year, timeline_query=request.query_params.get("q", ""),timeline_overview=insights.timeline_overview(view_records,save))
+                       timeline_start=start_year, timeline_end=end_year, timeline_query=request.query_params.get("q", ""),timeline_overview=insights.timeline_overview(view_records,save),
+                       timeline_visual=insights.timeline_visual(timeline_entries,save))
             records = []
         if page == "health" and save:
             ctx.update(
@@ -5139,11 +5145,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.17-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.18-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.17-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.18-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

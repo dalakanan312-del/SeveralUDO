@@ -78,7 +78,7 @@ if ($duplicates.Count -and -not $KeepDuplicateCopies) {
 }
 
 $lines = @(
-    "SeveralUDO Clock Sync 2.2.9 installation completed.",
+    "SeveralUDO Clock Sync 2.2.10 installation completed.",
     "Installed folder: $target",
     "Existing installation backup: $(if (Test-Path -LiteralPath $backupRoot) { $backupRoot } else { 'Not needed' })",
     "Private config: $(if (Test-Path -LiteralPath (Join-Path $target 'config.json')) { 'Present and preserved' } else { 'Missing - download a private kit from the tracker' })",
