@@ -62,6 +62,34 @@ def _story_day(item: Record) -> int | None:
     return int(item.global_day) if item.global_day is not None else None
 
 
+def _drama_scene_sentence(item: Record) -> str:
+    """Turn a saved card's exact choices into readable chronicle prose.
+
+    New Drama Deck records retain each step separately.  Older records only
+    have the combined body, which is still the exact card copy, so they get a
+    graceful fallback rather than reverting to a generic summary.
+    """
+    data = item.data or {}
+    title = str(data.get("card_title") or item.label or "A household decision").strip()
+    opening = str(data.get("opening") or "").strip()
+    branch_label = str(data.get("branch_label") or "").strip()
+    branch_beat = str(data.get("branch_beat") or "").strip()
+    ending_title = str(data.get("ending_title") or data.get("ending_label") or "").strip()
+    ending_text = str(data.get("ending_text") or "").strip()
+    if opening or branch_beat or ending_text:
+        parts = [f"In “{title},” {opening}" if opening else f"In “{title},” a household choice had to be made."]
+        if branch_label:
+            parts.append(f"The chosen response was “{branch_label}”" + (f": {branch_beat}" if branch_beat else "."))
+        elif branch_beat:
+            parts.append(branch_beat)
+        if ending_title or ending_text:
+            outcome = f"The consequence was “{ending_title}”" if ending_title else "The consequence was"
+            parts.append(outcome + (f": {ending_text}" if ending_text else "."))
+        return " ".join(parts)
+    body = str(data.get("body") or "").strip()
+    return f"In “{title},” {body}" if body else f"A Drama Deck scene, “{title},” was recorded."
+
+
 def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sims: list[Record],
                       events: list[Record]) -> tuple[str, str]:
     year_start = (year - save.start_year) * save.days_per_year + 1
@@ -164,8 +192,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
     if authored:
         sentences.append(f"The people of the save also left their own words in {_natural_list([item.label for item in authored])}.")
     if drama_scenes:
-        decisions = [f"{item.label} ({(item.data or {}).get('category') or 'drama'})" for item in drama_scenes]
-        sentences.append(f"The household's player-chosen story turned on {_natural_list(decisions)}; these scenes record decisions rather than automatic game changes.")
+        sentences.extend(_drama_scene_sentence(item) for item in drama_scenes)
 
     known_alive = 0
     for sim in sims:

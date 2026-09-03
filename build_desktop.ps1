@@ -27,5 +27,15 @@ if ($LASTEXITCODE -ne 0) { throw "Desktop build dependencies could not be instal
   --collect-all webview --collect-all pythonnet --collect-all clr_loader `
   desktop_launcher.py
 if ($LASTEXITCODE -ne 0) { throw "Desktop build failed." }
+$AppPayload = Join-Path $Root "dist\Decades Tracker\_internal\app"
+New-Item -ItemType Directory -Force -Path $AppPayload | Out-Null
+# PyInstaller records these assets correctly in its analysis graph, but some
+# Windows builds have produced an empty app payload directory during COLLECT.
+# Copying the runtime templates and static assets explicitly makes the native
+# bundle self-contained and prevents a blank local launch after installation.
+Copy-Item -LiteralPath "app\templates" -Destination (Join-Path $AppPayload "templates") -Recurse -Force
+Copy-Item -LiteralPath "app\static" -Destination (Join-Path $AppPayload "static") -Recurse -Force
+Copy-Item -LiteralPath "app\medieval_names.json" -Destination (Join-Path $AppPayload "medieval_names.json") -Force
+Copy-Item -LiteralPath "app\game_localization_fallbacks.json" -Destination (Join-Path $AppPayload "game_localization_fallbacks.json") -Force
 Copy-Item -LiteralPath "assets\README - Native Desktop.txt" -Destination "dist\Decades Tracker\START HERE - Decades Tracker.txt" -Force
 Write-Output (Join-Path $Root "dist\Decades Tracker\Decades Tracker.exe")

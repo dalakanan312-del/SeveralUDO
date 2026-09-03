@@ -53,15 +53,25 @@ class DramaDeckTests(unittest.TestCase):
                         f"{option['id']} should always offer at least twenty cards",
                     )
 
-    def test_recorded_scene_is_described_as_a_player_choice_in_storyline(self):
+    def test_recorded_scene_keeps_its_exact_decisions_in_storyline(self):
         save = self.save(1300)
         scene = Record(
             kind="drama_scene", label="Ada Test — A quiet alliance", global_day=1,
-            data={"category": "Secrets", "body": "A voluntary decision."},
+            data={
+                "card_title": "The sealed letter",
+                "opening": "Ada receives a letter that cannot be answered in public.",
+                "branch_label": "Confide in someone trusted",
+                "branch_beat": "A confidence is offered to a trusted ally.",
+                "ending_title": "A quiet alliance",
+                "ending_text": "Ada and a trusted ally keep the matter private.",
+            },
         )
         headline, paragraph = storyline._annual_paragraph(save, 1300, [scene], [], [])
         self.assertIn("chosen scene", headline)
-        self.assertIn("player-chosen story", paragraph)
+        self.assertIn("The sealed letter", paragraph)
+        self.assertIn("Confide in someone trusted", paragraph)
+        self.assertIn("Ada and a trusted ally keep the matter private", paragraph)
+        self.assertNotIn("player-chosen story", paragraph)
         self.assertIn("drama_scene", sync.SYNC_KINDS)
 
 
