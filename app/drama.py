@@ -544,12 +544,31 @@ def _scene_briefing(card: dict[str, Any], facts: dict[str, str]) -> tuple[dict[s
         "The household must balance a present need against relationships and consequences that may outlast the moment.",
         "Choose the outside person or pressure that makes this more than an ordinary household decision.",
     ))
-    sim, household = facts["sim"], facts["household"]
+    sim, household, counterpart = facts["sim"], facts["household"], facts["counterpart"]
     return (
-        {"label": "Who is involved", "text": f"{sim} is expected to make the first call, but the outcome will be felt across {household}. You may choose the other person or group already present in your save."},
+        {"label": "Cast", "text": f"{sim} must make the first call. {counterpart} is the person on the other side of this scene, and everyone at {household} will feel the result."},
+        {"label": "What is known", "text": f"The scene takes place in {household} during {facts['year']}. A response is needed now; leaving it unanswered will itself be noticed by {counterpart}."},
         {"label": "What is at stake", "text": stakes},
-        {"label": "What you decide", "text": unknown},
+        {"label": "Complication", "text": f"{unknown} The card does not force a hidden truth, so you can fit that detail to your existing save."},
     )
+
+
+def _branch_forecast(card: dict[str, Any], branch: dict[str, Any], facts: dict[str, str]) -> dict[str, str]:
+    """Give a player enough information to weigh a first decision fairly."""
+    branch_id = str(branch.get("id") or "").casefold()
+    quiet_ids = {"hide", "refuse", "decline", "private", "protect", "guard", "secrecy", "endure", "listen", "hold"}
+    sim, counterpart, household = facts["sim"], facts["counterpart"], facts["household"]
+    if branch_id in quiet_ids:
+        return {
+            "immediate": f"{sim} keeps the matter within {household} or answers {counterpart} with caution. The household gains time and control over who knows what.",
+            "benefit": "This protects privacy, avoids a public escalation, and lets the family gather more information before making a wider commitment.",
+            "risk": f"{counterpart} may read restraint as refusal. The practical problem remains, and a later answer may carry more emotional weight.",
+        }
+    return {
+        "immediate": f"{sim} gives {counterpart} a visible answer and makes the household's position clear. Other people can now respond to the decision.",
+        "benefit": "This can build trust, attract practical support, and prevent the issue from being controlled by rumor or silence.",
+        "risk": f"A public or direct response makes {household} accountable for the promise it creates; someone may object, expect more, or remember the choice later.",
+    }
 
 
 def deck_options(save: ChronicleSave) -> list[dict[str, Any]]:
@@ -608,7 +627,7 @@ def _find_ending(branch: dict[str, Any] | None, ending_id: str) -> dict[str, Any
     return next((ending for ending in (branch or {}).get("endings", ()) if ending["id"] == ending_id), None)
 
 
-def draw_state(save: ChronicleSave, deck_id: str, sim_id: str = "", household_id: str = "",
+def draw_state(save: ChronicleSave, deck_id: str, sim_id: str = "", household_id: str = "", counterpart_sim_id: str = "",
                card_id: str = "") -> dict[str, str]:
     cards = cards_for(save, deck_id)
     if not cards:
@@ -616,14 +635,14 @@ def draw_state(save: ChronicleSave, deck_id: str, sim_id: str = "", household_id
     card = next((item for item in cards if item["id"] == card_id), None) if card_id else None
     card = card or random.SystemRandom().choice(cards)
     return {"deck_id": deck_id, "card_id": card["id"], "sim_id": str(sim_id or ""),
-            "household_id": str(household_id or "")}
+            "household_id": str(household_id or ""), "counterpart_sim_id": str(counterpart_sim_id or "")}
 
 
 def choose_branch(save: ChronicleSave, state: dict[str, Any], branch_id: str) -> dict[str, str]:
     card = _find_card(save, str(state.get("card_id") or ""))
     if not _find_branch(card, branch_id):
         raise ValueError("That first decision is not available for this card.")
-    return {**{key: str(value or "") for key, value in state.items() if key in {"deck_id", "card_id", "sim_id", "household_id"}}, "branch_id": branch_id}
+    return {**{key: str(value or "") for key, value in state.items() if key in {"deck_id", "card_id", "sim_id", "household_id", "counterpart_sim_id"}}, "branch_id": branch_id}
 
 
 def choose_ending(save: ChronicleSave, state: dict[str, Any], ending_id: str) -> dict[str, str]:
@@ -631,7 +650,7 @@ def choose_ending(save: ChronicleSave, state: dict[str, Any], ending_id: str) ->
     branch = _find_branch(card, str(state.get("branch_id") or ""))
     if not _find_ending(branch, ending_id):
         raise ValueError("That conclusion is not available for this decision.")
-    return {**{key: str(value or "") for key, value in state.items() if key in {"deck_id", "card_id", "sim_id", "household_id", "branch_id"}}, "ending_id": ending_id}
+    return {**{key: str(value or "") for key, value in state.items() if key in {"deck_id", "card_id", "sim_id", "household_id", "counterpart_sim_id", "branch_id"}}, "ending_id": ending_id}
 
 
 def _text(value: str, facts: dict[str, str]) -> str:
@@ -652,24 +671,30 @@ def build_state(save: ChronicleSave, sims: list[Record], households: list[Record
     sim_by_id = {item.id: item for item in sims}
     household_by_id = {item.id: item for item in households}
     sim = sim_by_id.get(str(state.get("sim_id") or ""))
+    counterpart = sim_by_id.get(str(state.get("counterpart_sim_id") or ""))
+    if counterpart is sim:
+        counterpart = None
     household = household_by_id.get(str(state.get("household_id") or ""))
     if household is None and sim:
         household = household_by_id.get(str((sim.data or {}).get("current_household_id") or ""))
     facts = {
         "sim": sim.label if sim else "someone in the household",
+        "counterpart": counterpart.label if counterpart else "another Sim with a stake in the decision",
         "household": household.label if household else "the household",
         "year": str(historical_year(save)),
     }
     branch = _find_branch(card, str(state.get("branch_id") or ""))
     ending = _find_ending(branch, str(state.get("ending_id") or ""))
-    resolved_card = {**card, "opening": _text(card["opening"], facts)}
+    resolved_branches = tuple({**item, "beat": _text(item["beat"], facts), "forecast": _branch_forecast(card, item, facts)} for item in card["branches"])
+    resolved_card = {**card, "opening": _text(card["opening"], facts), "branches": resolved_branches}
+    resolved_branch = ({**branch, "beat": _text(branch["beat"], facts), "forecast": _branch_forecast(card, branch, facts)} if branch else None)
     return {
         "state": {key: str(value or "") for key, value in state.items()},
         "card": resolved_card,
         "briefing": _scene_briefing(resolved_card, facts),
-        "branch": ({**branch, "beat": _text(branch["beat"], facts)} if branch else None),
+        "branch": resolved_branch,
         "ending": ({**ending, "text": _text(ending["text"], facts)} if ending else None),
-        "sim": sim, "household": household, "facts": facts,
+        "sim": sim, "counterpart": counterpart, "household": household, "facts": facts,
     }
 
 
@@ -691,6 +716,8 @@ def scene_data(resolved: dict[str, Any]) -> dict[str, Any]:
         "ending_title": ending["title"], "ending_text": ending["text"],
         "sim_id": resolved["sim"].id if resolved["sim"] else None,
         "sim_name": resolved["sim"].label if resolved["sim"] else "",
+        "counterpart_sim_id": resolved["counterpart"].id if resolved["counterpart"] else None,
+        "counterpart_name": resolved["counterpart"].label if resolved["counterpart"] else "",
         "household_id": resolved["household"].id if resolved["household"] else None,
         "household_name": resolved["household"].label if resolved["household"] else "",
         "body": " ".join(piece for piece in pieces if piece),

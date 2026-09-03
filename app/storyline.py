@@ -71,13 +71,15 @@ def _drama_scene_sentence(item: Record) -> str:
     """
     data = item.data or {}
     title = str(data.get("card_title") or item.label or "A household decision").strip()
+    counterpart = str(data.get("counterpart_name") or "").strip()
     opening = str(data.get("opening") or "").strip()
     branch_label = str(data.get("branch_label") or "").strip()
     branch_beat = str(data.get("branch_beat") or "").strip()
     ending_title = str(data.get("ending_title") or data.get("ending_label") or "").strip()
     ending_text = str(data.get("ending_text") or "").strip()
     if opening or branch_beat or ending_text:
-        parts = [f"In “{title},” {opening}" if opening else f"In “{title},” a household choice had to be made."]
+        cast = f"with {counterpart} at the center, " if counterpart else ""
+        parts = [f"In “{title},” {cast}{opening}" if opening else f"In “{title},” {cast}a household choice had to be made."]
         if branch_label:
             parts.append(f"The chosen response was “{branch_label}”" + (f": {branch_beat}" if branch_beat else "."))
         elif branch_beat:

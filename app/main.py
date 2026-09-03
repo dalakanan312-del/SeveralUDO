@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.21")
+app = FastAPI(title="Decades Tracker", version="4.5.22")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -2312,16 +2312,22 @@ def _drama_people(session, save: ChronicleSave) -> tuple[list[Record], list[Reco
 
 
 @app.post("/drama/draw")
-def draw_drama_card(request: Request, deck_id: str = Form("auto"), sim_id: str = Form(""), household_id: str = Form("")):
+def draw_drama_card(request: Request, deck_id: str = Form("auto"), sim_id: str = Form(""), household_id: str = Form(""), counterpart_sim_id: str = Form("")):
     with db() as session:
         ctx = context(request, session); save = ctx.get("save")
         if not save: raise HTTPException(400, "Open a save first.")
         sims, households = _drama_people(session, save)
+        sims = sorted(sims, key=lambda item: item.label.casefold())
         valid_sim_ids = {item.id for item in sims}; valid_household_ids = {item.id for item in households}
         if sim_id and sim_id not in valid_sim_ids: raise HTTPException(404, "That Sim is not in this save.")
+        if counterpart_sim_id and counterpart_sim_id not in valid_sim_ids: raise HTTPException(404, "That counterpart Sim is not in this save.")
+        if sim_id and counterpart_sim_id and sim_id == counterpart_sim_id: raise HTTPException(400, "Choose two different Sims for a detailed scene.")
         if household_id and household_id not in valid_household_ids: raise HTTPException(404, "That household is not in this save.")
+        if not sim_id and sims: sim_id = sims[0].id
+        if not counterpart_sim_id:
+            counterpart_sim_id = next((item.id for item in sims if item.id != sim_id), "")
         try:
-            request.session["drama_state"] = drama.draw_state(save, deck_id, sim_id, household_id)
+            request.session["drama_state"] = drama.draw_state(save, deck_id, sim_id, household_id, counterpart_sim_id)
         except ValueError as error:
             raise HTTPException(400, str(error))
         request.session["drama_notice"] = "A new scene is ready. Your choices will not change any records unless you save the ending."
@@ -5145,11 +5151,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.21-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.5.22-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.21-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.22-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

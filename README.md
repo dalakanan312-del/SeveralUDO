@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.22` turns the Drama Deck into a genuinely informed decision tree. Each draw has a named counterpart Sim (auto-selected or chosen by the player), a concrete cast and time pressure, and a forecast for each first path: immediate effect, benefit, and risk. The selected counterpart is retained with the exact card outcome in Storyline.
+
 `4.5.21` gives every Drama Deck draw a practical scene briefing: who is affected, what is at stake, and the missing context you should decide from your own save. Response cards now state their immediate trade-off, and consequence cards show their exact recorded text before you choose.
 
 `4.5.20` carries every saved Drama Deck scene into Storyline as the actual situation, selected response, and chosen consequence. Earlier saved scenes retain their complete saved card body instead of being reduced to a generic player-choice note.

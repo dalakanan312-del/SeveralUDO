@@ -11,5 +11,7 @@
 .drama-choice button{min-height:132px}
 .drama-choice small{color:var(--muted);font-size:.83rem;line-height:1.45}
 .drama-choice small b{color:var(--ink)}
+.drama-choice .drama-forecast{padding-top:8px;border-top:1px solid var(--line);font-size:.76rem;line-height:1.42}
+.drama-selected-detail{margin-top:10px!important;font-size:.83rem;line-height:1.45}
 .drama-choice span{color:var(--accent);font-weight:750}
 @media(max-width:720px){.drama-briefing dl,.drama-choice-grid{grid-template-columns:1fr}}
