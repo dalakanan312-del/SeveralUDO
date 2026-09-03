@@ -103,6 +103,30 @@ class ClockModSourceTests(unittest.TestCase):
         self.assertEqual(result["inventory_items"][0]["definition_id"], "44001")
         self.assertEqual(result["inventory_items"][0]["name"], "Family Portrait")
 
+    def test_relationship_sentiments_and_satisfaction_are_reported_per_sim(self):
+        module = self.load_module()
+
+        class relationshipSentiment_CloseBond:
+            guid64 = 91234
+
+        spouse = types.SimpleNamespace(sim_id=33, first_name="Robin", last_name="Doe", gender="Male", age="Adult")
+        relationship_tracker = types.SimpleNamespace(
+            get_target_sim_infos=lambda: (spouse,),
+            get_all_bits=lambda target: (),
+            get_friendship_score=lambda target: 82,
+            get_romance_score=lambda target: 91,
+            get_sentiments_for_sim=lambda target: (relationshipSentiment_CloseBond,),
+            get_relationship_satisfaction=lambda target: 64.25,
+        )
+        sim = types.SimpleNamespace(relationship_tracker=relationship_tracker)
+
+        result = module._extended_snapshot(sim, None)
+        detail = result["relationships"][0]
+        self.assertTrue(detail["relationship_sentiment_scan_supported"])
+        self.assertEqual(detail["relationship_sentiments"], [{"name": "Close Bond", "tuning_id": "91234"}])
+        self.assertEqual(detail["relationship_satisfaction"], 64.2)
+        self.assertEqual(detail["relationship_satisfaction_source"], "reported by the game")
+
     def test_guarded_v4_snapshot_reports_selected_life_history_modules(self):
         module = self.load_module()
 
@@ -178,7 +202,7 @@ class ClockModSourceTests(unittest.TestCase):
         )
         result = module._extended_snapshot(sim, None)
         self.assertEqual(result["telemetry_version"], 6)
-        self.assertEqual(result["clock_sync_version"], "2.2.8")
+        self.assertEqual(result["clock_sync_version"], "2.2.9")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)

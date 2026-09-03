@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.5.16` makes hosted sync forward-compatible with the desktop tracker’s Clock Sync journal. Game-history, Clock Sync diagnostic and protocol records, and illness-detection dismissals now reach online saves instead of blocking the entire sync queue. Maternal delivery checks are per baby delivered, and occult Sims use the original SeveralUDO aging chart except where a supplied source explicitly replaces ordinary aging (Servo).
+`4.5.16` makes hosted sync forward-compatible with the desktop tracker’s Clock Sync journal. Game-history, Clock Sync diagnostic and protocol records, and illness-detection dismissals now reach online saves instead of blocking the entire sync queue. Maternal delivery checks are per baby delivered, and occult Sims use the original SeveralUDO aging chart except where a supplied source explicitly replaces ordinary aging (Servo). Clock Sync 2.2.9 also records each Sim’s directional relationship sentiments and native satisfaction where the game exposes them, with a clearly labeled friendship/romance estimate only when it does not.
 
 `4.5.15` corrects household-wide witch trials: every eligible Spellcaster receives an individual accusation roll, and older completed trial rolls are repaired once without duplicating existing accusations.
 

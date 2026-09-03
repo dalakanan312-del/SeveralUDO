@@ -91,6 +91,28 @@ def relationship_is_partner(value: Record | dict) -> bool:
     return False
 
 
+def game_relationship_detail(first: Record, second: Record) -> list[dict]:
+    """Return each Sim's most-recent game view of a tracked relationship.
+
+    Game sentiments can be directional, so the relationship profile keeps both
+    views rather than flattening them into one ambiguous list.  Missing Clock
+    Sync data is simply omitted; manual relationship records remain complete.
+    """
+    rows = []
+    for source, other in ((first, second), (second, first)):
+        source_data = source.data or {}
+        other_game_id = str((other.data or {}).get("game_sim_id") or "").strip()
+        if not other_game_id:
+            continue
+        detail = next((
+            item for item in (source_data.get("game_relationships") or [])
+            if isinstance(item, dict) and str(item.get("other_game_sim_id") or "").strip() == other_game_id
+        ), None)
+        if detail is not None:
+            rows.append({"source": source, "other": other, "detail": detail})
+    return rows
+
+
 def family_view(records: list[Record], focus_id: str | None, mode: str = "family", depth: int = 3) -> dict:
     sims = {item.id: item for item in records if item.kind == "sim" and not item.deleted and bool((item.data or {}).get("include_in_family_tree",True))}
     relationships = [item for item in records if item.kind == "relationship" and not item.deleted]

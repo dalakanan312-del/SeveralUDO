@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.8 reliable, queued life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.9 reliable, queued life-history telemetry for The Sims 4."""
 
 import base64
 import hashlib
@@ -12,7 +12,7 @@ import time
 from . import compat_201 as _compat
 
 
-VERSION = "2.2.8"
+VERSION = "2.2.9"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -527,6 +527,74 @@ def _scandal_signals(bits):
     return signals
 
 
+def _relationship_object(tracker, other_id, target):
+    """Best-effort access to the game relationship object for one Sim pair."""
+    for name in ("get_relationship", "get_relationship_data", "get_relationship_to"):
+        for argument in (other_id, target):
+            value = _safe_call(tracker, name, argument)
+            if value is not None:
+                return value
+    return None
+
+
+def _relationship_sentiments(tracker, relationship, other_id, target):
+    """Return stable, human-readable relationship sentiments when exposed."""
+    values = []
+    supported = False
+    for owner in (tracker, relationship):
+        if owner is None:
+            continue
+        methods = ("get_sentiments", "get_sentiments_for_sim", "get_sentiment_tracks", "get_sentiment_tracks_for_sim")
+        for name in methods:
+            for argument in ((other_id, target) if owner is tracker else (None,)):
+                value = _safe_call(owner, name) if argument is None else _safe_call(owner, name, argument)
+                if value is not None:
+                    supported = True
+                    values.extend(_as_values(value))
+                    break
+        for name in ("sentiments", "active_sentiments", "sentiment_tracks"):
+            value = _safe_value(owner, (name,), None)
+            if value is not None:
+                supported = True
+                values.extend(_as_values(value))
+    rows = []
+    seen = set()
+    for value in values:
+        tuning = _safe_value(value, ("sentiment", "sentiment_type", "tuning", "relationship_bit"), None) or value
+        label = _humanize(tuning, (
+            "relationshipSentiment_", "relationship_sentiment_", "sentiment_",
+        ))
+        key = _tuning_id(tuning) or (label or "").casefold()
+        if label and key and key not in seen:
+            seen.add(key)
+            rows.append({"name": label, "tuning_id": _tuning_id(tuning)})
+    return sorted(rows, key=lambda row: row["name"].casefold()), supported
+
+
+def _relationship_satisfaction(tracker, relationship, other_id, target, friendship, romance):
+    """Read native satisfaction when available, otherwise label a clear estimate."""
+    native = None
+    for owner in (tracker, relationship):
+        if owner is None:
+            continue
+        for name in ("get_relationship_satisfaction", "get_satisfaction_score", "get_couple_satisfaction"):
+            for argument in ((other_id, target) if owner is tracker else (None,)):
+                value = _safe_call(owner, name) if argument is None else _safe_call(owner, name, argument)
+                try:
+                    native = round(float(value), 1) if value is not None else None
+                except Exception:
+                    native = _number(value, ("value", "score", "get_value"))
+                if native is not None:
+                    return native, "reported by the game"
+        native = _number(owner, ("relationship_satisfaction", "satisfaction_score", "satisfaction"))
+        if native is not None:
+            return native, "reported by the game"
+    scores = [value for value in (friendship, romance) if value is not None]
+    if not scores:
+        return None, "not exposed"
+    return round(sum(scores) / len(scores), 1), "estimated from friendship and romance"
+
+
 def _relationship_details(sim_info, existing):
     tracker = getattr(sim_info, "relationship_tracker", None)
     if tracker is None:
@@ -557,6 +625,7 @@ def _relationship_details(sim_info, existing):
                 bit_details.append({"name": label, "tuning_id": _tuning_id(value)})
         row = by_id.get(other_id, {})
         category = _relationship_category(bit_labels, row.get("category", "Relationship"))
+        relationship = _relationship_object(tracker, other_id, target)
         friendship = None
         romance = None
         for name, field in (("get_friendship_score", "friendship"), ("get_romance_score", "romance")):
@@ -569,6 +638,10 @@ def _relationship_details(sim_info, existing):
                 friendship = value
             else:
                 romance = value
+        sentiments, sentiment_supported = _relationship_sentiments(tracker, relationship, other_id, target)
+        satisfaction, satisfaction_source = _relationship_satisfaction(
+            tracker, relationship, other_id, target, friendship, romance,
+        )
         by_id[other_id] = dict(row, **reference)
         by_id[other_id].update({
             "other_game_sim_id": other_id,
@@ -577,6 +650,10 @@ def _relationship_details(sim_info, existing):
             "relationship_bit_details": bit_details,
             "friendship_score": friendship,
             "romance_score": romance,
+            "relationship_sentiments": sentiments,
+            "relationship_sentiment_scan_supported": sentiment_supported,
+            "relationship_satisfaction": satisfaction,
+            "relationship_satisfaction_source": satisfaction_source,
             "scandal_signals": _scandal_signals(bit_labels),
         })
     rows = sorted(by_id.values(), key=lambda row: (str(row.get("category") or ""), str(row.get("name") or "")))
@@ -1647,7 +1724,16 @@ def _send_payload_v22(config, payload):
 def _report_payload_v22(config=None):
     clock = _live_game_clock()
     if clock is None:
-        raise RuntimeError("The Sims 4 time service is not ready yet.")
+        # Keep the public/manual report command compatible with the original
+        # core helpers.  The live poller never reaches this branch while the
+        # time service is unavailable, but the command can be called by a
+        # diagnostic tool that supplies those helpers directly.
+        try:
+            game_day = int(_core._absolute_game_day())
+            game_hour, game_minute = _core._game_clock()
+            clock = (game_day, int(game_hour), int(game_minute), None)
+        except Exception:
+            raise RuntimeError("The Sims 4 time service is not ready yet.")
     game_day, game_hour, game_minute, _now = clock
     config = config or _core._load_config() or {}
     household_name, members, complete, household_rows = _played_population_snapshot()
@@ -1788,6 +1874,13 @@ _core._poll_clock = _poll_clock_v22
 # that runs at every in-game interval.  This is intentionally best-effort;
 # failure to schedule must never interrupt the rest of the game's mod loading.
 try:
-    _core._start_clock_sync()
+    restart_clock = getattr(_core, "_start_clock_sync", None)
+    if callable(restart_clock):
+        restart_clock()
 except Exception as error:
-    _core.LOGGER.exception("Clock Sync 2.2 could not refresh its polling alarm: {}", error)
+    logger = getattr(_core, "LOGGER", None)
+    if logger is not None:
+        try:
+            logger.exception("Clock Sync 2.2 could not refresh its polling alarm: {}", error)
+        except Exception:
+            pass

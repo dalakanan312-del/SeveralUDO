@@ -2634,8 +2634,9 @@ def relationship_profile(request: Request, relationship_id: str):
         sim_by_id={item.id:item for item in sims}
         partner_ids=((relationship.data or {}).get("partner1_id"),(relationship.data or {}).get("partner2_id"))
         partners=[sim_by_id[item_id] for item_id in partner_ids if item_id in sim_by_id]
+        game_relationship_state = insights.game_relationship_detail(partners[0], partners[1]) if len(partners) == 2 else []
         relationship_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==relationship.id).order_by(Portrait.created_at)))
-        ctx=context(request,session,relationship=relationship,all_sims=sims,partners=partners,is_partner_relationship=insights.relationship_is_partner(relationship),photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),relationship_portraits=relationship_portraits,portrait_status=portraits.provider_status(),portrait_notice=request.session.pop("portrait_notice",None),relationship_notice=request.session.pop("relationship_notice",None),title=relationship.label,page="relationships")
+        ctx=context(request,session,relationship=relationship,all_sims=sims,partners=partners,game_relationship_state=game_relationship_state,is_partner_relationship=insights.relationship_is_partner(relationship),photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),relationship_portraits=relationship_portraits,portrait_status=portraits.provider_status(),portrait_notice=request.session.pop("portrait_notice",None),relationship_notice=request.session.pop("relationship_notice",None),title=relationship.label,page="relationships")
         return templates.TemplateResponse(request,"relationship_profile.html",ctx)
 
 
