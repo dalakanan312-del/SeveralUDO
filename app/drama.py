@@ -577,12 +577,6 @@ OBJECTIVES = {
     "advance": {"title": "Pursue the opportunity", "description": "Take a meaningful chance while deciding which risks are worth carrying.", "meters": {"connection": 1, "leverage": 3, "security": 1, "tension": 1}},
 }
 
-TACTICS = {
-    "appeal": {"title": "Appeal to the bond", "description": "Name what the relationship means before discussing terms. It asks for trust, not certainty.", "delta": {"connection": 2, "leverage": -1, "tension": -1}},
-    "bargain": {"title": "Make a careful bargain", "description": "Offer a clear exchange with limits. It can create leverage, but someone must carry the cost.", "delta": {"leverage": 2, "security": -1, "tension": 1}},
-    "shelter": {"title": "Shelter the household", "description": "Protect the people and resources closest to home before widening the circle of responsibility.", "delta": {"security": 2, "connection": -1, "tension": 0}},
-}
-
 TWIST_PACKS = {
     "magic": (
         ("trace", "A trace of magic", "The solution leaves evidence behind. Someone observant could connect it to the household.", {"tension": 1}),
@@ -673,6 +667,52 @@ def _twist_for(card: dict[str, Any], twist_id: str) -> dict[str, Any] | None:
 def _branch_delta(branch: dict[str, Any]) -> dict[str, int]:
     quiet_ids = {"hide", "refuse", "decline", "private", "protect", "guard", "secrecy", "endure", "listen", "hold"}
     return {"security": 1, "connection": -1} if str(branch.get("id") or "").casefold() in quiet_ids else {"leverage": 1, "tension": 1}
+
+
+def _tactic_delta(card: dict[str, Any], branch: dict[str, Any], ending: dict[str, Any], ordinal: int) -> dict[str, int]:
+    """Give each concrete scene move a distinct, readable game-board trade-off."""
+    tags = {str(value).casefold() for value in (ending.get("tags") or ())}
+    category = str(card.get("category") or "").casefold()
+    if tags & {"trust", "relationship", "reconciliation", "community", "alliance", "support", "mercy", "guidance", "balance"}:
+        return {"connection": 2, "tension": -1}
+    if tags & {"survival", "household", "security", "caution", "preparedness", "secrecy", "continuity", "closure"}:
+        return {"security": 2, "tension": -1}
+    if tags & {"ambition", "career", "authority", "court", "negotiation", "reform", "opportunity", "migration"}:
+        return {"leverage": 2, "tension": 1}
+    if category in {"wizarding world", "four nations", "westeros", "magic"}:
+        return {"leverage": 1, "connection": 1, "tension": 1}
+    return {"connection": 1, "security": 1} if ordinal == 0 else {"leverage": 1, "tension": -1}
+
+
+def _tactics_for(card: dict[str, Any], branch: dict[str, Any] | None) -> tuple[dict[str, Any], ...]:
+    """Turn a card's own possible endings into its unique tactical moves.
+
+    Every scene therefore carries choices written for its subject rather than
+    a global, repeated set of generic buttons.  The move commits the scene's
+    immediate direction; the player still selects the precise chronicle
+    conclusion only after the resolution roll.
+    """
+    if not card or not branch:
+        return ()
+    result = []
+    for ordinal, ending in enumerate(branch.get("endings") or ()):
+        action = str(ending.get("label") or "Carry the plan forward")
+        outcome = str(ending.get("title") or action)
+        result.append({
+            "id": f"{branch.get('id', 'move')}--{ending.get('id', ordinal)}",
+            "title": action,
+            "description": (
+                f"Make {outcome.casefold()} the immediate aim in “{card.get('title', 'this scene')}”. "
+                f"{ending.get('text', '')}"
+            ),
+            "delta": _tactic_delta(card, branch, ending, ordinal),
+            "ending_id": str(ending.get("id") or ""),
+        })
+    return tuple(result)
+
+
+def _find_tactic(card: dict[str, Any] | None, branch: dict[str, Any] | None, tactic_id: str) -> dict[str, Any] | None:
+    return next((item for item in _tactics_for(card or {}, branch) if item["id"] == tactic_id), None)
 
 
 def _resolution(meters: dict[str, int], roll: int) -> dict[str, Any]:
@@ -787,8 +827,9 @@ def draw_twist(save: ChronicleSave, state: dict[str, Any]) -> dict[str, Any]:
 
 def choose_tactic(save: ChronicleSave, state: dict[str, Any], tactic_id: str) -> dict[str, Any]:
     card = _find_card(save, str((state or {}).get("card_id") or ""))
+    branch = _find_branch(card, str((state or {}).get("branch_id") or ""))
     twist = _twist_for(card, str((state or {}).get("twist_id") or "")) if card else None
-    tactic = TACTICS.get(tactic_id)
+    tactic = _find_tactic(card, branch, tactic_id)
     if not twist or not tactic:
         raise ValueError("Draw the complication before choosing a tactic.")
     if str((state or {}).get("tactic_id") or ""):
@@ -802,7 +843,9 @@ def choose_tactic(save: ChronicleSave, state: dict[str, Any], tactic_id: str) ->
 
 
 def resolve_scene(save: ChronicleSave, state: dict[str, Any]) -> dict[str, Any]:
-    if not TACTICS.get(str((state or {}).get("tactic_id") or "")):
+    card = _find_card(save, str((state or {}).get("card_id") or ""))
+    branch = _find_branch(card, str((state or {}).get("branch_id") or ""))
+    if not _find_tactic(card, branch, str((state or {}).get("tactic_id") or "")):
         raise ValueError("Choose a tactic before resolving the scene.")
     result = _state_shell(state)
     if result["resolution_roll"] is None:
@@ -861,7 +904,11 @@ def build_state(save: ChronicleSave, sims: list[Record], households: list[Record
     resolved_branch = ({**branch, "beat": _text(branch["beat"], facts), "forecast": _branch_forecast(card, branch, facts)} if branch else None)
     normalized = _state_shell(state)
     twist = _twist_for(card, str(normalized.get("twist_id") or ""))
-    tactic = TACTICS.get(str(normalized.get("tactic_id") or ""))
+    tactics = _tactics_for(card, branch)
+    tactic = _find_tactic(card, branch, str(normalized.get("tactic_id") or ""))
+    resolved_tactics = tuple({**item, "description": _text(item["description"], facts)} for item in tactics)
+    if tactic:
+        tactic = {**tactic, "description": _text(tactic["description"], facts)}
     resolution = _resolution(normalized["meters"], normalized["resolution_roll"]) if normalized["resolution_roll"] is not None else None
     if resolution and normalized.get("resolution_grade") in RESOLUTION_GRADES:
         resolution = {**resolution, "id": str(normalized["resolution_grade"]), **RESOLUTION_GRADES[str(normalized["resolution_grade"])]}
@@ -875,7 +922,8 @@ def build_state(save: ChronicleSave, sims: list[Record], households: list[Record
         "sim": sim, "counterpart": counterpart, "household": household, "facts": facts,
         "game": {
             "objective": {"id": normalized["objective"], "title": objective["title"], "description": objective["description"]},
-            "meters": normalized["meters"], "twist": twist, "tactic": tactic, "resolution": resolution,
+            "meters": normalized["meters"], "twist": twist, "tactics": resolved_tactics,
+            "tactic": tactic, "resolution": resolution,
         },
     }
 

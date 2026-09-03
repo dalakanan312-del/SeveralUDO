@@ -29,8 +29,8 @@ class DramaDeckTests(unittest.TestCase):
         self.assertEqual(set(state["meters"]), {"connection", "leverage", "security", "tension"})
         state = drama.draw_twist(save, state)
         self.assertTrue(state["twist_id"])
-        state = drama.choose_tactic(save, state, "appeal")
-        self.assertEqual(state["tactic_id"], "appeal")
+        state = drama.choose_tactic(save, state, "speak--community")
+        self.assertEqual(state["tactic_id"], "speak--community")
         state = drama.resolve_scene(save, state)
         self.assertIn(state["resolution_grade"], {"triumph", "mixed", "setback"})
         self.assertIn(state["resolution_roll"], range(1, 7))
@@ -41,7 +41,8 @@ class DramaDeckTests(unittest.TestCase):
         self.assertIn("Bea Test", resolved["briefing"][0]["text"])
         self.assertIn("Bea Test", resolved["card"]["branches"][0]["forecast"]["immediate"])
         self.assertTrue(resolved["game"]["twist"])
-        self.assertEqual(resolved["game"]["tactic"]["title"], "Appeal to the bond")
+        self.assertEqual(resolved["game"]["tactic"]["title"], "Build a coalition")
+        self.assertEqual([item["title"] for item in resolved["game"]["tactics"]], ["Build a coalition", "Accept the social cost"])
         self.assertTrue(resolved["game"]["resolution"])
         payload = drama.scene_data(resolved)
         self.assertEqual(payload["sim_id"], ada.id)
@@ -51,7 +52,7 @@ class DramaDeckTests(unittest.TestCase):
         self.assertEqual(payload["mechanical_effects"], "None — this scene is a voluntary chronicle decision.")
         self.assertIn("Ada Test", payload["body"])
         self.assertTrue(payload["twist_title"])
-        self.assertEqual(payload["tactic_title"], "Appeal to the bond")
+        self.assertEqual(payload["tactic_title"], "Build a coalition")
         self.assertIn(payload["resolution_title"], {"A decisive resolution", "A costly compromise", "A difficult setback"})
 
     def test_a_scene_cannot_skip_its_minigame_acts(self):
@@ -61,11 +62,11 @@ class DramaDeckTests(unittest.TestCase):
             drama.draw_twist(save, state)
         state = drama.choose_branch(save, state, "speak")
         with self.assertRaises(ValueError):
-            drama.choose_tactic(save, state, "appeal")
+            drama.choose_tactic(save, state, "speak--community")
         state = drama.draw_twist(save, state)
         with self.assertRaises(ValueError):
             drama.resolve_scene(save, state)
-        state = drama.choose_tactic(save, state, "appeal")
+        state = drama.choose_tactic(save, state, "speak--community")
         with self.assertRaises(ValueError):
             drama.choose_ending(save, state, "community")
 

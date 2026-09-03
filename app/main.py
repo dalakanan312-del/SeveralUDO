@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.0")
+app = FastAPI(title="Decades Tracker", version="4.6.1")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -2133,7 +2133,6 @@ def feature_page(request: Request, page: str):
             ctx.update(
                 drama_decks=drama.deck_options(save),
                 drama_objectives=drama.OBJECTIVES,
-                drama_tactics=drama.TACTICS,
                 drama_state=drama_state,
                 drama_notice=request.session.pop("drama_notice", None),
                 all_sims=drama_sims,
@@ -5189,11 +5188,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.6.0-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.6.1-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.0-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.1-Setup.exe"',"Cache-Control":"no-store",
     })
 
 
