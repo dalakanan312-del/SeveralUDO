@@ -1340,10 +1340,58 @@ def _canonical_checksum(value):
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _services_api():
+    """Get the live game services module without trusting legacy globals."""
+    service_api = getattr(_core, "services", None)
+    if service_api is not None:
+        return service_api
+    try:
+        import services
+        return services
+    except Exception:
+        return None
+
+
+def _live_sim_now():
+    time_service = _safe_call(_services_api(), "time_service")
+    return _safe_value(time_service, ("sim_now",), None)
+
+
+def _live_game_clock():
+    """Return the current game day and time, or ``None`` while the game loads."""
+    now = _live_sim_now()
+    if now is None:
+        return None
+    try:
+        game_day = _safe_call(now, "absolute_days")
+        if game_day is not None:
+            game_day = int(game_day)
+        else:
+            text = str(now)
+            day_match = re.search(r"day:(\d+)", text)
+            week_match = re.search(r"week:(\d+)", text)
+            if not day_match:
+                return None
+            game_day = int(day_match.group(1)) + (int(week_match.group(1)) * 7 if week_match else 0)
+        hour = _safe_call(now, "hour")
+        minute = _safe_call(now, "minute")
+        if hour is None or minute is None:
+            text = str(now)
+            hour_match = re.search(r"hour:(\d+)", text)
+            minute_match = re.search(r"minute:(\d+)", text)
+            hour = int(hour_match.group(1)) if hour_match else 0
+            minute = int(minute_match.group(1)) if minute_match else 0
+        return game_day, max(0, min(23, int(hour))), max(0, min(59, int(minute))), now
+    except Exception:
+        return None
+
+
 def _game_time_details():
     details = {"game_second": 0, "game_ticks": None}
     try:
-        sim_now = _core.services.time_service().sim_now
+        sim_now = _live_sim_now()
+        if sim_now is None:
+            return details
         second = _safe_value(sim_now, ("second",), None)
         ticks = _safe_value(sim_now, ("absolute_ticks", "ticks"), None)
         if second is not None:
@@ -1360,7 +1408,7 @@ def _save_identity(config=None):
     slot_id = None
     slot_name = None
     try:
-        persistence = _safe_call(_core.services, "get_persistence_service")
+        persistence = _safe_call(_services_api(), "get_persistence_service")
         slot_proto = _safe_value(persistence, (
             "save_slot_proto", "current_save_slot_proto", "save_slot_data",
         ), None)
@@ -1446,11 +1494,12 @@ def _snapshot_member(sim_info, household, active_household):
 
 
 def _played_households():
-    active = _safe_call(_core.services, "active_household")
+    service_api = _services_api()
+    active = _safe_call(service_api, "active_household")
     households = []
     if active is not None:
         households.append(active)
-    manager = _safe_call(_core.services, "household_manager")
+    manager = _safe_call(service_api, "household_manager")
     manager_supported = False
     candidates = _as_values(manager, mapping_keys=False) if manager is not None else ()
     if manager is not None and not candidates:
@@ -1596,8 +1645,10 @@ def _send_payload_v22(config, payload):
 
 
 def _report_payload_v22(config=None):
-    game_day = _core._absolute_game_day()
-    game_hour, game_minute = _core._game_clock()
+    clock = _live_game_clock()
+    if clock is None:
+        raise RuntimeError("The Sims 4 time service is not ready yet.")
+    game_day, game_hour, game_minute, _now = clock
     config = config or _core._load_config() or {}
     household_name, members, complete, household_rows = _played_population_snapshot()
     report = _protocol_report(game_day, game_hour, game_minute, household_name, members,
@@ -1633,7 +1684,7 @@ def _active_life_marker():
     catch a newly detected pregnancy, trimester/labour change, and expected
     multiple count without turning a routine clock heartbeat into a full scan.
     """
-    household = _safe_call(_core.services, "active_household")
+    household = _safe_call(_services_api(), "active_household")
     rows = []
     for sim_info in _household_members(household):
         try:
@@ -1676,8 +1727,10 @@ def _poll_clock_v22(_alarm_handle=None):
         config = _core._load_config()
         if config is None or _core._send_in_progress:
             return
-        game_day = _core._absolute_game_day()
-        game_hour, game_minute = _core._game_clock()
+        clock = _live_game_clock()
+        if clock is None:
+            return
+        game_day, game_hour, game_minute, _now = clock
         active_name, active_members = _previous_household_snapshot()
         life_marker = _active_life_marker()
         life_changed = life_marker != _last_active_life_marker
