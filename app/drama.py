@@ -571,6 +571,118 @@ def _branch_forecast(card: dict[str, Any], branch: dict[str, Any], facts: dict[s
     }
 
 
+OBJECTIVES = {
+    "repair": {"title": "Repair the bond", "description": "Keep a relationship from breaking while still protecting the household.", "meters": {"connection": 3, "leverage": 1, "security": 2, "tension": 1}},
+    "protect": {"title": "Protect the household", "description": "Keep the household safe, solvent, and in control of its own story.", "meters": {"connection": 1, "leverage": 1, "security": 3, "tension": 1}},
+    "advance": {"title": "Pursue the opportunity", "description": "Take a meaningful chance while deciding which risks are worth carrying.", "meters": {"connection": 1, "leverage": 3, "security": 1, "tension": 1}},
+}
+
+TACTICS = {
+    "appeal": {"title": "Appeal to the bond", "description": "Name what the relationship means before discussing terms. It asks for trust, not certainty.", "delta": {"connection": 2, "leverage": -1, "tension": -1}},
+    "bargain": {"title": "Make a careful bargain", "description": "Offer a clear exchange with limits. It can create leverage, but someone must carry the cost.", "delta": {"leverage": 2, "security": -1, "tension": 1}},
+    "shelter": {"title": "Shelter the household", "description": "Protect the people and resources closest to home before widening the circle of responsibility.", "delta": {"security": 2, "connection": -1, "tension": 0}},
+}
+
+TWIST_PACKS = {
+    "magic": (
+        ("trace", "A trace of magic", "The solution leaves evidence behind. Someone observant could connect it to the household.", {"tension": 1}),
+        ("old-spell", "An old spell answers", "A past promise, charm, or magical custom complicates the obvious response.", {"connection": 1, "tension": 1}),
+        ("wrong-witness", "The wrong witness", "A person who should not know about the matter arrives at exactly the wrong moment.", {"leverage": -1, "tension": 1}),
+    ),
+    "survival": (
+        ("short-supply", "Supplies run short", "The resource everyone assumed would last has less time left than expected.", {"security": -1, "tension": 1}),
+        ("weather-turns", "The weather turns", "A change in the weather narrows the safe options and makes delay more costly.", {"tension": 1}),
+        ("shared-need", "Another household asks", "Someone else needs the same scarce thing, turning a private choice into a public one.", {"connection": 1, "security": -1}),
+    ),
+    "court": (
+        ("watchful-eyes", "Watchful eyes", "Someone with influence has learned enough to form an opinion, even if they say nothing aloud.", {"tension": 1}),
+        ("rival-offer", "A rival offer", "A competing household offers an easier path with a price hidden in the courtesy.", {"leverage": 1, "connection": -1}),
+        ("old-oath", "The old oath", "An earlier promise becomes relevant before the household has agreed what it owes now.", {"security": -1, "tension": 1}),
+    ),
+    "default": (
+        ("unexpected-witness", "An unexpected witness", "A person who knows part of the history overhears enough to change the balance of the scene.", {"tension": 1}),
+        ("time-runs-short", "Time runs short", "A practical deadline arrives early, so the household cannot wait for perfect information.", {"security": -1, "tension": 1}),
+        ("old-obligation", "An old obligation", "A favor from the past is called in, bringing a second relationship into the decision.", {"connection": 1, "leverage": -1}),
+    ),
+}
+
+RESOLUTION_GRADES = {
+    "triumph": {"title": "A decisive resolution", "text": "The household's preparation and the scene roll align. The chosen ending can land with confidence, even if a future cost remains.", "tags": ("dramatic-success",)},
+    "mixed": {"title": "A costly compromise", "text": "The household gains something meaningful, but not without leaving an obligation, wound, or unanswered question behind.", "tags": ("dramatic-compromise",)},
+    "setback": {"title": "A difficult setback", "text": "The scene does not go as hoped. The final ending should acknowledge what the household preserves despite the loss.", "tags": ("dramatic-setback",)},
+}
+
+_STATE_TEXT_KEYS = {"deck_id", "card_id", "sim_id", "household_id", "counterpart_sim_id", "objective", "branch_id", "twist_id", "tactic_id", "resolution_grade", "ending_id"}
+_METER_KEYS = ("connection", "leverage", "security", "tension")
+
+
+def _clamp_meter(value: Any) -> int:
+    try:
+        return max(0, min(6, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _objective(value: Any) -> dict[str, Any]:
+    return OBJECTIVES.get(str(value or ""), OBJECTIVES["repair"])
+
+
+def _meters(state: dict[str, Any] | None) -> dict[str, int]:
+    objective = _objective((state or {}).get("objective"))
+    saved = (state or {}).get("meters") or {}
+    if not isinstance(saved, dict):
+        saved = {}
+    return {key: _clamp_meter(saved.get(key, objective["meters"][key])) for key in _METER_KEYS}
+
+
+def _with_delta(meters: dict[str, int], delta: dict[str, int]) -> dict[str, int]:
+    return {key: _clamp_meter(meters.get(key, 0) + int(delta.get(key, 0))) for key in _METER_KEYS}
+
+
+def _state_shell(state: dict[str, Any] | None) -> dict[str, Any]:
+    raw = state or {}
+    result: dict[str, Any] = {key: str(raw.get(key) or "") for key in _STATE_TEXT_KEYS}
+    if result["objective"] not in OBJECTIVES:
+        result["objective"] = "repair"
+    result["meters"] = _meters(raw)
+    try:
+        result["resolution_roll"] = max(1, min(6, int(raw.get("resolution_roll")))) if raw.get("resolution_roll") not in (None, "") else None
+    except (TypeError, ValueError):
+        result["resolution_roll"] = None
+    return result
+
+
+def _twist_pack(card: dict[str, Any]) -> tuple[tuple[str, str, str, dict[str, int]], ...]:
+    category = str(card.get("category") or "").casefold()
+    if category in {"magic", "wizarding world", "hogwarts", "spirits", "bending"}:
+        return TWIST_PACKS["magic"]
+    if category in {"survival", "health", "care"}:
+        return TWIST_PACKS["survival"]
+    if category in {"westeros", "court", "war", "authority", "succession", "marriage"}:
+        return TWIST_PACKS["court"]
+    return TWIST_PACKS["default"]
+
+
+def _twist_for(card: dict[str, Any], twist_id: str) -> dict[str, Any] | None:
+    for ident, title, text, delta in _twist_pack(card):
+        if ident == twist_id:
+            return {"id": ident, "title": title, "text": text, "delta": delta}
+    return None
+
+
+def _branch_delta(branch: dict[str, Any]) -> dict[str, int]:
+    quiet_ids = {"hide", "refuse", "decline", "private", "protect", "guard", "secrecy", "endure", "listen", "hold"}
+    return {"security": 1, "connection": -1} if str(branch.get("id") or "").casefold() in quiet_ids else {"leverage": 1, "tension": 1}
+
+
+def _resolution(meters: dict[str, int], roll: int) -> dict[str, Any]:
+    power = meters["connection"] + meters["leverage"] + meters["security"] - meters["tension"]
+    modifier = max(-2, min(2, (power - 5) // 2))
+    total = roll + modifier
+    grade = "triumph" if total >= 7 else "mixed" if total >= 4 else "setback"
+    return {**RESOLUTION_GRADES[grade], "id": grade, "roll": roll, "modifier": modifier, "total": total, "power": power}
+
+
 def deck_options(save: ChronicleSave) -> list[dict[str, Any]]:
     """Return the active generic, historical, core-rule and add-on decks."""
     current_era = era_key(save)
@@ -628,29 +740,88 @@ def _find_ending(branch: dict[str, Any] | None, ending_id: str) -> dict[str, Any
 
 
 def draw_state(save: ChronicleSave, deck_id: str, sim_id: str = "", household_id: str = "", counterpart_sim_id: str = "",
-               card_id: str = "") -> dict[str, str]:
+               card_id: str = "", objective: str = "repair") -> dict[str, Any]:
     cards = cards_for(save, deck_id)
     if not cards:
         raise ValueError("That deck is not active for this save.")
     card = next((item for item in cards if item["id"] == card_id), None) if card_id else None
     card = card or random.SystemRandom().choice(cards)
-    return {"deck_id": deck_id, "card_id": card["id"], "sim_id": str(sim_id or ""),
-            "household_id": str(household_id or ""), "counterpart_sim_id": str(counterpart_sim_id or "")}
+    selected_objective = str(objective or "repair")
+    if selected_objective not in OBJECTIVES:
+        selected_objective = "repair"
+    return {
+        "deck_id": deck_id, "card_id": card["id"], "sim_id": str(sim_id or ""),
+        "household_id": str(household_id or ""), "counterpart_sim_id": str(counterpart_sim_id or ""),
+        "objective": selected_objective, "meters": dict(OBJECTIVES[selected_objective]["meters"]),
+    }
 
 
-def choose_branch(save: ChronicleSave, state: dict[str, Any], branch_id: str) -> dict[str, str]:
+def choose_branch(save: ChronicleSave, state: dict[str, Any], branch_id: str) -> dict[str, Any]:
     card = _find_card(save, str(state.get("card_id") or ""))
     if not _find_branch(card, branch_id):
         raise ValueError("That first decision is not available for this card.")
-    return {**{key: str(value or "") for key, value in state.items() if key in {"deck_id", "card_id", "sim_id", "household_id", "counterpart_sim_id"}}, "branch_id": branch_id}
+    if str((state or {}).get("branch_id") or "") == branch_id and str((state or {}).get("twist_id") or ""):
+        return _state_shell(state)
+    baseline = {key: (state or {}).get(key) for key in ("deck_id", "card_id", "sim_id", "household_id", "counterpart_sim_id", "objective")}
+    result = _state_shell(baseline)
+    result.update({"branch_id": branch_id, "twist_id": "", "tactic_id": "", "resolution_grade": "", "ending_id": "", "resolution_roll": None})
+    result["meters"] = _with_delta(result["meters"], _branch_delta(_find_branch(card, branch_id) or {}))
+    return result
 
 
-def choose_ending(save: ChronicleSave, state: dict[str, Any], ending_id: str) -> dict[str, str]:
+def draw_twist(save: ChronicleSave, state: dict[str, Any]) -> dict[str, Any]:
+    card = _find_card(save, str((state or {}).get("card_id") or ""))
+    branch = _find_branch(card, str((state or {}).get("branch_id") or ""))
+    if not card or not branch:
+        raise ValueError("Choose the opening response before drawing a complication.")
+    existing = _twist_for(card, str((state or {}).get("twist_id") or ""))
+    twist = existing or _twist_for(card, random.SystemRandom().choice(_twist_pack(card))[0])
+    if twist is None:
+        raise ValueError("A complication could not be prepared for this scene.")
+    result = _state_shell(state)
+    result["twist_id"] = twist["id"]
+    if not existing:
+        result["meters"] = _with_delta(_meters(state), twist["delta"])
+    return result
+
+
+def choose_tactic(save: ChronicleSave, state: dict[str, Any], tactic_id: str) -> dict[str, Any]:
+    card = _find_card(save, str((state or {}).get("card_id") or ""))
+    twist = _twist_for(card, str((state or {}).get("twist_id") or "")) if card else None
+    tactic = TACTICS.get(tactic_id)
+    if not twist or not tactic:
+        raise ValueError("Draw the complication before choosing a tactic.")
+    if str((state or {}).get("tactic_id") or ""):
+        if str((state or {}).get("tactic_id")) == tactic_id:
+            return _state_shell(state)
+        raise ValueError("A tactic has already been committed for this scene.")
+    result = _state_shell(state)
+    result.update({"tactic_id": tactic_id, "resolution_grade": "", "resolution_roll": None})
+    result["meters"] = _with_delta(_meters(state), tactic["delta"])
+    return result
+
+
+def resolve_scene(save: ChronicleSave, state: dict[str, Any]) -> dict[str, Any]:
+    if not TACTICS.get(str((state or {}).get("tactic_id") or "")):
+        raise ValueError("Choose a tactic before resolving the scene.")
+    result = _state_shell(state)
+    if result["resolution_roll"] is None:
+        result["resolution_roll"] = random.SystemRandom().randint(1, 6)
+    outcome = _resolution(result["meters"], result["resolution_roll"])
+    result["resolution_grade"] = outcome["id"]
+    return result
+
+
+def choose_ending(save: ChronicleSave, state: dict[str, Any], ending_id: str) -> dict[str, Any]:
     card = _find_card(save, str(state.get("card_id") or ""))
     branch = _find_branch(card, str(state.get("branch_id") or ""))
     if not _find_ending(branch, ending_id):
         raise ValueError("That conclusion is not available for this decision.")
-    return {**{key: str(value or "") for key, value in state.items() if key in {"deck_id", "card_id", "sim_id", "household_id", "counterpart_sim_id", "branch_id"}}, "ending_id": ending_id}
+    if not str((state or {}).get("resolution_grade") or "") in RESOLUTION_GRADES:
+        raise ValueError("Resolve the scene before choosing the final ending.")
+    result = _state_shell(state)
+    result["ending_id"] = ending_id
+    return result
 
 
 def _text(value: str, facts: dict[str, str]) -> str:
@@ -688,13 +859,24 @@ def build_state(save: ChronicleSave, sims: list[Record], households: list[Record
     resolved_branches = tuple({**item, "beat": _text(item["beat"], facts), "forecast": _branch_forecast(card, item, facts)} for item in card["branches"])
     resolved_card = {**card, "opening": _text(card["opening"], facts), "branches": resolved_branches}
     resolved_branch = ({**branch, "beat": _text(branch["beat"], facts), "forecast": _branch_forecast(card, branch, facts)} if branch else None)
+    normalized = _state_shell(state)
+    twist = _twist_for(card, str(normalized.get("twist_id") or ""))
+    tactic = TACTICS.get(str(normalized.get("tactic_id") or ""))
+    resolution = _resolution(normalized["meters"], normalized["resolution_roll"]) if normalized["resolution_roll"] is not None else None
+    if resolution and normalized.get("resolution_grade") in RESOLUTION_GRADES:
+        resolution = {**resolution, "id": str(normalized["resolution_grade"]), **RESOLUTION_GRADES[str(normalized["resolution_grade"])]}
+    objective = _objective(normalized.get("objective"))
     return {
-        "state": {key: str(value or "") for key, value in state.items()},
+        "state": normalized,
         "card": resolved_card,
         "briefing": _scene_briefing(resolved_card, facts),
         "branch": resolved_branch,
         "ending": ({**ending, "text": _text(ending["text"], facts)} if ending else None),
         "sim": sim, "counterpart": counterpart, "household": household, "facts": facts,
+        "game": {
+            "objective": {"id": normalized["objective"], "title": objective["title"], "description": objective["description"]},
+            "meters": normalized["meters"], "twist": twist, "tactic": tactic, "resolution": resolution,
+        },
     }
 
 
@@ -703,7 +885,16 @@ def scene_data(resolved: dict[str, Any]) -> dict[str, Any]:
     card, branch, ending = resolved["card"], resolved["branch"], resolved["ending"]
     if not branch or not ending:
         raise ValueError("Finish both choices before recording the scene.")
-    pieces = (card["opening"], branch["beat"], ending["text"])
+    game = resolved.get("game") or {}
+    twist, tactic, resolution = game.get("twist"), game.get("tactic"), game.get("resolution")
+    game_pieces = []
+    if twist:
+        game_pieces.append(f"Complication — {twist['title']}: {twist['text']}")
+    if tactic:
+        game_pieces.append(f"Tactic — {tactic['title']}: {tactic['description']}")
+    if resolution:
+        game_pieces.append(f"Scene roll d6 {resolution['roll']} ({resolution['modifier']:+d}) — {resolution['title']}: {resolution['text']}")
+    pieces = (card["opening"], branch["beat"], *game_pieces, ending["text"])
     return {
         "source": "Drama Deck",
         "category": card["category"],
@@ -714,6 +905,17 @@ def scene_data(resolved: dict[str, Any]) -> dict[str, Any]:
         "branch_beat": branch["beat"],
         "ending_id": ending["id"], "ending_label": ending["label"],
         "ending_title": ending["title"], "ending_text": ending["text"],
+        "objective_id": game.get("objective", {}).get("id") or "repair",
+        "objective_title": game.get("objective", {}).get("title") or "Repair the bond",
+        "twist_title": twist.get("title") if twist else "",
+        "twist_text": twist.get("text") if twist else "",
+        "tactic_title": tactic.get("title") if tactic else "",
+        "tactic_text": tactic.get("description") if tactic else "",
+        "resolution_title": resolution.get("title") if resolution else "",
+        "resolution_text": resolution.get("text") if resolution else "",
+        "resolution_roll": resolution.get("roll") if resolution else None,
+        "resolution_modifier": resolution.get("modifier") if resolution else None,
+        "scene_meters": game.get("meters") or {},
         "sim_id": resolved["sim"].id if resolved["sim"] else None,
         "sim_name": resolved["sim"].label if resolved["sim"] else "",
         "counterpart_sim_id": resolved["counterpart"].id if resolved["counterpart"] else None,

@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">OPTIONAL PLAY AID · PLAYER-CHOSEN CONSEQUENCES</p>
     <h1>The Drama Deck</h1>
-    <p>Draw a scene, make two choices, and keep only the ending that belongs in your family’s story. Nothing here changes a Sim, relationship, rule, or roll automatically.</p>
+    <p>Play a five-act scene: set an objective, choose an opening move, draw a complication, commit a tactic, and roll the resolution before keeping the ending that belongs in your family’s story. Nothing here changes a Sim, relationship, rule, or roll automatically.</p>
   </div>
   <div class="drama-hero-marker"><span>YEAR</span><strong>{{historical_year(save,save.global_day)}}</strong><small>GD {{save.global_day}}</small></div>
 </header>
@@ -19,18 +19,24 @@
     <label>Focus Sim<select name="sim_id"><option value="">Household or world scene</option>{% for sim in all_sims %}<option value="{{sim.id}}" {% if drama_state and drama_state.state.get('sim_id')==sim.id %}selected{% endif %}>{{sim.label}}</option>{% endfor %}</select></label>
     <label>Counterpart Sim<select name="counterpart_sim_id"><option value="">Auto-select a second Sim</option>{% for sim in all_sims %}<option value="{{sim.id}}" {% if drama_state and drama_state.state.get('counterpart_sim_id')==sim.id %}selected{% endif %}>{{sim.label}}</option>{% endfor %}</select></label>
     <label>Setting<select name="household_id"><option value="">Use the Sim’s household when known</option>{% for household in all_households %}<option value="{{household.id}}" {% if drama_state and drama_state.state.get('household_id')==household.id %}selected{% endif %}>{{household.label}}</option>{% endfor %}</select></label>
-    <button class="primary">Draw a drama card</button>
+    <label>Scene objective<select name="objective">{% for key, objective in drama_objectives.items() %}<option value="{{key}}" {% if drama_state and drama_state.state.get('objective')==key %}selected{% endif %}>{{objective.title}}</option>{% endfor %}</select></label>
+    <button class="primary">Begin a drama scene</button>
   </form>
+  <p class="muted">The minigame uses only this temporary scene board. Only the final scene you choose to record is added to Storyline.</p>
   <div class="drama-deck-ledger">{% for deck in drama_decks %}<span><strong>{{deck.name}}</strong><small>{{deck.description}}</small></span>{% endfor %}</div>
 </section>
 
 {% if drama_state %}
 <section class="drama-game" aria-label="Current drama scene">
-  <nav class="drama-progress" aria-label="Decision progress"><span class="active">1 · Situation</span><span class="{% if drama_state.branch %}active{% endif %}">2 · Response</span><span class="{% if drama_state.ending %}active{% endif %}">3 · Consequence</span></nav>
+  <nav class="drama-progress drama-progress-full" aria-label="Mini-game progress"><span class="active">1 · Situation</span><span class="{% if drama_state.branch %}active{% endif %}">2 · Opening move</span><span class="{% if drama_state.game.twist %}active{% endif %}">3 · Complication</span><span class="{% if drama_state.game.tactic %}active{% endif %}">4 · Tactic</span><span class="{% if drama_state.game.resolution %}active{% endif %}">5 · Resolution</span></nav>
   <article class="drama-card category-{{drama_state.card.category|lower|replace(' ','-')}}">
     <div class="drama-card-top"><p class="eyebrow">{{drama_state.card.category|upper}} · {{drama_state.household.label if drama_state.household else 'THE WIDER WORLD'}}</p><span aria-hidden="true">✦</span></div>
     <h2>{{drama_state.card.title}}</h2>
     <p class="drama-opening">{{drama_state.card.opening}}</p>
+    <section class="drama-gameboard" aria-label="Scene game board">
+      <div class="drama-objective"><span>SCENE OBJECTIVE</span><strong>{{drama_state.game.objective.title}}</strong><small>{{drama_state.game.objective.description}}</small></div>
+      <div class="drama-meters"><div><small>Connection</small><strong>{{drama_state.game.meters.connection }}</strong><i style="--meter:{{drama_state.game.meters.connection}}"></i></div><div><small>Leverage</small><strong>{{drama_state.game.meters.leverage }}</strong><i style="--meter:{{drama_state.game.meters.leverage}}"></i></div><div><small>Security</small><strong>{{drama_state.game.meters.security }}</strong><i style="--meter:{{drama_state.game.meters.security}}"></i></div><div class="danger"><small>Tension</small><strong>{{drama_state.game.meters.tension }}</strong><i style="--meter:{{drama_state.game.meters.tension}}"></i></div></div>
+    </section>
     <aside class="drama-briefing" aria-label="Scene details">
       <p class="eyebrow">SCENE BRIEFING</p>
       <dl>{% for detail in drama_state.briefing %}<div><dt>{{detail.label}}</dt><dd>{{detail.text}}</dd></div>{% endfor %}</dl>
@@ -38,14 +44,25 @@
 
     {% if not drama_state.branch %}
       <div class="drama-stage"><p class="eyebrow">FIRST DECISION</p><h3>What does {{drama_state.sim.label if drama_state.sim else 'the household'}} do?</h3><p class="drama-choice-help">Each path explains its immediate trade-off. You will see the specific consequence choices after selecting a response.</p><div class="drama-choice-grid">{% for branch in drama_state.card.branches %}<form action="/drama/branch" method="post" class="drama-choice"><input type="hidden" name="branch_id" value="{{branch.id}}"><button><strong>{{branch.label}}</strong><small>{{branch.beat}}</small><small class="drama-forecast"><b>Immediate effect:</b> {{branch.forecast.immediate}}<br><b>Benefit:</b> {{branch.forecast.benefit}}<br><b>Risk:</b> {{branch.forecast.risk}}</small><span>Choose this path →</span></button></form>{% endfor %}</div></div>
+    {% elif not drama_state.game.twist %}
+      <div class="drama-selected"><span>Chosen response</span><strong>{{drama_state.branch.label}}</strong><p>{{drama_state.branch.beat}}</p><p class="drama-selected-detail"><b>Immediate effect:</b> {{drama_state.branch.forecast.immediate}} <b>Risk:</b> {{drama_state.branch.forecast.risk}}</p></div>
+      <div class="drama-stage drama-next-act"><p class="eyebrow">ACT TWO · COMPLICATION</p><h3>Let the situation push back</h3><p>Draw one themed complication. It changes the scene’s meters, but it never changes your actual tracker records.</p><form action="/drama/twist" method="post"><button class="primary">Draw a complication card</button></form></div>
+    {% elif not drama_state.game.tactic %}
+      <div class="drama-selected"><span>Chosen response</span><strong>{{drama_state.branch.label}}</strong><p>{{drama_state.branch.beat}}</p><p class="drama-selected-detail"><b>Immediate effect:</b> {{drama_state.branch.forecast.immediate}} <b>Risk:</b> {{drama_state.branch.forecast.risk}}</p></div>
+      <section class="drama-twist"><p class="eyebrow">COMPLICATION DRAWN</p><h3>{{drama_state.game.twist.title}}</h3><p>{{drama_state.game.twist.text}}</p></section>
+      <div class="drama-stage"><p class="eyebrow">ACT THREE · TACTIC</p><h3>How does the household answer the complication?</h3><p class="drama-choice-help">Every tactic adjusts your meters before the resolution roll.</p><div class="drama-choice-grid">{% for tactic_id, tactic in drama_tactics.items() %}<form action="/drama/tactic" method="post" class="drama-choice"><input type="hidden" name="tactic_id" value="{{tactic_id}}"><button><strong>{{tactic.title}}</strong><small>{{tactic.description}}</small><small class="drama-forecast"><b>Meter shift:</b> {% for meter, amount in tactic.delta.items() %}{{meter|capitalize }} {{'%+d'|format(amount)}}{% if not loop.last %} · {% endif %}{% endfor %}</small><span>Commit this tactic →</span></button></form>{% endfor %}</div></div>
+    {% elif not drama_state.game.resolution %}
+      <div class="drama-selected"><span>Chosen tactic</span><strong>{{drama_state.game.tactic.title}}</strong><p>{{drama_state.game.tactic.description}}</p></div>
+      <section class="drama-twist"><p class="eyebrow">COMPLICATION IN PLAY</p><h3>{{drama_state.game.twist.title}}</h3><p>{{drama_state.game.twist.text}}</p></section>
+      <div class="drama-stage drama-next-act"><p class="eyebrow">ACT FOUR · RESOLUTION ROLL</p><h3>Roll for the scene’s shape</h3><p>Your Connection, Leverage, and Security support the roll; Tension works against it. The result determines whether the final ending is triumphant, costly, or a setback.</p><form action="/drama/resolve" method="post"><button class="primary drama-roll-button">Roll the scene d6</button></form></div>
     {% elif not drama_state.ending %}
-      <div class="drama-selected"><span>Chosen response</span><strong>{{drama_state.branch.label}}</strong><p>{{drama_state.branch.beat}}</p><p class="drama-selected-detail"><b>Immediate effect:</b> {{drama_state.branch.forecast.immediate}} <b>Risk:</b> {{drama_state.branch.forecast.risk}}</p></div>
-      <div class="drama-stage"><p class="eyebrow">SECOND DECISION</p><h3>How does the household carry it through?</h3><p class="drama-choice-help">These are the exact recorded consequences. Pick the ending that fits your play session.</p><div class="drama-choice-grid">{% for ending in drama_state.branch.endings %}<form action="/drama/ending" method="post" class="drama-choice"><input type="hidden" name="ending_id" value="{{ending.id}}"><button><strong>{{ending.label}}</strong><small><b>{{ending.title}}</b> — {{ending.text}}</small><span>Choose this consequence →</span></button></form>{% endfor %}</div></div>
+      <section class="drama-resolution grade-{{drama_state.game.resolution.id}}"><p class="eyebrow">SCENE RESULT · D6 {{drama_state.game.resolution.roll }} {% if drama_state.game.resolution.modifier %}({{'%+d'|format(drama_state.game.resolution.modifier)}}){% endif %}</p><h3>{{drama_state.game.resolution.title}}</h3><p>{{drama_state.game.resolution.text}}</p><small>Scene power {{drama_state.game.resolution.power }} · final total {{drama_state.game.resolution.total }}</small></section>
+      <div class="drama-stage"><p class="eyebrow">ACT FIVE · FINAL ENDING</p><h3>Which outcome belongs in the chronicle?</h3><p class="drama-choice-help">The result sets the tone; choose the exact ending that best matches how you play it out in game.</p><div class="drama-choice-grid">{% for ending in drama_state.branch.endings %}<form action="/drama/ending" method="post" class="drama-choice"><input type="hidden" name="ending_id" value="{{ending.id}}"><button><strong>{{ending.label}}</strong><small><b>{{ending.title}}</b> — {{ending.text}}</small><span>Choose this consequence →</span></button></form>{% endfor %}</div></div>
     {% else %}
-      <div class="drama-selected"><span>Chosen response</span><strong>{{drama_state.branch.label}}</strong><p>{{drama_state.branch.beat}}</p><p class="drama-selected-detail"><b>Immediate effect:</b> {{drama_state.branch.forecast.immediate}} <b>Risk:</b> {{drama_state.branch.forecast.risk}}</p></div>
+      <section class="drama-resolution grade-{{drama_state.game.resolution.id}}"><p class="eyebrow">SCENE RESULT · D6 {{drama_state.game.resolution.roll }}</p><h3>{{drama_state.game.resolution.title}}</h3><p>{{drama_state.game.resolution.text}}</p></section>
       <div class="drama-conclusion"><p class="eyebrow">CHOSEN CONSEQUENCE</p><h3>{{drama_state.ending.title}}</h3><p>{{drama_state.ending.text}}</p><div class="tag-cloud">{% for tag in drama_state.ending.tags %}<span>{{tag}}</span>{% endfor %}</div></div>
       <div class="drama-actions"><form action="/drama/record" method="post"><button class="primary">Record this scene in the chronicle</button></form><form action="/drama/discard" method="post"><button>Set this scene aside</button></form></div>
-      <p class="muted">Recording creates one editable Story record for Global Day {{save.global_day}}. It never makes a mechanical change on its own.</p>
+      <p class="muted">Recording creates one editable Story record for Global Day {{save.global_day}}. It records the cast, complication, tactic, scene roll, and ending—but never changes real Sims, relationships, or rules on its own.</p>
     {% endif %}
   </article>
   <form action="/drama/discard" method="post" class="drama-discard"><button>Discard unfinished scene</button></form>

@@ -75,6 +75,12 @@ def _drama_scene_sentence(item: Record) -> str:
     opening = str(data.get("opening") or "").strip()
     branch_label = str(data.get("branch_label") or "").strip()
     branch_beat = str(data.get("branch_beat") or "").strip()
+    twist_title = str(data.get("twist_title") or "").strip()
+    twist_text = str(data.get("twist_text") or "").strip()
+    tactic_title = str(data.get("tactic_title") or "").strip()
+    tactic_text = str(data.get("tactic_text") or "").strip()
+    resolution_title = str(data.get("resolution_title") or "").strip()
+    resolution_text = str(data.get("resolution_text") or "").strip()
     ending_title = str(data.get("ending_title") or data.get("ending_label") or "").strip()
     ending_text = str(data.get("ending_text") or "").strip()
     if opening or branch_beat or ending_text:
@@ -84,6 +90,15 @@ def _drama_scene_sentence(item: Record) -> str:
             parts.append(f"The chosen response was “{branch_label}”" + (f": {branch_beat}" if branch_beat else "."))
         elif branch_beat:
             parts.append(branch_beat)
+        if twist_title or twist_text:
+            complication = f"The complication was “{twist_title}”" if twist_title else "The complication was"
+            parts.append(complication + (f": {twist_text}" if twist_text else "."))
+        if tactic_title or tactic_text:
+            tactic = f"The household answered with “{tactic_title}”" if tactic_title else "The household answered with a tactic"
+            parts.append(tactic + (f": {tactic_text}" if tactic_text else "."))
+        if resolution_title or resolution_text:
+            resolution = f"The scene resolved as “{resolution_title}”" if resolution_title else "The scene resolved"
+            parts.append(resolution + (f": {resolution_text}" if resolution_text else "."))
         if ending_title or ending_text:
             outcome = f"The consequence was “{ending_title}”" if ending_title else "The consequence was"
             parts.append(outcome + (f": {ending_text}" if ending_text else "."))

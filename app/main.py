@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.22")
+app = FastAPI(title="Decades Tracker", version="4.6.0")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -2132,6 +2132,8 @@ def feature_page(request: Request, page: str):
                 request.session.pop("drama_state", None)
             ctx.update(
                 drama_decks=drama.deck_options(save),
+                drama_objectives=drama.OBJECTIVES,
+                drama_tactics=drama.TACTICS,
                 drama_state=drama_state,
                 drama_notice=request.session.pop("drama_notice", None),
                 all_sims=drama_sims,
@@ -2312,7 +2314,7 @@ def _drama_people(session, save: ChronicleSave) -> tuple[list[Record], list[Reco
 
 
 @app.post("/drama/draw")
-def draw_drama_card(request: Request, deck_id: str = Form("auto"), sim_id: str = Form(""), household_id: str = Form(""), counterpart_sim_id: str = Form("")):
+def draw_drama_card(request: Request, deck_id: str = Form("auto"), sim_id: str = Form(""), household_id: str = Form(""), counterpart_sim_id: str = Form(""), objective: str = Form("repair")):
     with db() as session:
         ctx = context(request, session); save = ctx.get("save")
         if not save: raise HTTPException(400, "Open a save first.")
@@ -2327,7 +2329,7 @@ def draw_drama_card(request: Request, deck_id: str = Form("auto"), sim_id: str =
         if not counterpart_sim_id:
             counterpart_sim_id = next((item.id for item in sims if item.id != sim_id), "")
         try:
-            request.session["drama_state"] = drama.draw_state(save, deck_id, sim_id, household_id, counterpart_sim_id)
+            request.session["drama_state"] = drama.draw_state(save, deck_id, sim_id, household_id, counterpart_sim_id, objective=objective)
         except ValueError as error:
             raise HTTPException(400, str(error))
         request.session["drama_notice"] = "A new scene is ready. Your choices will not change any records unless you save the ending."
@@ -2357,6 +2359,42 @@ def choose_drama_ending(request: Request, ending_id: str = Form(...)):
             request.session["drama_state"] = drama.choose_ending(save, state, ending_id)
         except (AttributeError, ValueError) as error:
             raise HTTPException(400, str(error) or "Choose the first decision before resolving the scene.")
+    return RedirectResponse("/p/drama", status_code=303)
+
+
+@app.post("/drama/twist")
+def draw_drama_twist(request: Request):
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        try:
+            request.session["drama_state"] = drama.draw_twist(save, request.session.get("drama_state"))
+        except (AttributeError, ValueError) as error:
+            raise HTTPException(400, str(error) or "Choose the opening response first.")
+    return RedirectResponse("/p/drama", status_code=303)
+
+
+@app.post("/drama/tactic")
+def choose_drama_tactic(request: Request, tactic_id: str = Form(...)):
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        try:
+            request.session["drama_state"] = drama.choose_tactic(save, request.session.get("drama_state"), tactic_id)
+        except (AttributeError, ValueError) as error:
+            raise HTTPException(400, str(error) or "Draw the complication before choosing a tactic.")
+    return RedirectResponse("/p/drama", status_code=303)
+
+
+@app.post("/drama/resolve")
+def resolve_drama_scene(request: Request):
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        try:
+            request.session["drama_state"] = drama.resolve_scene(save, request.session.get("drama_state"))
+        except (AttributeError, ValueError) as error:
+            raise HTTPException(400, str(error) or "Choose a tactic before resolving the scene.")
     return RedirectResponse("/p/drama", status_code=303)
 
 
@@ -5151,11 +5189,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.5.22-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.6.0-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.5.22-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.0-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

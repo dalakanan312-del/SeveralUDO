@@ -17,20 +17,32 @@ class DramaDeckTests(unittest.TestCase):
         self.assertTrue({"auto", "common", "pre-modern", "severaludo", "harry_potter_decades"}.issubset(ids))
         self.assertTrue(any(card["id"] == "owl-at-dusk" for card in drama.cards_for(save, "auto")))
 
-    def test_two_choices_resolve_to_a_nonmechanical_chronicle_payload(self):
+    def test_full_scene_game_resolves_to_a_nonmechanical_chronicle_payload(self):
         save = self.save(1900)
         ada = Record(id="ada", kind="sim", label="Ada Test", data={})
         bea = Record(id="bea", kind="sim", label="Bea Test", data={})
         house = Record(id="house", kind="household", label="Test House", data={})
-        state = drama.draw_state(save, "modern", ada.id, house.id, bea.id, card_id="public-choice")
+        state = drama.draw_state(save, "modern", ada.id, house.id, bea.id, card_id="public-choice", objective="repair")
         state = drama.choose_branch(save, state, "speak")
         self.assertEqual(state["counterpart_sim_id"], bea.id)
+        self.assertEqual(state["objective"], "repair")
+        self.assertEqual(set(state["meters"]), {"connection", "leverage", "security", "tension"})
+        state = drama.draw_twist(save, state)
+        self.assertTrue(state["twist_id"])
+        state = drama.choose_tactic(save, state, "appeal")
+        self.assertEqual(state["tactic_id"], "appeal")
+        state = drama.resolve_scene(save, state)
+        self.assertIn(state["resolution_grade"], {"triumph", "mixed", "setback"})
+        self.assertIn(state["resolution_roll"], range(1, 7))
         state = drama.choose_ending(save, state, "community")
         resolved = drama.build_state(save, [ada, bea], [house], state)
         self.assertEqual([item["label"] for item in resolved["briefing"]], ["Cast", "What is known", "What is at stake", "Complication"])
         self.assertIn("Ada Test", resolved["briefing"][0]["text"])
         self.assertIn("Bea Test", resolved["briefing"][0]["text"])
         self.assertIn("Bea Test", resolved["card"]["branches"][0]["forecast"]["immediate"])
+        self.assertTrue(resolved["game"]["twist"])
+        self.assertEqual(resolved["game"]["tactic"]["title"], "Appeal to the bond")
+        self.assertTrue(resolved["game"]["resolution"])
         payload = drama.scene_data(resolved)
         self.assertEqual(payload["sim_id"], ada.id)
         self.assertEqual(payload["household_id"], house.id)
@@ -38,6 +50,24 @@ class DramaDeckTests(unittest.TestCase):
         self.assertTrue(payload["player_decision"])
         self.assertEqual(payload["mechanical_effects"], "None — this scene is a voluntary chronicle decision.")
         self.assertIn("Ada Test", payload["body"])
+        self.assertTrue(payload["twist_title"])
+        self.assertEqual(payload["tactic_title"], "Appeal to the bond")
+        self.assertIn(payload["resolution_title"], {"A decisive resolution", "A costly compromise", "A difficult setback"})
+
+    def test_a_scene_cannot_skip_its_minigame_acts(self):
+        save = self.save(1900)
+        state = drama.draw_state(save, "modern", card_id="public-choice")
+        with self.assertRaises(ValueError):
+            drama.draw_twist(save, state)
+        state = drama.choose_branch(save, state, "speak")
+        with self.assertRaises(ValueError):
+            drama.choose_tactic(save, state, "appeal")
+        state = drama.draw_twist(save, state)
+        with self.assertRaises(ValueError):
+            drama.resolve_scene(save, state)
+        state = drama.choose_tactic(save, state, "appeal")
+        with self.assertRaises(ValueError):
+            drama.choose_ending(save, state, "community")
 
     def test_addon_cards_are_not_available_without_their_rule_pack(self):
         save = self.save(1300)
