@@ -506,6 +506,52 @@ def era_key(save: ChronicleSave) -> str:
     return "modern"
 
 
+_SCENE_GUIDANCE = {
+    "secrets": ("Trust, privacy, and the cost of letting the right person in are all on the line.", "You decide who started the pressure and what they stand to gain from an answer."),
+    "relationships": ("The immediate choice can change how safe, respected, or distant a relationship feels.", "Choose whether the other person is family, a friend, a former partner, or someone new to the household."),
+    "community": ("The household's standing in its neighborhood matters as much as the practical result.", "Pick the neighbor, group, or local institution whose memory of this choice will matter later."),
+    "household": ("Time, labor, comfort, and fairness inside the home are competing priorities.", "Decide which household member is quietly carrying more of the burden than everyone else notices."),
+    "legacy": ("A present need is pressing against what the family hopes to preserve for the next generation.", "Choose which object, promise, name, or tradition gives the question its emotional weight."),
+    "survival": ("Safety and resources are limited, so every compassionate or risky choice has a visible cost.", "Choose exactly what is scarce: food, shelter, money, time, transport, or the strength to keep working."),
+    "work": ("Security, ambition, and solidarity can pull the household in different directions.", "Decide who benefits from the opportunity and who may be left carrying the cost at home."),
+    "ambition": ("The opportunity could widen a future, but it asks the household to risk stability today.", "Choose the concrete opportunity—a job, training place, project, patron, or move—and why it arrived now."),
+    "identity": ("The choice concerns how openly someone can live by their values without losing connection or safety.", "Decide whose approval feels important and what support would make a public or private path feel possible."),
+    "reputation": ("A story about the household is beginning to travel beyond its control.", "Choose who heard it first and what piece of the story is true, exaggerated, or completely false."),
+    "family": ("Care, loyalty, and individual wishes are colliding inside a relationship that cannot simply be walked away from.", "Choose the family member whose needs are least visible in the immediate argument."),
+    "marriage": ("Affection, family expectation, status, and practical security are entangled in the proposed match.", "Decide what the couple privately wants before relatives, contracts, or public opinion complicate the matter."),
+    "succession": ("The question is not only who receives responsibility, but who feels seen, protected, and trusted by the family.", "Choose the earlier promise or family custom that makes an easy answer impossible."),
+    "finance": ("A resource can solve the present problem or preserve a future option, but rarely both.", "Set the scale of the decision: a small household budget, a life-changing debt, or something valuable that cannot be replaced."),
+    "care": ("Someone needs practical or emotional support, and the household must decide how to share that responsibility.", "Choose what kind of care is needed and which person has quietly been doing most of it already."),
+    "education": ("Learning could create independence and opportunity, but it changes who is available to the household now.", "Choose the skill, school, mentor, or course and what sacrifice it asks from daily life."),
+    "travel": ("A journey promises information, freedom, or reunion, but distance always makes a household vulnerable.", "Decide the destination, how long the traveler may be gone, and who is worried about the departure."),
+    "faith": ("Belief, belonging, and public expectation are all part of the decision.", "Choose whether the pressure comes from sincere conviction, a respected leader, or the household's place in the community."),
+    "trade": ("A practical exchange can create a lasting obligation as easily as it creates a benefit.", "Choose what each side believes it is owed and what would make the bargain feel fair."),
+    "magic": ("A magical solution may work quickly, but secrecy, consent, and unintended attention still matter.", "Decide who knows about the magic, who does not, and what would happen if that boundary failed."),
+    "wizarding world": ("Magical custom and ordinary family loyalties are pulling in different directions.", "Choose whether the outside pressure comes from school, the Ministry, a shopkeeper, or another magical household."),
+    "hogwarts": ("School identity, friendship, and family expectation all make the choice feel larger than one moment.", "Choose the student, house, or mentor whose opinion makes this matter most."),
+    "four nations": ("Community balance, cultural expectations, and the wider world all shape what the household can safely do.", "Choose which nation, local leader, or tradition gives the decision its historical context."),
+    "bending": ("Skill can bring responsibility, admiration, and pressure to use it in ways the Sim did not choose.", "Decide whether the concern is training, public attention, family heritage, or the fear of causing harm."),
+    "spirits": ("The situation asks the household to balance action with respect for forces it cannot fully control.", "Choose the sign, place, or story that tells the family the balance has been disturbed."),
+    "westeros": ("Courtesy, safety, and political allegiance are rarely separate in this world.", "Choose which house, sworn duty, or local power makes a simple answer dangerous."),
+    "court": ("Every visible choice can be read as an alliance, insult, or invitation by people outside the household.", "Choose who is watching and what they hope to gain from the family's response."),
+    "war": ("Safety and duty are both urgent, and the household may have no choice that feels clean.", "Decide how close the danger is and which person has the least freedom to refuse it."),
+}
+
+
+def _scene_briefing(card: dict[str, Any], facts: dict[str, str]) -> tuple[dict[str, str], ...]:
+    category = str(card.get("category") or "").casefold()
+    stakes, unknown = _SCENE_GUIDANCE.get(category, (
+        "The household must balance a present need against relationships and consequences that may outlast the moment.",
+        "Choose the outside person or pressure that makes this more than an ordinary household decision.",
+    ))
+    sim, household = facts["sim"], facts["household"]
+    return (
+        {"label": "Who is involved", "text": f"{sim} is expected to make the first call, but the outcome will be felt across {household}. You may choose the other person or group already present in your save."},
+        {"label": "What is at stake", "text": stakes},
+        {"label": "What you decide", "text": unknown},
+    )
+
+
 def deck_options(save: ChronicleSave) -> list[dict[str, Any]]:
     """Return the active generic, historical, core-rule and add-on decks."""
     current_era = era_key(save)
@@ -616,9 +662,11 @@ def build_state(save: ChronicleSave, sims: list[Record], households: list[Record
     }
     branch = _find_branch(card, str(state.get("branch_id") or ""))
     ending = _find_ending(branch, str(state.get("ending_id") or ""))
+    resolved_card = {**card, "opening": _text(card["opening"], facts)}
     return {
         "state": {key: str(value or "") for key, value in state.items()},
-        "card": {**card, "opening": _text(card["opening"], facts)},
+        "card": resolved_card,
+        "briefing": _scene_briefing(resolved_card, facts),
         "branch": ({**branch, "beat": _text(branch["beat"], facts)} if branch else None),
         "ending": ({**ending, "text": _text(ending["text"], facts)} if ending else None),
         "sim": sim, "household": household, "facts": facts,

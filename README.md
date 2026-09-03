@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.21` gives every Drama Deck draw a practical scene briefing: who is affected, what is at stake, and the missing context you should decide from your own save. Response cards now state their immediate trade-off, and consequence cards show their exact recorded text before you choose.
+
 `4.5.20` carries every saved Drama Deck scene into Storyline as the actual situation, selected response, and chosen consequence. Earlier saved scenes retain their complete saved card body instead of being reduced to a generic player-choice note.
 
 `4.5.19` expands every Drama Deck to at least twenty fully playable, non-mechanical decision cards. This includes every historical era, the selected core challenge ruleset, and enabled Harry Potter, Avatar, and Game of Thrones add-ons, while a test prevents future releases from shrinking any deck below that minimum.

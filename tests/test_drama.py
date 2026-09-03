@@ -25,6 +25,8 @@ class DramaDeckTests(unittest.TestCase):
         state = drama.choose_branch(save, state, "speak")
         state = drama.choose_ending(save, state, "community")
         resolved = drama.build_state(save, [ada], [house], state)
+        self.assertEqual([item["label"] for item in resolved["briefing"]], ["Who is involved", "What is at stake", "What you decide"])
+        self.assertIn("Ada Test", resolved["briefing"][0]["text"])
         payload = drama.scene_data(resolved)
         self.assertEqual(payload["sim_id"], ada.id)
         self.assertEqual(payload["household_id"], house.id)

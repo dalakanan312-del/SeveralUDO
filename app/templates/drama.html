@@ -30,12 +30,16 @@
     <div class="drama-card-top"><p class="eyebrow">{{drama_state.card.category|upper}} · {{drama_state.household.label if drama_state.household else 'THE WIDER WORLD'}}</p><span aria-hidden="true">✦</span></div>
     <h2>{{drama_state.card.title}}</h2>
     <p class="drama-opening">{{drama_state.card.opening}}</p>
+    <aside class="drama-briefing" aria-label="Scene details">
+      <p class="eyebrow">SCENE BRIEFING</p>
+      <dl>{% for detail in drama_state.briefing %}<div><dt>{{detail.label}}</dt><dd>{{detail.text}}</dd></div>{% endfor %}</dl>
+    </aside>
 
     {% if not drama_state.branch %}
-      <div class="drama-stage"><p class="eyebrow">FIRST DECISION</p><h3>What does {{drama_state.sim.label if drama_state.sim else 'the household'}} do?</h3><div class="drama-choice-grid">{% for branch in drama_state.card.branches %}<form action="/drama/branch" method="post" class="drama-choice"><input type="hidden" name="branch_id" value="{{branch.id}}"><button><strong>{{branch.label}}</strong><span>Choose this path →</span></button></form>{% endfor %}</div></div>
+      <div class="drama-stage"><p class="eyebrow">FIRST DECISION</p><h3>What does {{drama_state.sim.label if drama_state.sim else 'the household'}} do?</h3><p class="drama-choice-help">Each path explains its immediate trade-off. You will see the specific consequence choices after selecting a response.</p><div class="drama-choice-grid">{% for branch in drama_state.card.branches %}<form action="/drama/branch" method="post" class="drama-choice"><input type="hidden" name="branch_id" value="{{branch.id}}"><button><strong>{{branch.label}}</strong><small>{{branch.beat}}</small><span>Choose this path →</span></button></form>{% endfor %}</div></div>
     {% elif not drama_state.ending %}
       <div class="drama-selected"><span>Chosen response</span><strong>{{drama_state.branch.label}}</strong><p>{{drama_state.branch.beat}}</p></div>
-      <div class="drama-stage"><p class="eyebrow">SECOND DECISION</p><h3>How does the household carry it through?</h3><div class="drama-choice-grid">{% for ending in drama_state.branch.endings %}<form action="/drama/ending" method="post" class="drama-choice"><input type="hidden" name="ending_id" value="{{ending.id}}"><button><strong>{{ending.label}}</strong><span>Follow this thread →</span></button></form>{% endfor %}</div></div>
+      <div class="drama-stage"><p class="eyebrow">SECOND DECISION</p><h3>How does the household carry it through?</h3><p class="drama-choice-help">These are the exact recorded consequences. Pick the ending that fits your play session.</p><div class="drama-choice-grid">{% for ending in drama_state.branch.endings %}<form action="/drama/ending" method="post" class="drama-choice"><input type="hidden" name="ending_id" value="{{ending.id}}"><button><strong>{{ending.label}}</strong><small><b>{{ending.title}}</b> — {{ending.text}}</small><span>Choose this consequence →</span></button></form>{% endfor %}</div></div>
     {% else %}
       <div class="drama-selected"><span>Chosen response</span><strong>{{drama_state.branch.label}}</strong><p>{{drama_state.branch.beat}}</p></div>
       <div class="drama-conclusion"><p class="eyebrow">CHOSEN CONSEQUENCE</p><h3>{{drama_state.ending.title}}</h3><p>{{drama_state.ending.text}}</p><div class="tag-cloud">{% for tag in drama_state.ending.tags %}<span>{{tag}}</span>{% endfor %}</div></div>
