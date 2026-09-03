@@ -89,6 +89,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
     university_enrollments = [item for item in entries if item.kind == "university_enrollment"]
     university_terms = [item for item in entries if item.kind == "university_term" and str((item.data or {}).get("status") or "").casefold() in {"completed", "passed"}]
     authored = [item for item in entries if item.kind == "story_entry"]
+    drama_scenes = [item for item in entries if item.kind == "drama_scene"]
     overlapping_events = []
     for event in events:
         data = event.data or {}
@@ -108,6 +109,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
     if relationships: headline_bits.append(f"{len(relationships)} relationship change{'s' if len(relationships) != 1 else ''}")
     if overlapping_events: headline_bits.append(f"{len(overlapping_events)} historical event{'s' if len(overlapping_events) != 1 else ''}")
     if university_enrollments or university_terms: headline_bits.append(f"{len(university_enrollments) + len(university_terms)} university milestone{'s' if len(university_enrollments) + len(university_terms) != 1 else ''}")
+    if drama_scenes: headline_bits.append(f"{len(drama_scenes)} chosen scene{'s' if len(drama_scenes) != 1 else ''}")
     headline = ", ".join(headline_bits).capitalize() if headline_bits else "A quiet year in the surviving record"
 
     sentences = []
@@ -161,6 +163,9 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
         sentences.append(f"Clock Sync and personal records added {history_text}, capturing changes that might otherwise have gone unremarked.")
     if authored:
         sentences.append(f"The people of the save also left their own words in {_natural_list([item.label for item in authored])}.")
+    if drama_scenes:
+        decisions = [f"{item.label} ({(item.data or {}).get('category') or 'drama'})" for item in drama_scenes]
+        sentences.append(f"The household's player-chosen story turned on {_natural_list(decisions)}; these scenes record decisions rather than automatic game changes.")
 
     known_alive = 0
     for sim in sims:
@@ -181,7 +186,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
 
 
 def build(session: Session, save: ChronicleSave) -> dict:
-    story_kinds={"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","story_entry","session_journal","university_enrollment","university_term","university_performance"}
+    story_kinds={"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","story_entry","session_journal","university_enrollment","university_term","university_performance","drama_scene"}
     records = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.in_(story_kinds), Record.deleted.is_(False))))
     ignored_event_ids={item.id for item in records if item.kind=="event" and event_is_ignored(item)}
     records=[item for item in records if item.id not in ignored_event_ids and str((item.data or {}).get("event_id") or "") not in ignored_event_ids]
@@ -281,7 +286,7 @@ def build(session: Session, save: ChronicleSave) -> dict:
 
 
 def _story_facts(session: Session, save: ChronicleSave) -> tuple[list[Record], list[str]]:
-    allowed={"sim","relationship","pregnancy","illness","roll","event","death","migration","game_history","session_journal","university_enrollment","university_term","university_performance"}
+    allowed={"sim","relationship","pregnancy","illness","roll","event","death","migration","game_history","session_journal","university_enrollment","university_term","university_performance","drama_scene"}
     rows=list(session.scalars(select(Record).where(
         Record.save_id==save.id,Record.kind.in_(allowed),Record.deleted.is_(False)
     ).order_by(Record.global_day.desc(),Record.updated_at.desc()).limit(80)))

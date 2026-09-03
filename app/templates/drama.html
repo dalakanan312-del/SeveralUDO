@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Drama Deck · Decades Tracker{% endblock %}
+{% block body %}
+<header class="drama-hero">
+  <div>
+    <p class="eyebrow">OPTIONAL PLAY AID · PLAYER-CHOSEN CONSEQUENCES</p>
+    <h1>The Drama Deck</h1>
+    <p>Draw a scene, make two choices, and keep only the ending that belongs in your family’s story. Nothing here changes a Sim, relationship, rule, or roll automatically.</p>
+  </div>
+  <div class="drama-hero-marker"><span>YEAR</span><strong>{{historical_year(save,save.global_day)}}</strong><small>GD {{save.global_day}}</small></div>
+</header>
+
+{% if drama_notice %}<div class="notice drama-notice" role="status">{{drama_notice}}</div>{% endif %}
+
+<section class="panel drama-draw-panel">
+  <div class="section-heading"><div><p class="eyebrow">SET THE STAGE</p><h2>Draw a new situation</h2><p>Active add-ons and the current historical era decide which themed decks are available.</p></div></div>
+  <form action="/drama/draw" method="post" class="form-grid drama-draw-form">
+    <label>Deck<select name="deck_id">{% for deck in drama_decks %}<option value="{{deck.id}}" {% if drama_state and drama_state.state.get('deck_id')==deck.id %}selected{% endif %}>{{deck.name}} · {{deck.count}} cards</option>{% endfor %}</select></label>
+    <label>Focus Sim<select name="sim_id"><option value="">Household or world scene</option>{% for sim in all_sims %}<option value="{{sim.id}}" {% if drama_state and drama_state.state.get('sim_id')==sim.id %}selected{% endif %}>{{sim.label}}</option>{% endfor %}</select></label>
+    <label>Setting<select name="household_id"><option value="">Use the Sim’s household when known</option>{% for household in all_households %}<option value="{{household.id}}" {% if drama_state and drama_state.state.get('household_id')==household.id %}selected{% endif %}>{{household.label}}</option>{% endfor %}</select></label>
+    <button class="primary">Draw a drama card</button>
+  </form>
+  <div class="drama-deck-ledger">{% for deck in drama_decks %}<span><strong>{{deck.name}}</strong><small>{{deck.description}}</small></span>{% endfor %}</div>
+</section>
+
+{% if drama_state %}
+<section class="drama-game" aria-label="Current drama scene">
+  <nav class="drama-progress" aria-label="Decision progress"><span class="active">1 · Situation</span><span class="{% if drama_state.branch %}active{% endif %}">2 · Response</span><span class="{% if drama_state.ending %}active{% endif %}">3 · Consequence</span></nav>
+  <article class="drama-card category-{{drama_state.card.category|lower|replace(' ','-')}}">
+    <div class="drama-card-top"><p class="eyebrow">{{drama_state.card.category|upper}} · {{drama_state.household.label if drama_state.household else 'THE WIDER WORLD'}}</p><span aria-hidden="true">✦</span></div>
+    <h2>{{drama_state.card.title}}</h2>
+    <p class="drama-opening">{{drama_state.card.opening}}</p>
+
+    {% if not drama_state.branch %}
+      <div class="drama-stage"><p class="eyebrow">FIRST DECISION</p><h3>What does {{drama_state.sim.label if drama_state.sim else 'the household'}} do?</h3><div class="drama-choice-grid">{% for branch in drama_state.card.branches %}<form action="/drama/branch" method="post" class="drama-choice"><input type="hidden" name="branch_id" value="{{branch.id}}"><button><strong>{{branch.label}}</strong><span>Choose this path →</span></button></form>{% endfor %}</div></div>
+    {% elif not drama_state.ending %}
+      <div class="drama-selected"><span>Chosen response</span><strong>{{drama_state.branch.label}}</strong><p>{{drama_state.branch.beat}}</p></div>
+      <div class="drama-stage"><p class="eyebrow">SECOND DECISION</p><h3>How does the household carry it through?</h3><div class="drama-choice-grid">{% for ending in drama_state.branch.endings %}<form action="/drama/ending" method="post" class="drama-choice"><input type="hidden" name="ending_id" value="{{ending.id}}"><button><strong>{{ending.label}}</strong><span>Follow this thread →</span></button></form>{% endfor %}</div></div>
+    {% else %}
+      <div class="drama-selected"><span>Chosen response</span><strong>{{drama_state.branch.label}}</strong><p>{{drama_state.branch.beat}}</p></div>
+      <div class="drama-conclusion"><p class="eyebrow">CHOSEN CONSEQUENCE</p><h3>{{drama_state.ending.title}}</h3><p>{{drama_state.ending.text}}</p><div class="tag-cloud">{% for tag in drama_state.ending.tags %}<span>{{tag}}</span>{% endfor %}</div></div>
+      <div class="drama-actions"><form action="/drama/record" method="post"><button class="primary">Record this scene in the chronicle</button></form><form action="/drama/discard" method="post"><button>Set this scene aside</button></form></div>
+      <p class="muted">Recording creates one editable Story record for Global Day {{save.global_day}}. It never makes a mechanical change on its own.</p>
+    {% endif %}
+  </article>
+  <form action="/drama/discard" method="post" class="drama-discard"><button>Discard unfinished scene</button></form>
+</section>
+{% else %}
+<section class="empty drama-empty"><span aria-hidden="true">♢</span><h2>The next scene is unwritten</h2><p>Choose a deck and draw a card. The deck will keep its themes grounded in the current era and the rule packs active for this save.</p></section>
+{% endif %}
+
+<section class="panel drama-history">
+  <div class="section-heading"><div><p class="eyebrow">DECISIONS KEPT</p><h2>Recent drama scenes</h2><p>Only endings you explicitly recorded appear here and in Storyline.</p></div><strong>{{drama_recent|length}}</strong></div>
+  <div class="record-ledger">{% for scene in drama_recent %}<details><summary><span><b>{{scene.label}}</b><small>{{scene.data.get('category','Drama')}}{% if scene.data.get('sim_name') %} · {{scene.data.get('sim_name')}}{% endif %}</small></span><time>{{historical_period(save,scene.global_day)}}</time></summary><div class="drama-history-copy"><p>{{scene.data.get('body','')}}</p><div class="tag-cloud">{% for tag in scene.data.get('tags',[]) %}<span>{{tag}}</span>{% endfor %}</div><form action="/records/{{scene.id}}/delete" method="post"><button>Archive scene</button></form></div></details>{% else %}<div class="empty">No drama scenes have been recorded. A completed card stays private until you choose to keep it.</div>{% endfor %}</div>
+</section>
+{% endblock %}

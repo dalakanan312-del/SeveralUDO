@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.17` adds the Drama Deck: an optional, card-based decision tree for player-chosen household scenes. Every draw is themed by the current historical era, selected core ruleset, and enabled Harry Potter, Avatar, or Game of Thrones add-on. Two decisions reveal a conclusion, and only an explicitly saved conclusion becomes a non-mechanical, editable chronicle record. No card silently changes a Sim, relationship, rule, roll, or game state.
+
 `4.5.16` makes hosted sync forward-compatible with the desktop tracker’s Clock Sync journal. Game-history, Clock Sync diagnostic and protocol records, and illness-detection dismissals now reach online saves instead of blocking the entire sync queue. Maternal delivery checks are per baby delivered, and occult Sims use the original SeveralUDO aging chart except where a supplied source explicitly replaces ordinary aging (Servo). Clock Sync 2.2.9 also records each Sim’s directional relationship sentiments and native satisfaction where the game exposes them, with a clearly labeled friendship/romance estimate only when it does not.
 
 `4.5.15` corrects household-wide witch trials: every eligible Spellcaster receives an individual accusation roll, and older completed trial rolls are repaired once without duplicating existing accusations.

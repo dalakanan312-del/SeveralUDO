@@ -26,7 +26,7 @@ SYNC_KINDS = {
     "social_mobility", "legal_case", "absence", "disability", "mourning", "wellbeing",
     "medical_treatment", "recovery_restriction", "saved_view", "newspaper",
     "university_enrollment", "university_term", "university_performance",
-    "save_a_sim_credit", "save_a_sim_rule",
+    "save_a_sim_credit", "save_a_sim_rule", "drama_scene",
 }
 
 SECRET_MARKERS = ("password", "secret", "token", "api_key", "apikey", "database_url", "connection_string", "oauth")

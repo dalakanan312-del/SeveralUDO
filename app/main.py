@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
+from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -66,6 +66,7 @@ FEATURES = {
     "sync": ("Sync", "Desktop/cloud status, devices and conflict review"),
     "dice-audit": ("Dice Audit", "Verifiable history and distribution reports"),
     "storyline": ("Storyline", "A living narrative generated from the changing save"),
+    "drama": ("Drama Deck", "Optional card-based decisions for grounded household drama"),
     "saves": ("Saves & Backups", "Create, rename, duplicate, export and restore chronicles"),
     "account": ("Account & Sharing", "Google sign-in, shared workspaces and notifications"),
     "appearance": ("Appearance", "Colors, type, spacing and motion for this save"),
@@ -95,7 +96,7 @@ NAVIGATION_GROUPS = (
         "label": "History & Story",
         "description": "The chronicle, world and memories",
         "icon": "✒",
-        "pages": ("events", "world", "timeline", "storyline", "notes"),
+        "pages": ("events", "world", "timeline", "storyline", "drama", "notes"),
     },
     {
         "id": "challenge",
@@ -148,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.5.16")
+app = FastAPI(title="Decades Tracker", version="4.5.17")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1612,6 +1613,7 @@ def feature_page(request: Request, page: str):
             "avatar":{"sim","addon_rule"},
             "harry-potter":{"sim","household","addon_rule"},
             "game-of-thrones":{"sim","household","addon_rule"},
+            "drama":{"sim","household","relationship","game_history","drama_scene"},
         }.get(page)
         if save and view_kinds:
             view_records = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind.in_(view_kinds),Record.deleted.is_(False))))
@@ -2115,6 +2117,22 @@ def feature_page(request: Request, page: str):
             ctx["story"] = story_data
             ctx["all_sims"] = sorted(story_data.get("all_sims") or [],key=lambda item:item.label.casefold())
             ctx["storyline_notice"] = request.session.pop("storyline_notice", None)
+        if page == "drama" and save:
+            drama_rows = view_records or []
+            drama_sims = sorted_sims((item for item in drama_rows if item.kind == "sim" and _living_sim(item, save)), save)
+            drama_households = sorted((item for item in drama_rows if item.kind == "household"), key=lambda item: item.label.casefold())
+            drama_state = drama.build_state(save, drama_sims, drama_households, request.session.get("drama_state"))
+            if request.session.get("drama_state") and not drama_state:
+                request.session.pop("drama_state", None)
+            ctx.update(
+                drama_decks=drama.deck_options(save),
+                drama_state=drama_state,
+                drama_notice=request.session.pop("drama_notice", None),
+                all_sims=drama_sims,
+                all_households=drama_households,
+                drama_recent=sorted((item for item in drama_rows if item.kind == "drama_scene"), key=lambda item: (item.global_day or 0, item.updated_at), reverse=True)[:12],
+            )
+            records=[]
         if page == "saves" and save:
             backup_rows = list(session.scalars(select(BackupSnapshot).where(
                 BackupSnapshot.save_id.in_([item.id for item in ctx["saves"]]),
@@ -2233,7 +2251,7 @@ def feature_page(request: Request, page: str):
             "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "roll-tables":"roll_tables.html", "occult-rules":"occult_rules.html", "historical-guidance":"historical_guidance.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
             "world":"world.html", "legacy-lab":"legacy_lab.html", "historical-life":"historical_life.html", "life-records":"life-records.html",
-            "clock":"clock.html", "sync":"sync.html", "account":"account.html", "appearance":"appearance.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html", "save-a-sims":"save_a_sims.html",
+            "clock":"clock.html", "sync":"sync.html", "account":"account.html", "appearance":"appearance.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html", "save-a-sims":"save_a_sims.html", "drama":"drama.html",
         }
         return templates.TemplateResponse(request, dedicated.get(page, "feature.html"), ctx)
 
@@ -2278,6 +2296,81 @@ def save_storyline_settings(request: Request, automatic_storyline: str = Form(""
         values=dict(save.settings or {});values["automatic_storyline"]=automatic_storyline in {"1","on","true","yes"};save.settings=values;save.revision+=1
         request.session["storyline_notice"]="Automatic storyline setting saved."
     return RedirectResponse("/p/storyline",status_code=303)
+
+
+def _drama_people(session, save: ChronicleSave) -> tuple[list[Record], list[Record]]:
+    rows = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind.in_(("sim", "household")), Record.deleted.is_(False),
+    )))
+    return [item for item in rows if item.kind == "sim" and _living_sim(item, save)], [item for item in rows if item.kind == "household"]
+
+
+@app.post("/drama/draw")
+def draw_drama_card(request: Request, deck_id: str = Form("auto"), sim_id: str = Form(""), household_id: str = Form("")):
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        sims, households = _drama_people(session, save)
+        valid_sim_ids = {item.id for item in sims}; valid_household_ids = {item.id for item in households}
+        if sim_id and sim_id not in valid_sim_ids: raise HTTPException(404, "That Sim is not in this save.")
+        if household_id and household_id not in valid_household_ids: raise HTTPException(404, "That household is not in this save.")
+        try:
+            request.session["drama_state"] = drama.draw_state(save, deck_id, sim_id, household_id)
+        except ValueError as error:
+            raise HTTPException(400, str(error))
+        request.session["drama_notice"] = "A new scene is ready. Your choices will not change any records unless you save the ending."
+    return RedirectResponse("/p/drama", status_code=303)
+
+
+@app.post("/drama/branch")
+def choose_drama_branch(request: Request, branch_id: str = Form(...)):
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        state = request.session.get("drama_state")
+        try:
+            request.session["drama_state"] = drama.choose_branch(save, state, branch_id)
+        except (AttributeError, ValueError) as error:
+            raise HTTPException(400, str(error) or "Draw a scene before choosing.")
+    return RedirectResponse("/p/drama", status_code=303)
+
+
+@app.post("/drama/ending")
+def choose_drama_ending(request: Request, ending_id: str = Form(...)):
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        state = request.session.get("drama_state")
+        try:
+            request.session["drama_state"] = drama.choose_ending(save, state, ending_id)
+        except (AttributeError, ValueError) as error:
+            raise HTTPException(400, str(error) or "Choose the first decision before resolving the scene.")
+    return RedirectResponse("/p/drama", status_code=303)
+
+
+@app.post("/drama/record")
+def record_drama_scene(request: Request):
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save: raise HTTPException(400, "Open a save first.")
+        sims, households = _drama_people(session, save)
+        resolved = drama.build_state(save, sims, households, request.session.get("drama_state"))
+        if not resolved or not resolved.get("ending"):
+            raise HTTPException(400, "Finish both decisions before recording the scene.")
+        data = drama.scene_data(resolved)
+        label = f"{data['sim_name']} — {resolved['ending']['title']}" if data.get("sim_name") else resolved["ending"]["title"]
+        record = Record(save_id=save.id, kind="drama_scene", label=label, global_day=save.global_day, data=data)
+        session.add(record); session.flush(); domain.journal(session, record, "upsert", 0); save.revision += 1
+        request.session.pop("drama_state", None)
+        request.session["drama_notice"] = f"Recorded “{label}” in the chronicle. It did not change any Sim, relationship, or rule."
+    return RedirectResponse("/p/drama", status_code=303)
+
+
+@app.post("/drama/discard")
+def discard_drama_scene(request: Request):
+    request.session.pop("drama_state", None)
+    request.session["drama_notice"] = "The unfinished scene was set aside; no record was created."
+    return RedirectResponse("/p/drama", status_code=303)
 
 
 @app.post("/names/import")
