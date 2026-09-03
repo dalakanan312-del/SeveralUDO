@@ -38,6 +38,21 @@ class DramaDeckTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             drama.draw_state(save, "harry_potter_decades")
 
+    def test_every_selectable_deck_has_at_least_twenty_cards(self):
+        packs = ("harry_potter_decades", "avatar_decades", "game_of_thrones_decades")
+        for year in (1300, 1800, 1950):
+            for core in ("severaludo", "morbid_ultimate", "classic_decades_2023"):
+                save = ChronicleSave(
+                    id=f"{year}-{core}", name="Deck coverage", start_year=year,
+                    global_day=1, days_per_year=4,
+                    settings={"selected_rule_packs": list(packs), "core_ruleset_id": core},
+                )
+                for option in drama.deck_options(save):
+                    self.assertGreaterEqual(
+                        option["count"], 20,
+                        f"{option['id']} should always offer at least twenty cards",
+                    )
+
     def test_recorded_scene_is_described_as_a_player_choice_in_storyline(self):
         save = self.save(1300)
         scene = Record(

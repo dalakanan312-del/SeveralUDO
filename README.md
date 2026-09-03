@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.5.19` expands every Drama Deck to at least twenty fully playable, non-mechanical decision cards. This includes every historical era, the selected core challenge ruleset, and enabled Harry Potter, Avatar, and Game of Thrones add-ons, while a test prevents future releases from shrinking any deck below that minimum.
+
 `4.5.18` adds a date-scaled, interactive Visual Timeline to the Chronicle. It groups busy days into readable moments while preserving the complete ledger underneath, marks current and future days, and links every marker to the underlying record. Clock Sync 2.2.10 avoids calling the legacy poll restarter before the Sims 4 time service exists, preventing the startup exception seen during loading.
 
 `4.5.17` adds the Drama Deck: an optional, card-based decision tree for player-chosen household scenes. Every draw is themed by the current historical era, selected core ruleset, and enabled Harry Potter, Avatar, or Game of Thrones add-on. Two decisions reveal a conclusion, and only an explicitly saved conclusion becomes a non-mechanical, editable chronicle record. No card silently changes a Sim, relationship, rule, roll, or game state.
