@@ -4,7 +4,7 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
-`4.6.1` makes the Drama Deck’s middle act fully card-specific: it converts each drawn card’s own possible outcomes into unique tactical moves, rather than offering the same generic tactic buttons for every scene.
+`4.6.2` makes every supporting Drama Deck scene specific from its first decision: opening choices now name the actual card situation—such as repairing a missed birthday or investigating a missing key—instead of falling back to generic response buttons.
 
 `4.6.0` turns the Drama Deck into a complete five-act scene minigame. Set an objective, choose an opening move, draw a themed complication, commit a tactic, track Connection/Leverage/Security/Tension, roll a d6 resolution, and choose the exact ending. The retained Storyline record includes the cast, complication, tactic, roll, and final outcome; the game board itself never changes Sims, relationships, rules, or rolls automatically.
 

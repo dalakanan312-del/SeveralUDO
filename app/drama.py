@@ -8,6 +8,7 @@ editable chronicle record only when the player explicitly records it.
 from __future__ import annotations
 
 import random
+import re
 from typing import Any
 
 from . import core_rulesets
@@ -206,26 +207,73 @@ ADDON_CARDS = {
 MINIMUM_DECK_CARDS = 20
 
 
+def _supporting_subject(title: str) -> str:
+    value = re.sub(r"^(?:the|a|an)\s+", "", str(title or "this matter"), flags=re.IGNORECASE).strip()
+    return value.casefold() or "this matter"
+
+
+def _supporting_choice_copy(slug: str, title: str, category: str, tags: tuple[str, ...]) -> tuple[str, str, str, str]:
+    """Give each supporting prompt a choice that names its actual situation."""
+    subject = _supporting_subject(title)
+    words = set(re.findall(r"[a-z]+", f"{slug} {category} {' '.join(tags)}".casefold()))
+    exact = {
+        "birthday-omission": ("Ask what the forgotten birthday hurt", "{sim} asks the overlooked person what the missed gesture meant to them.", "Plan a belated celebration", "{sim} chooses a thoughtful late gesture and lets the household practice repair, not merely apologize."),
+        "empty-chair": ("Tell the story of the empty chair", "{sim} invites the household to remember the missing person or absence aloud.", "Create a quiet act of remembrance", "{sim} gives the absence a private ritual without making every gathering about grief."),
+        "cracked-keepsake": ("Repair the keepsake together", "{sim} asks what the damaged object still means and makes its repair a shared act.", "Keep the break visible", "{sim} preserves the keepsake as it is, allowing the crack to become part of the family's story."),
+        "old-photograph": ("Identify the face in the photograph", "{sim} asks older relatives or trusted friends what they know before guessing at its history.", "Preserve the unanswered photograph", "{sim} keeps the picture with a note about what remains unknown for a future discovery."),
+        "family-recipe": ("Cook the old recipe as written", "{sim} treats the familiar version as a memory worth preserving and asks why it matters.", "Make room for a new version", "{sim} lets someone adapt the recipe, making tradition flexible enough to include the people living it now."),
+    }
+    if slug in exact:
+        return exact[slug]
+    if words & {"rumor", "gossip", "whisper", "review"}:
+        return (f"Ask who is repeating {subject}", "{sim} follows the story back to its source and asks what the speaker wants from the household.", f"Give {subject} a better answer", "{sim} chooses one visible act that gives others a truer story to repeat.")
+    if words & {"letter", "call", "message", "raven", "owl", "invitation"}:
+        return (f"Answer {subject} with conditions", "{sim} replies, but makes clear what the household can and cannot promise.", f"Ask what {subject} leaves unsaid", "{sim} seeks context from the sender or a trusted witness before answering too quickly.")
+    if words & {"missing", "lost", "closed", "hidden", "secret", "misread"}:
+        return (f"Investigate {subject}", "{sim} follows the practical clues before deciding what the situation means.", f"Protect the boundary around {subject}", "{sim} decides that not every unanswered question should be forced open at once.")
+    if words & {"debt", "coin", "fee", "tithe", "toll", "tax", "cost", "loan", "budget", "fund"}:
+        return (f"Settle the terms of {subject}", "{sim} asks for a clear accounting so the household knows exactly what is owed and why.", f"Renegotiate {subject}", "{sim} proposes a different payment, timeline, or exchange the household can actually sustain.")
+    if words & {"warning", "fever", "injury", "appointment", "midwife", "care", "healing", "exhaustion"}:
+        return (f"Act on {subject} now", "{sim} treats the warning or need as urgent and gathers the care, rest, or advice required.", f"Ask for a second perspective on {subject}", "{sim} seeks another trusted voice before the household commits to a difficult path.")
+    if words & {"road", "ticket", "pass", "crossing", "journey", "caravan", "travel", "platform", "harbour"}:
+        return (f"Make the journey tied to {subject}", "{sim} prepares the household to move, travel, or meet the situation beyond home.", f"Delay {subject} until the route is safer", "{sim} protects the household by waiting for better information, companions, or conditions.")
+    if words & {"harvest", "drought", "winter", "stores", "ration", "seed", "hunger", "blight", "livestock", "net", "storm"}:
+        return (f"Share what {subject} puts at risk", "{sim} makes the household's scarce resources visible and decides who needs them most.", f"Protect the reserve against {subject}", "{sim} preserves enough for the household to endure even if others see the decision as harsh.")
+    if words & {"spell", "wand", "potion", "magic", "charm", "patronus", "forest"}:
+        return (f"Use careful magic for {subject}", "{sim} chooses a measured magical response and considers who might notice its trace.", f"Seek guidance before changing {subject}", "{sim} asks someone with more knowledge to help define the risk and boundary.")
+    if words & {"marriage", "dowry", "remarriage", "surname", "contract"}:
+        return (f"Name the terms behind {subject}", "{sim} asks the people affected to say what they need before an arrangement is treated as settled.", f"Protect choice within {subject}", "{sim} slows the arrangement down long enough for consent, care, and future consequences to be considered.")
+    patterns = {
+        "relationships": (f"Name what {subject} changed", "{sim} asks the people involved to say what they need rather than letting hurt turn into assumption.", f"Make a repair after {subject}", "{sim} chooses a specific gesture that can rebuild trust without pretending the moment never happened."),
+        "family": (f"Hold a family conversation about {subject}", "{sim} brings the people most affected together before someone else decides the matter for them.", f"Make room for a private response to {subject}", "{sim} protects the person carrying the most pressure and lets the family adjust around that need."),
+        "legacy": (f"Learn the history behind {subject}", "{sim} asks whose memory, promise, or custom gave the matter its weight.", f"Choose what {subject} means now", "{sim} lets the household shape a present-day answer instead of repeating an old rule without question."),
+        "community": (f"Bring {subject} to the community", "{sim} asks neighbours or allies to share responsibility rather than leaving the household isolated.", f"Keep {subject} within the household", "{sim} decides exactly what can remain private while the family gathers more information."),
+        "household": (f"Rebalance the work behind {subject}", "{sim} names who is carrying the cost and proposes a practical division of responsibility.", f"Protect the household's limits around {subject}", "{sim} sets a sustainable boundary before an ordinary pressure becomes lasting resentment."),
+        "trust": (f"Ask for honesty about {subject}", "{sim} gives the other person a chance to explain before trust is declared broken.", f"Set a new promise around {subject}", "{sim} makes the next step explicit so the household knows what repair would require."),
+        "memory": (f"Preserve the story of {subject}", "{sim} records what is known now, including the parts that are painful or incomplete.", f"Let {subject} become a new ritual", "{sim} turns the memory into a small practice that gives the household a way forward."),
+        "authority": (f"Ask what {subject} requires", "{sim} seeks the exact expectation before submitting the household to someone else's authority.", f"Answer {subject} on the household's terms", "{sim} offers cooperation with clear limits and keeps a record of what was promised."),
+        "education": (f"Pursue the opening in {subject}", "{sim} treats the opportunity as real and asks what support would make it possible.", f"Make a slower plan for {subject}", "{sim} keeps the door open while choosing a pace the household can sustain."),
+        "ambition": (f"Test the opportunity in {subject}", "{sim} asks what the household could gain and what it would have to give up.", f"Define the limits of {subject}", "{sim} refuses to let ambition set every term before the family has agreed on its priorities."),
+    }
+    return patterns.get(category.casefold(), (f"Ask what {subject} asks of the household", "{sim} brings the practical and emotional stakes into the open before deciding.", f"Choose a deliberate response to {subject}", "{sim} turns the prompt into a specific family decision instead of letting it drift unresolved."))
+
+
 def _supporting_card(prefix: str, slug: str, title: str, category: str, opening: str,
                      *tags: str) -> dict[str, Any]:
-    """Create a fully playable, deliberately non-mechanical scene card.
-
-    The short hand-authored prompt lists below keep every deck broad enough
-    for repeat play without turning the Drama Deck into an automated rules
-    engine.  Each prompt still has the same two-step decision structure as
-    the original hand-written cards.
-    """
+    """Create a fully playable, deliberately non-mechanical scene card."""
     card_tags = tuple(dict.fromkeys((category.casefold().replace(" ", "-"), *tags)))
+    first_label, first_beat, second_label, second_beat = _supporting_choice_copy(slug, title, category, card_tags)
+    subject = _supporting_subject(title)
     return _card(
         f"{prefix}-{slug}", title, category, opening,
         (
-            _branch("meet", "Meet it directly", "{sim} chooses a visible response and accepts that the household will be remembered for it.", (
-                _ending("allies", "Gather support", f"{title}: a shared path", "{sim} brings trusted people into the decision. The household carries the consequence together rather than in silence.", *card_tags, "alliance"),
-                _ending("terms", "Set clear terms", f"{title}: terms made plain", "The household responds, but on its own terms. The decision gives the family a boundary to return to later.", *card_tags, "boundaries"),
+            _branch("first-move", first_label, first_beat, (
+                _ending("first-follow-through", f"Follow through on {subject}", f"{title}: a deliberate response", f"{{sim}} carries out the choice made around {subject}, giving the household a clear action to remember.", *card_tags, "deliberate-action"),
+                _ending("first-witness", f"Ask a trusted person to help with {subject}", f"{title}: shared responsibility", f"{{sim}} brings one trusted person into the response to {subject}, so the household does not carry its consequences alone.", *card_tags, "alliance"),
             )),
-            _branch("guard", "Take the quieter path", "{sim} protects the household's privacy while considering what can safely wait.", (
-                _ending("wait", "Watch and wait", f"{title}: patience chosen", "The household gives the situation time to reveal more of itself. The pause is a choice, not an absence of one.", *card_tags, "restraint"),
-                _ending("limit", "Draw a boundary", f"{title}: peace protected", "The family declines to let the matter grow larger than it needs to be. A clear limit preserves its peace for now.", *card_tags, "household"),
+            _branch("second-move", second_label, second_beat, (
+                _ending("second-plan", f"Make a new plan around {subject}", f"{title}: a new arrangement", f"{{sim}} gives the household a concrete way to live with {subject} after the immediate pressure passes.", *card_tags, "planning"),
+                _ending("second-boundary", f"Settle {subject} on the household's terms", f"{title}: limits made clear", f"{{sim}} makes a clear limit around {subject}, preserving room for the household to decide what comes next.", *card_tags, "boundaries"),
             )),
         ),
     )

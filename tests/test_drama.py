@@ -91,6 +91,28 @@ class DramaDeckTests(unittest.TestCase):
                         f"{option['id']} should always offer at least twenty cards",
                     )
 
+    def test_supporting_cards_use_scene_specific_opening_choices(self):
+        card = drama._supporting_card(
+            "test", "birthday-omission", "The birthday omission", "Relationships",
+            "A birthday is missed.", "hurt", "relationship",
+        )
+        self.assertEqual(
+            [branch["label"] for branch in card["branches"]],
+            ["Ask what the forgotten birthday hurt", "Plan a belated celebration"],
+        )
+
+        prompt_rows = []
+        for name, value in vars(drama).items():
+            if name.endswith("_PROMPTS") and isinstance(value, tuple):
+                prompt_rows.extend(value)
+        self.assertGreaterEqual(len(prompt_rows), 180)
+        for slug, title, category, opening, tags in prompt_rows:
+            generated = drama._supporting_card("test", slug, title, category, opening, *tags)
+            labels = {branch["label"] for branch in generated["branches"]}
+            self.assertFalse(
+                {"Meet it directly", "Take the quieter path"} & labels,
+                f"{slug} still has a generic opening choice",
+            )
     def test_recorded_scene_keeps_its_exact_decisions_in_storyline(self):
         save = self.save(1300)
         scene = Record(
