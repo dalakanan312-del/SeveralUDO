@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.2")
+app = FastAPI(title="Decades Tracker", version="4.6.3")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -798,6 +798,7 @@ def context(request: Request, session, **extra):
             "master_automation_notice": request.session.pop("master_automation_notice", None),
             "manual_roll_notice": request.session.pop("manual_roll_notice", None),
             "theme_notice": request.session.pop("theme_notice", None),
+            "rules_notice": request.session.pop("rules_notice", None),
             "app_version": app.version, "static_version":_STATIC_VERSION,
             "notification_cursor": datetime.now(timezone.utc).isoformat(), **extra}
 
@@ -3873,6 +3874,7 @@ async def update_settings(request: Request):
     with db() as session:
         ctx=context(request,session);save=ctx["save"]
         if not save: raise HTTPException(400)
+        prior_days_per_year = max(1, int(save.days_per_year))
         save.name=str(form.get("name") or save.name).strip();save.start_year=max(-9999,min(9999,int_or_none(form.get("start_year")) or save.start_year))
         save.days_per_year=max(1,min(365,int_or_none(form.get("days_per_year")) or save.days_per_year));save.pregnancy_days=max(1,min(100,int_or_none(form.get("pregnancy_days")) or save.pregnancy_days))
         settings_data=dict(save.settings or {})
@@ -3886,7 +3888,17 @@ async def update_settings(request: Request):
         elif settings_scope=="rules" and "sim_menu_order" not in form:
             for key in ("maternal_rolls_enabled","automatic_death_causes","automatic_birth_circumstances"):
                 settings_data[key]=key in form
-        save.settings=settings_data;save.revision+=1;domain.schedule_rolls(session,save)
+        save.settings=settings_data
+        calendar_changes = domain.rescale_age_timing(session, save, prior_days_per_year, save.days_per_year)
+        save.revision += 1 + sum(calendar_changes.values())
+        domain.schedule_rolls(session,save)
+        if prior_days_per_year != save.days_per_year:
+            request.session["rules_notice"] = (
+                f"Calendar updated from {prior_days_per_year} to {save.days_per_year} days per year. "
+                f"Rescaled {calendar_changes['rules']} age-linked rule entries, "
+                f"{calendar_changes['rolls']} future age-based rolls, and "
+                f"{calendar_changes['settings']} age settings. Completed history was left unchanged."
+            )
     return RedirectResponse(str(form.get("return_to") or "/p/rules"),status_code=303)
 
 
@@ -5188,11 +5200,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.6.2-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.6.3-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.2-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.3-Setup.exe"',"Cache-Control":"no-store",
     })
 
 

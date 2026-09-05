@@ -1,6 +1,7 @@
 {% extends "base.html" %}{% block title %}Rule Setup · Decades Tracker{% endblock %}{% block body %}
 <header class="hero compact"><p class="eyebrow">RULE CENTER · SAVE-WIDE SETTINGS</p><h1>Rule setup</h1><p>Start with the calendar and automatic behavior here. Detailed tables, historical guidance and occult automation each have their own focused page.</p></header>
 {% include "_rule_center_nav.html" %}
+{% if rules_notice %}<p class="notice success">{{rules_notice}}</p>{% endif %}
 <section class="grid rule-center-map">
   <article class="panel"><p class="eyebrow">OUTCOMES</p><h2>Roll tables</h2><p>Edit lifecycle dice, pregnancy counts, first-marriage eligibility, the new remarriage roll, and multiple-birth limits.</p><a class="button primary" href="/p/roll-tables">Open roll tables</a></article>
   <article class="panel"><p class="eyebrow">HISTORICAL CONTEXT</p><h2>Era guidance</h2><p>Maintain death-cause lists, historical play guidance and preserved imported rule material.</p><a class="button" href="/p/historical-guidance">Open historical guidance</a></article>
@@ -11,7 +12,7 @@
 <form action="/settings" method="post" class="panel form-grid"><input type="hidden" name="return_to" value="/p/rules">
   <div class="wide section-heading"><div><p class="eyebrow">CALENDAR & AUTOMATION</p><h2>Save-wide rules</h2><p>Saving reschedules future obligations. Completed history is preserved.</p></div></div>
   <label>Save name<input name="name" value="{{save.name}}"></label><label>Challenge location<input name="challenge_location" value="{{save_settings.get('challenge_location','')}}"></label>
-  <label>Starting year<input name="start_year" type="number" value="{{save.start_year}}"></label><label>Challenge days per year<input name="days_per_year" type="number" min="1" max="365" value="{{save.days_per_year}}"></label>
+  <label>Starting year<input name="start_year" type="number" value="{{save.start_year}}"></label><label>Challenge days per year<input name="days_per_year" type="number" min="1" max="365" value="{{save.days_per_year}}"><small>Changing this rescales future lifecycle, marriage, elder, Hogwarts and other age-based rolls. Completed history stays exactly as recorded.</small></label>
   <label>Pregnancy length (days)<input name="pregnancy_days" type="number" min="1" value="{{save.pregnancy_days}}"></label><label>Default species / occult<input name="default_species" value="{{save_settings.get('default_species','Human')}}"></label>
   <label>Roll tracking starts on GD<input name="roll_tracking_start_day" type="number" min="1" value="{{save_settings.get('roll_tracking_start_day',1)}}"></label><label>Minimum marriage age (days)<input name="marriage_min_age_days" type="number" min="0" value="{{save_settings.get('marriage_min_age_days',72)}}"></label>
   <label>Try-for-baby attempts per day<input name="try_for_baby_daily_limit" type="number" min="0" value="{{save_settings.get('try_for_baby_daily_limit',1)}}"></label><label>Delivery-day attempt limit<input name="delivery_day_limit" type="number" min="0" value="{{save_settings.get('delivery_day_limit',1)}}"></label>

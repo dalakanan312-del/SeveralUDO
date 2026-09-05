@@ -27,7 +27,7 @@ from app.clock import _game_illnesses, _store_game_portrait, attach_game_identit
 from app.config import _automatic_snapshots
 from app.db import SessionLocal, application_schema
 from app.dice import notation_for_roll, parse, verify
-from app.domain import ORIGINAL_AGING_CHART, apply_married_surnames, auto_pass_lifecycle_rolls_for_added_sim, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, preserve_delivery_maternal_rolls, purge_sim, refresh_pending_rolls, repair_default_aging_tables, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, restore_delivery_maternal_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
+from app.domain import ORIGINAL_AGING_CHART, apply_married_surnames, auto_pass_lifecycle_rolls_for_added_sim, backfill_married_surnames, backfill_pregnancy_allowances, complete_roll, due_on_today, duplicate_event_summary, duplicate_obligation_summary, end_illnesses_for_death, failed, marriage_roll_result, multiple_birth_limit, pass_prior_lifecycle_rolls, pregnancy_count_result, preserve_delivery_maternal_rolls, purge_sim, refresh_pending_rolls, repair_default_aging_tables, rescale_age_timing, repair_duplicate_events, repair_duplicate_obligations, repair_pending_event_rolls, restore_delivery_maternal_rolls, schedule_campaign_rolls, schedule_event_rolls, schedule_rolls, schedule_occult_rolls, seed_defaults, seed_occult_rules, sync_generations, validate_multiple_birth_count
 from app.game_metadata import _refpack_decompress, bundled_localizations, confirmed_illness_name, enrich_illness_snapshot, localization_hash, occult_identity, readable_named_labels, readable_trait_labels, trait_illnesses
 from app.insights import household_census, illness_statistics, pregnancy_dashboard, statistics as challenge_statistics
 from app.main import FEATURES, NAVIGATION_GROUPS, app, birth_calendar_fields, birth_circumstance_suggestion, create_rule_roll_record, death_calendar_fields, kinship_warning, marriage_calendar_fields, navigation_group_for, resolve_birth_input, sim_birth_display, sim_weekday
@@ -117,6 +117,32 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertEqual((pending.data["die"],pending.data["bad_results"]),("d20","14 16"))
             self.assertEqual(completed.data["bad_results"],"1")
             self.assertEqual(repair_default_aging_tables(session,save),0)
+            session.rollback()
+
+    def test_calendar_length_rescales_future_age_rules_and_not_completed_history(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Calendar scaling");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Calendar scaling",start_year=1300,days_per_year=4,global_day=1)
+            session.add(save);session.flush();seed_defaults(session,save)
+            sim=Record(save_id=save.id,kind="sim",label="Calendar Sim",global_day=5,data={"birth_global_day":5})
+            session.add(sim);session.flush();schedule_rolls(session,save)
+            completed=Record(save_id=save.id,kind="roll",label="Recorded Teen",global_day=57,data={"sim_id":sim.id,"roll_type":"Teen","source":"aging:historic","completed":True,"actual":1})
+            session.add(completed);session.flush()
+            save.days_per_year=12
+            changes=rescale_age_timing(session,save,4,12)
+            rules={rule.label:rule for rule in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll_rule",Record.deleted.is_(False)))}
+            self.assertEqual(rules["Infant"].data["age_days"],3)
+            self.assertEqual(rules["Young Adult"].data["age_days"],216)
+            pending={roll.data["roll_type"]:roll for roll in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)) if not (roll.data or {}).get("completed")}
+            self.assertEqual(pending["Infant"].global_day,8)
+            self.assertEqual(pending["Young Adult"].global_day,221)
+            self.assertEqual(pending["Young Adult"].data["due_global_day"],221)
+            self.assertEqual(save.settings["marriage_min_age_days"],216)
+            self.assertEqual(save.settings["elder_max_age_days"],960)
+            self.assertGreater(changes["rules"],0);self.assertGreater(changes["rolls"],0)
+            self.assertEqual(completed.global_day,57)
+            self.assertTrue(completed.data["completed"])
+            self.assertEqual(schedule_rolls(session,save),0)
             session.rollback()
 
     def test_elder_rng_uses_age_60_to_120_and_is_anchored_to_birth(self):

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import ChronicleSave, ClockLink, Portrait, Record
-from .domain import AGING_STAGE_OFFSETS, CLOSED_ILLNESSES, automation_enabled, journal
+from .domain import AGING_STAGE_OFFSETS, CLOSED_ILLNESSES, age_setting_days, automation_enabled, journal, lifecycle_age_days
 from . import automation, game_metadata, telemetry, sync, notifications, portraits, storyline
 
 
@@ -169,11 +169,11 @@ def estimate_new_sim_birth(session: Session, save: ChronicleSave, snapshot: dict
     if stage not in _STAGE_LABELS.values():
         return {}
     starts = {
-        "newborn":int(AGING_STAGE_OFFSETS.get("newborn", 0)), "infant":int(AGING_STAGE_OFFSETS.get("infant", 1)),
-        "toddler":int(AGING_STAGE_OFFSETS.get("toddler", 4)), "child":int(AGING_STAGE_OFFSETS.get("child", 20)),
-        "preteen":int(AGING_STAGE_OFFSETS.get("preteen", 40)), "teen":int(AGING_STAGE_OFFSETS.get("teen", 52)),
-        "youngadult":int(AGING_STAGE_OFFSETS.get("young adult", 72)), "adult":int(AGING_STAGE_OFFSETS.get("adult", 160)),
-        "elder":int(AGING_STAGE_OFFSETS.get("elder death-age rng", 240)),
+        "newborn":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("newborn", 0)), "infant":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("infant", 1)),
+        "toddler":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("toddler", 4)), "child":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("child", 20)),
+        "preteen":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("preteen", 40)), "teen":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("teen", 52)),
+        "youngadult":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("young adult", 72)), "adult":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("adult", 160)),
+        "elder":lifecycle_age_days(save, AGING_STAGE_OFFSETS.get("elder death-age rng", 240)),
     }
     rules = session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False),
@@ -189,7 +189,7 @@ def estimate_new_sim_birth(session: Session, save: ChronicleSave, snapshot: dict
     if stage == "preteen":
         end_age = starts["teen"]
     elif stage == "elder":
-        end_age = max(start_age + 1, int((save.settings or {}).get("elder_max_age_days", 320)))
+        end_age = max(start_age + 1, age_setting_days(save, "elder_max_age_days", 320))
     else:
         position = _GAME_STAGE_ORDER.index(stage)
         end_age = starts[_GAME_STAGE_ORDER[position + 1]]

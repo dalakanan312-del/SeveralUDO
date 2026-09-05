@@ -17,7 +17,7 @@ from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
 from .early_event_catalog_data import EARLY_EVENT_LIBRARY_GZIP_BASE64
 
 
-DEFAULTS_SCHEMA_VERSION = "4.5.16-delivery-multiples-original-occult-aging"
+DEFAULTS_SCHEMA_VERSION = "4.6.3-calendar-scaled-lifecycle"
 
 # Authoritative pre-1700 SeveralUDO mortality table recovered from the
 # original Rules Config. The age offsets remain challenge-day milestones;
@@ -42,6 +42,41 @@ LEGACY_INCORRECT_STAGES = {
 
 AGING_STAGE_OFFSETS = {stage.casefold(): age for stage, age, _die, _bad in DEFAULT_STAGES}
 ORIGINAL_AGING_CHART = "Original SeveralUDO lifecycle mortality chart"
+STANDARD_CHALLENGE_DAYS_PER_YEAR = 4
+AGE_SCALED_SETTING_DEFAULTS = {
+    "marriage_min_age_days": 72,
+    "elder_min_age_days": 240,
+    "elder_max_age_days": 320,
+}
+
+
+def scale_age_days(value: int | str, from_days_per_year: int, to_days_per_year: int) -> int:
+    """Scale a historical-age duration without scaling a Global-Day date."""
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if days <= 0:
+        return 0
+    old = max(1, int(from_days_per_year))
+    new = max(1, int(to_days_per_year))
+    return max(1, int(round(days * new / old)))
+
+
+def lifecycle_age_days(save: ChronicleSave, standard_age_days: int | str) -> int:
+    """Convert an original SeveralUDO four-day age milestone for this save."""
+    return scale_age_days(standard_age_days, STANDARD_CHALLENGE_DAYS_PER_YEAR, save.days_per_year)
+
+
+def age_setting_days(save: ChronicleSave, setting: str, standard_default: int) -> int:
+    """Return a calendar-scaled age setting, including older saves with no value."""
+    value = (save.settings or {}).get(setting)
+    if value in (None, ""):
+        return lifecycle_age_days(save, standard_default)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return lifecycle_age_days(save, standard_default)
 RECORD_LABEL_MAX_LENGTH = 240
 
 
@@ -1725,7 +1760,8 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
     for stage, age, die, bad in DEFAULT_STAGES:
         if stage.casefold() in existing_aging_rules:
             continue
-        record = Record(save_id=save.id, kind="roll_rule", label=stage, data={"age_days": age, "die": die, "bad_results": bad, "active": True, "source":"built-in SeveralUDO baseline", "core_ruleset_id":core_rulesets.SEVERALUDO, "death_age_rng":"elder" in stage.casefold()})
+        scaled_age = lifecycle_age_days(save, age)
+        record = Record(save_id=save.id, kind="roll_rule", label=stage, data={"age_days": scaled_age, "standard_age_days": age, "age_days_calendar_days_per_year": save.days_per_year, "die": die, "bad_results": bad, "active": True, "source":"built-in SeveralUDO baseline", "core_ruleset_id":core_rulesets.SEVERALUDO, "death_age_rng":"elder" in stage.casefold()})
         session.add(record); session.flush(); journal(session, record, "upsert", 0); created += 1
     for label, die, bad in DEFAULT_MATERNAL_RULES:
         if label.casefold() in existing_rules:
@@ -1762,7 +1798,11 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
     event_created=seed_event_catalog(session,save)
     generation_updates=sync_generations(session,save)
     save.revision+=generation_updates
-    save_settings=dict(save.settings or {});save_settings["defaults_schema_version"]=DEFAULTS_SCHEMA_VERSION;save.settings=save_settings
+    save_settings=dict(save.settings or {})
+    for setting, standard_age in AGE_SCALED_SETTING_DEFAULTS.items():
+        if save_settings.get(setting) in (None, ""):
+            save_settings[setting] = lifecycle_age_days(save, standard_age)
+    save_settings["defaults_schema_version"]=DEFAULTS_SCHEMA_VERSION;save.settings=save_settings
     return created+event_created+generation_updates
 
 
@@ -1884,7 +1924,7 @@ def repair_default_aging_tables(session: Session, save: ChronicleSave) -> int:
     preserved. Completed obligations are also preserved as historical facts.
     """
     desired = {
-        label.casefold(): {"label": label, "age_days": age, "die": die, "bad_results": bad}
+        label.casefold(): {"label": label, "age_days": lifecycle_age_days(save, age), "standard_age_days": age, "die": die, "bad_results": bad}
         for label, age, die, bad in DEFAULT_STAGES
     }
     rules = list(session.scalars(select(Record).where(
@@ -1902,7 +1942,12 @@ def repair_default_aging_tables(session: Session, save: ChronicleSave) -> int:
         data = dict(rule.data or {})
         if str(data.get("core_ruleset_id") or core_rulesets.SEVERALUDO) != core_rulesets.SEVERALUDO:
             continue
-        if data.get("age_days") in (None, "") or int(data.get("age_days")) != int(target["age_days"]):
+        if data.get("age_days") in (None, ""):
+            continue
+        current_age_days = int(data.get("age_days"))
+        # Pre-calendar saves stored the original four-day offsets. Treat only
+        # those known baseline values as migration candidates; player tables win.
+        if current_age_days not in {int(target["age_days"]), int(target["standard_age_days"])}:
             continue
         canonical_rules[rule.id] = rule
         current = (str(data.get("die") or ""), str(data.get("bad_results") or ""))
@@ -1915,6 +1960,9 @@ def repair_default_aging_tables(session: Session, save: ChronicleSave) -> int:
             # The player has edited this table; keep their version authoritative.
             continue
         updates.update({
+            "age_days": int(target["age_days"]),
+            "standard_age_days": int(target["standard_age_days"]),
+            "age_days_calendar_days_per_year": int(save.days_per_year),
             "source": data.get("source") or "built-in SeveralUDO baseline",
             "core_ruleset_id": core_rulesets.SEVERALUDO,
             "death_age_rng": key == "elder death-age rng",
@@ -1956,18 +2004,29 @@ def repair_default_aging_tables(session: Session, save: ChronicleSave) -> int:
                 "mode": "original-chart-unmodified",
                 "occult_types": (),
             }
+            try:
+                birth = int((sim.data or {}).get("birth_global_day", sim.global_day)) if sim else None
+            except (TypeError, ValueError):
+                birth = None
+            due = birth + int(rule_data.get("age_days") or 0) if birth is not None else None
             updates = {
                 "die": rule_data.get("die"),
                 "bad_results": rule_data.get("bad_results"),
                 "death_age_rng": bool(rule_data.get("death_age_rng")),
+                "lifecycle_age_days": int(rule_data.get("age_days") or 0),
+                "age_calendar_days_per_year": int(save.days_per_year),
                 "aging_chart": profile["chart"],
                 "occult_aging_mode": profile["mode"],
                 "occult_types_at_scheduling": list(profile["occult_types"]),
                 "core_ruleset_id": rule_data.get("core_ruleset_id"),
             }
-            if all(data.get(field) == value for field, value in updates.items()):
+            if due is not None:
+                updates["due_global_day"] = due
+            if roll.global_day == due and all(data.get(field) == value for field, value in updates.items()):
                 continue
             base = roll.version
+            if due is not None:
+                roll.global_day = due
             roll.data = {**data, **updates, "aging_table_refreshed": True}
             roll.version += 1
             journal(session, roll, "upsert", base)
@@ -3273,7 +3332,7 @@ def _schedule_marriage_rolls(session: Session, save: ChronicleSave, sims: list[R
     legacy = settings.get("legacy_settings") or {}
     legacy_map = settings.get("legacy_id_map") or {}
     heir_id = str(settings.get("current_heir_id") or legacy_map.get(legacy.get("current_heir_id"), legacy.get("current_heir_id")) or "")
-    marriage_age = max(0, _setting_int(save, "marriage_min_age_days", 72))
+    marriage_age = age_setting_days(save, "marriage_min_age_days", 72)
     created = 0
     for sim in sims:
         data = sim.data or {}
@@ -4676,6 +4735,152 @@ def retire_occult_exempt_aging_rolls(session: Session, save: ChronicleSave,
     return changed
 
 
+def rescale_age_timing(session: Session, save: ChronicleSave, old_days_per_year: int,
+                       new_days_per_year: int) -> dict[str, int]:
+    """Move future age-based rules when a save changes calendar length.
+
+    A four-day calendar is the SeveralUDO reference. This affects age
+    durations—not historical dates—and never moves a completed record.
+    """
+    old = max(1, int(old_days_per_year))
+    new = max(1, int(new_days_per_year))
+    result = {"rules": 0, "settings": 0, "rolls": 0}
+    if old == new:
+        return result
+
+    settings_data = dict(save.settings or {})
+    for key, standard in AGE_SCALED_SETTING_DEFAULTS.items():
+        previous = settings_data.get(key)
+        if previous in (None, ""):
+            previous = scale_age_days(standard, STANDARD_CHALLENGE_DAYS_PER_YEAR, old)
+        scaled = scale_age_days(previous, old, new)
+        if settings_data.get(key) != scaled:
+            settings_data[key] = scaled
+            result["settings"] += 1
+    settings_data["age_calendar_days_per_year"] = new
+    save.settings = settings_data
+
+    rules = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False),
+    )))
+    lifecycle_rules: dict[str, Record] = {}
+    for rule in rules:
+        data = dict(rule.data or {})
+        raw_age = data.get("age_days")
+        if raw_age in (None, ""):
+            continue
+        try:
+            scaled_age = scale_age_days(raw_age, old, new)
+        except (TypeError, ValueError):
+            continue
+        lifecycle_rules[rule.id] = rule
+        updates = {
+            "age_days": scaled_age,
+            "age_days_calendar_days_per_year": new,
+            "calendar_rescaled_from_days_per_year": old,
+        }
+        if all(data.get(key) == value for key, value in updates.items()):
+            continue
+        base = rule.version
+        rule.data = {**data, **updates}
+        rule.version += 1
+        journal(session, rule, "upsert", base)
+        result["rules"] += 1
+
+    # Event, campaign and optional-rule age gates use the same Sim-age scale.
+    # Their historical dates stay put; only who is old enough to participate moves.
+    age_gate_records = session.scalars(select(Record).where(
+        Record.save_id == save.id,
+        Record.kind.in_(("event", "campaign", "occult_rule", "future_rule")),
+        Record.deleted.is_(False),
+    ))
+    for record in age_gate_records:
+        data = dict(record.data or {})
+        updates = {}
+        for key in ("min_age_days", "max_age_days"):
+            if data.get(key) in (None, ""):
+                continue
+            updates[key] = scale_age_days(data[key], old, new)
+        if not updates:
+            continue
+        updates["age_days_calendar_days_per_year"] = new
+        updates["calendar_rescaled_from_days_per_year"] = old
+        if all(data.get(key) == value for key, value in updates.items()):
+            continue
+        base = record.version
+        record.data = {**data, **updates}
+        record.version += 1
+        journal(session, record, "upsert", base)
+        result["rules"] += 1
+
+    sims = {sim.id: sim for sim in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+    ))}
+    pending = session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+    ))
+    for roll in pending:
+        data = dict(roll.data or {})
+        if bool(data.get("completed")):
+            continue
+        source = str(data.get("source") or "")
+        sim = sims.get(str(data.get("sim_id") or ""))
+        if not sim:
+            continue
+        sim_data = sim.data or {}
+        try:
+            birth = int(sim_data.get("birth_global_day", sim.global_day))
+        except (TypeError, ValueError):
+            continue
+        due = None
+        updates: dict[str, object] = {}
+        if source.startswith("aging:"):
+            rule = lifecycle_rules.get(source.rsplit(":", 1)[-1])
+            if not rule:
+                continue
+            rule_data = rule.data or {}
+            age_days = int(rule_data.get("age_days") or 0)
+            due = birth + age_days
+            updates["lifecycle_age_days"] = age_days
+            candidates = sorted(
+                int((candidate.data or {}).get("age_days"))
+                for candidate in lifecycle_rules.values()
+                if candidate.id != rule.id
+                and (candidate.data or {}).get("age_days") not in (None, "")
+                and int((candidate.data or {}).get("age_days")) > age_days
+                and str((candidate.data or {}).get("core_ruleset_id") or "") == str(rule_data.get("core_ruleset_id") or "")
+            )
+            if candidates:
+                updates["death_window_end"] = birth + candidates[0] - 1
+        elif source.startswith("planner:marriage:"):
+            due = birth + age_setting_days(save, "marriage_min_age_days", 72)
+        elif bool(data.get("hp_hogwarts_sorting")) or str(data.get("source_rule_key") or "") == "hp_13":
+            due = birth + 11 * new
+        elif str(data.get("hp_rule_code") or "").upper() == "HP-06":
+            due = birth + 7 * new
+        elif data.get("hp_age_years") not in (None, ""):
+            try:
+                due = birth + int(data.get("hp_age_years")) * new
+            except (TypeError, ValueError):
+                continue
+        if due is None:
+            continue
+        updates.update({
+            "due_global_day": int(due),
+            "age_calendar_days_per_year": new,
+            "calendar_rescaled_from_days_per_year": old,
+        })
+        if roll.global_day == int(due) and all(data.get(key) == value for key, value in updates.items()):
+            continue
+        base = roll.version
+        roll.global_day = int(due)
+        roll.data = {**data, **updates}
+        roll.version += 1
+        journal(session, roll, "upsert", base)
+        result["rolls"] += 1
+    return result
+
+
 def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record,
                                   rules: list[Record]) -> int:
     """Create only one Sim's aging obligations, without unrelated automation."""
@@ -4693,7 +4898,7 @@ def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Re
             continue
         configured_age = rule.data.get("age_days")
         if configured_age in (None, ""):
-            configured_age = AGING_STAGE_OFFSETS.get(rule.label.strip().casefold())
+            configured_age = lifecycle_age_days(save, AGING_STAGE_OFFSETS.get(rule.label.strip().casefold(), 0))
         if configured_age is None:
             continue
         if int(configured_age) == 0 and sim.data.get("newborn_rolls_required") is False:
@@ -4735,6 +4940,8 @@ def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Re
             "core_ruleset_id":rule.data.get("core_ruleset_id"),
             "core_source_rule_id":rule.data.get("source_rule_id"),
             "death_age_rng":bool(rule.data.get("death_age_rng")),
+            "lifecycle_age_days": int(configured_age),
+            "age_calendar_days_per_year": int(save.days_per_year),
         }
         if later_ages:
             payload["death_window_end"]=int(birth)+later_ages[0]-1
@@ -5338,7 +5545,7 @@ def auto_pass_lifecycle_rolls_for_added_sim(session: Session, save: ChronicleSav
         current_age = max(0, save.global_day - birth)
         eligible = [(stage.casefold(), offset) for stage, offset, _die, _bad in DEFAULT_STAGES if offset <= current_age and "elder" not in stage.casefold()]
         raw_stage = max(eligible, key=lambda item: item[1], default=("being born", 0))[0]
-    stage_start = int(AGING_STAGE_OFFSETS.get(raw_stage, 0))
+    stage_start = lifecycle_age_days(save, AGING_STAGE_OFFSETS.get(raw_stage, 0))
     result = pass_prior_lifecycle_rolls(session, save, sim, birth + stage_start - 1)
     if result["passed"]:
         base = sim.version
@@ -5390,13 +5597,15 @@ def _death_window(session: Session, save: ChronicleSave, roll: Record, sim: Reco
         roll_type = str(data.get("roll_type") or "").casefold()
         if "maternal" not in roll_type:
             birth = sim.data.get("birth_global_day", sim.global_day)
-            current_offset = AGING_STAGE_OFFSETS.get(roll_type)
+            current_offset = data.get("lifecycle_age_days")
+            if current_offset in (None, ""):
+                current_offset = lifecycle_age_days(save, AGING_STAGE_OFFSETS.get(roll_type, 0))
             if birth is not None and current_offset is not None:
-                later = sorted(offset for offset in AGING_STAGE_OFFSETS.values() if offset > current_offset)
+                later = sorted(lifecycle_age_days(save, offset) for offset in AGING_STAGE_OFFSETS.values() if lifecycle_age_days(save, offset) > int(current_offset))
                 if later:
                     end = max(start, int(birth) + later[0] - 1)
                 elif "elder" in roll_type:
-                    end = max(start, int(birth) + int((save.settings or {}).get("elder_max_age_days", 320)))
+                    end = max(start, int(birth) + age_setting_days(save, "elder_max_age_days", 320))
     # Never assign a newly discovered death before the day on which the player
     # resolved the roll. It may be scheduled later within the applicable range.
     start = max(start, save.global_day)
