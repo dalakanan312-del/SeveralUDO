@@ -11,6 +11,8 @@ $legacyPendingPath = Join-Path $relayRoot "pending_report.json"
 $resultPath = Join-Path $relayRoot "last_result.json"
 $healthPath = Join-Path $relayRoot "relay_health.json"
 $configPath = Join-Path $relayRoot "config.json"
+$gameSnapshotPath = Join-Path $relayRoot "sims3_game_clock.json"
+$reporterStatePath = Join-Path $relayRoot "sims3_reporter_state.json"
 $mutex = New-Object System.Threading.Mutex($false, "SeveralUDOSims3ClockRelay01")
 $ownsMutex = $false
 
@@ -31,7 +33,7 @@ function Write-RelayHealth {
     $queued = @(Get-ChildItem -LiteralPath $queuePath -Filter "report-*.json" -File -ErrorAction SilentlyContinue).Count
     $quarantined = @(Get-ChildItem -LiteralPath $quarantinePath -Filter "*.json" -File -ErrorAction SilentlyContinue).Count
     $value = @{
-        relay_version = "Sims3-0.1.0"
+        relay_version = "Sims3-1.0.0"
         state = $State
         message = $Message
         queue_depth = $queued
@@ -49,6 +51,8 @@ function Test-ClockSyncInstall {
     $checks = [ordered]@{}
     $checks.config_present = Test-Path -LiteralPath $configPath -PathType Leaf
     $checks.reporter_present = Test-Path -LiteralPath (Join-Path $relayRoot "Report Sims 3 Clock Now.ps1") -PathType Leaf
+    $checks.script_mod_present = Test-Path -LiteralPath (Join-Path (Split-Path -Parent $relayRoot) "Packages\SeveralUDOSims3ClockSync.package") -PathType Leaf
+    $checks.automatic_snapshot_present = Test-Path -LiteralPath $gameSnapshotPath -PathType Leaf
     $checks.relay_present = Test-Path -LiteralPath $PSCommandPath -PathType Leaf
     $checks.queue_writable = $false
     $checks.configuration_valid = $false
@@ -108,10 +112,75 @@ function Test-ClockSyncInstall {
     catch {
         $checks.message = $_.Exception.Message
     }
-    $checks.ok = [bool]($checks.config_present -and $checks.reporter_present -and $checks.relay_present -and $checks.queue_writable -and $checks.configuration_valid -and $checks.receiver_reachable)
+    $checks.ok = [bool]($checks.config_present -and $checks.reporter_present -and $checks.script_mod_present -and $checks.relay_present -and $checks.queue_writable -and $checks.configuration_valid -and $checks.receiver_reachable)
     $checks.checked_at = [DateTimeOffset]::UtcNow.ToString("o")
     Write-JsonAtomic -Path (Join-Path $relayRoot "self_test_result.json") -Value $checks
     return $checks.ok
+}
+
+function Import-AutomaticGameClockSnapshot {
+    if (-not (Test-Path -LiteralPath $gameSnapshotPath -PathType Leaf)) { return }
+    try {
+        $config = Read-JsonFile $configPath
+        if (-not $config.receiver_url -or -not $config.sync_token -or $config.enabled -eq $false) { return }
+        if ([string]$config.game_edition -and [string]$config.game_edition -ne "sims3") { return }
+        $snapshot = Read-JsonFile $gameSnapshotPath
+        $gameDay = [int]$snapshot.game_day
+        $hour = [int]$snapshot.hour
+        $minute = [int]$snapshot.minute
+        if ($gameDay -lt 1 -or $hour -lt 0 -or $hour -gt 23 -or $minute -lt 0 -or $minute -gt 59) {
+            throw "The automatic package wrote an invalid game time."
+        }
+        $state = if (Test-Path -LiteralPath $reporterStatePath -PathType Leaf) { Read-JsonFile $reporterStatePath } else { [pscustomobject]@{} }
+        $signature = "$gameDay/$hour/$minute"
+        if ([string]$state.last_automatic_signature -eq $signature) { return }
+        $saveIdentity = [string]$config.sims3_save_identity
+        if (-not $saveIdentity) { $saveIdentity = [string]$state.save_identity }
+        if (-not $saveIdentity) {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+                $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$config.sync_token))
+                $saveIdentity = "Sims3-" + (($hash[0..5] | ForEach-Object { $_.ToString("x2") }) -join "")
+            }
+            finally { $sha.Dispose() }
+        }
+        $sequence = [long]$state.last_sequence + 1
+        $report = [ordered]@{
+            protocol_version = 1
+            clock_sync_version = "Sims3-1.0.0-automatic"
+            game_edition = "sims3"
+            report_sequence = $sequence
+            report_id = [guid]::NewGuid().ToString("N")
+            report_kind = "clock"
+            game_time_source = "automatic_package"
+            save_identity = $saveIdentity
+            save_slot_name = $saveIdentity
+            game_day = $gameDay
+            hour = $hour
+            minute = $minute
+            second = 0
+            household_members = @()
+            population_complete = $false
+            generated_at = [DateTimeOffset]::UtcNow.ToString("o")
+        }
+        $envelope = [ordered]@{
+            receiver_url = [string]$config.receiver_url
+            sync_token = [string]$config.sync_token
+            report_sequence = $sequence
+            payload = $report
+        }
+        $destination = Join-Path $queuePath ("report-{0:D12}-sims3-auto.json" -f $sequence)
+        Write-JsonAtomic -Path $destination -Value $envelope
+        Write-JsonAtomic -Path $reporterStatePath -Value ([ordered]@{
+            last_sequence = $sequence
+            save_identity = $saveIdentity
+            last_automatic_signature = $signature
+            last_reported_at = [DateTimeOffset]::UtcNow.ToString("o")
+        })
+    }
+    catch {
+        Write-RelayHealth -State "needs_attention" -Message ("The automatic Sims 3 clock snapshot could not be queued: " + $_.Exception.Message)
+    }
 }
 
 function Import-LegacyPendingReport {
@@ -212,6 +281,7 @@ try {
         if ($ok) { exit 0 } else { exit 1 }
     }
     while ($true) {
+        Import-AutomaticGameClockSnapshot
         Import-LegacyPendingReport
         $sent = Send-OldestReport
         if ($Once) { break }

@@ -1,30 +1,95 @@
-// SeveralUDO Sims 3 Clock Sync
-// Protocol reference for the future automatic Sims 3 package reporter.
+// SeveralUDO Sims 3 Clock Sync 1.0.0
 //
-// A true in-game reporter must be compiled against the exact Sims 3 game
-// assemblies and packed as a DBPF .package. Those proprietary assemblies and
-// package build tools are intentionally not bundled with Decades Tracker.
-//
-// The resulting reporter should write one envelope file to:
-//   Documents\Electronic Arts\The Sims 3\Mods\SeveralUDOClockSync\report_queue
-//
-// Envelope JSON:
-// {
-//   "receiver_url": ".../api/clock/report",
-//   "sync_token": "private token",
-//   "report_sequence": 1,
-//   "payload": {
-//      "protocol_version": 2,
-//      "game_edition": "sims3",
-//      "clock_sync_version": "Sims3-automatic",
-//      "report_sequence": 1,
-//      "report_checksum": "sha256 canonical JSON",
-//      "save_identity": "stable Sims 3 save identifier",
-//      "game_day": 1, "hour": 12, "minute": 0, "second": 0,
-//      "household_members": [], "population_complete": false
-//   }
-// }
-//
-// The tracker already accepts this protocol. Until a compiled package is
-// distributed, Report Sims 3 Clock Now.ps1 creates a protocol-v1 clock-only
-// envelope without any in-game code.
+// This pure script mod reads only the active save's game clock. It never
+// changes a .sims3 save and it does not send network traffic from the game.
+// It writes a small local snapshot which the separate, user-started relay
+// turns into the private tracker report.
+
+using System;
+using System.IO;
+using System.Text;
+using Sims3.Gameplay.Utilities;
+using Sims3.SimIFace;
+
+[assembly: Tunable]
+
+namespace SeveralUDO.Sims3
+{
+    public class ClockSync
+    {
+        [Tunable]
+        protected static bool kInstantiator = false;
+
+        private const string BridgeFolder = "SeveralUDOClockSync";
+        private const string SnapshotName = "sims3_game_clock.json";
+
+        static ClockSync()
+        {
+            World.OnWorldLoadFinishedEventHandler += new EventHandler(OnWorldLoadFinished);
+        }
+
+        private static void OnWorldLoadFinished(object sender, EventArgs e)
+        {
+            // The world clock is not always ready in the first callback.
+            AlarmManager.Global.AddAlarm(
+                1f,
+                TimeUnit.Seconds,
+                new AlarmTimerCallback(StartReporting),
+                "SeveralUDO Sims 3 Clock Sync start",
+                AlarmType.NeverPersisted,
+                null
+            );
+        }
+
+        private static void StartReporting()
+        {
+            WriteClockSnapshot();
+            AlarmManager.Global.AddAlarmRepeating(
+                5f,
+                TimeUnit.Minutes,
+                new AlarmTimerCallback(WriteClockSnapshot),
+                10f,
+                TimeUnit.Minutes,
+                "SeveralUDO Sims 3 Clock Sync",
+                AlarmType.NeverPersisted,
+                null
+            );
+        }
+
+        private static void WriteClockSnapshot()
+        {
+            try
+            {
+                float clockHour = SimClock.CurrentTime().Hour;
+                int hour = (int)Math.Floor(clockHour);
+                int minute = (int)Math.Floor((clockHour - hour) * 60f + 0.01f);
+                if (minute >= 60)
+                {
+                    hour += 1;
+                    minute = 0;
+                }
+                hour = Math.Max(0, Math.Min(23, hour));
+                minute = Math.Max(0, Math.Min(59, minute));
+                int gameDay = Math.Max(1, (int)Math.Floor(SimClock.ElapsedTime(TimeUnit.Days)) + 1);
+
+                string documents = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+                string bridge = Path.Combine(documents, @"Electronic Arts\The Sims 3\Mods\" + BridgeFolder);
+                Directory.CreateDirectory(bridge);
+                string snapshot = Path.Combine(bridge, SnapshotName);
+                string temporary = snapshot + ".tmp";
+                string json = "{\"schema\":1,\"source\":\"SeveralUDO Sims 3 Clock Sync\",\"game_edition\":\"sims3\",\"game_day\":"
+                    + gameDay + ",\"hour\":" + hour + ",\"minute\":" + minute + "}";
+
+                File.WriteAllText(temporary, json, new UTF8Encoding(false));
+                if (File.Exists(snapshot)) File.Delete(snapshot);
+                File.Move(temporary, snapshot);
+            }
+            catch
+            {
+                // A clock reporter must never interrupt the game for a
+                // temporary file-system issue. The next scheduled check tries
+                // again, and the relay will retain the last valid snapshot.
+            }
+        }
+    }
+}

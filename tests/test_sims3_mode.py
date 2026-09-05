@@ -24,11 +24,12 @@ class Sims3ModeTests(unittest.TestCase):
         self.assertEqual(game_modes.normalize('The Sims 3'), 'sims3')
         self.assertEqual(game_modes.normalize('unexpected value'), 'sims4')
 
-    def test_sims3_bundle_keeps_its_manual_bridge_separate_from_ts4_mod(self):
+    def test_sims3_bundle_contains_its_automatic_package_separate_from_ts4_mod(self):
         package = clock_bundle.build_bundle(game_mode='sims3')
         with ZipFile(io.BytesIO(package)) as archive:
             names = set(archive.namelist())
             config = json.loads(archive.read('SeveralUDOSims3ClockSync/config-template.json'))
+        self.assertIn('SeveralUDOSims3ClockSync/SeveralUDOSims3ClockSync.package', names)
         self.assertIn('SeveralUDOSims3ClockSync/Report Sims 3 Clock Now.ps1', names)
         self.assertIn('SeveralUDOSims3ClockSync/README - Install Sims 3 Clock Sync.txt', names)
         self.assertNotIn('SeveralUDOSims3ClockSync/SeveralUDOClockSync.ts4script', names)
@@ -64,7 +65,7 @@ class Sims3ModeTests(unittest.TestCase):
                 page = client.get('/p/clock')
                 self.assertEqual(page.status_code, 200)
                 self.assertIn('Sims 3 Clock Sync', page.text)
-                self.assertIn('manual game-clock reporter', page.text)
+                self.assertIn('automatic Sims 3 clock package', page.text)
                 configured = client.post('/downloads/clock-sync/configured')
                 self.assertEqual(configured.status_code, 200)
                 with ZipFile(io.BytesIO(configured.content)) as package:

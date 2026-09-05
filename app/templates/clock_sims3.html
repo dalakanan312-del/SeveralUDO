@@ -4,7 +4,7 @@
 <header class="hero compact">
   <p class="eyebrow">THE SIMS 3 · GAME CLOCK</p>
   <h1>Sims 3 Clock Sync</h1>
-  <p>Keep this Sims 3 chronicle aligned with its game calendar. The first report sets the anchor; only later, higher game days move Global Day forward.</p>
+  <p>Let your Sims 3 calendar advance this chronicle’s Global Day automatically.</p>
 </header>
 {% if clock_notice %}<div class="notice">{{clock_notice}}</div>{% endif %}
 
@@ -27,35 +27,35 @@
 <section class="panel">
   <p class="eyebrow">PRIVATE · READY TO INSTALL</p>
   <h2>Download this save’s Sims 3 kit</h2>
-  <p>The private kit is already connected to <strong>{{save.name}}</strong>. It contains the relay, a safe manual game-clock reporter, updater, self-test, and detailed instructions.</p>
+  <p>The private kit is connected to <strong>{{save.name}}</strong>. It includes the automatic Sims 3 clock package, relay, updater, self-test, and detailed instructions.</p>
   <form action="/downloads/clock-sync/configured" method="post" onsubmit="return confirm('Create a fresh private Sims 3 Clock Sync link? An older private configuration for this tracker save will stop working.')"><button class="primary">Create link and download private Sims 3 kit</button></form>
   <p><small>Keep its config.json private. It belongs only to this chronicle.</small></p>
 </section>
 
 <section class="panel">
-  <p class="eyebrow">HOW THIS FIRST SIMS 3 EDITION WORKS</p>
-  <h2>Reliable clock alignment, without touching your save</h2>
-  <p>Sims 3 uses a different package-based mod system than Sims 4. This release provides the tracker-side receiver and a local relay that works with Sims 3. Until a compiled Sims 3 <code>.package</code> reporter is released, it deliberately uses a small manual reporter: read the game’s current day and time, enter them once, and the relay delivers the queued report.</p>
+  <p class="eyebrow">AUTOMATIC SIMS 3 CLOCK</p>
+  <h2>Automatic clock alignment, without touching your save</h2>
+  <p>The included Sims 3 <code>.package</code> reads the active save’s in-game day and time after the world loads, then refreshes it while the game clock runs. It writes a local snapshot only; the separately started relay safely delivers that snapshot through this save’s private link.</p>
   <ol>
     <li>Download and extract the private kit.</li>
-    <li>Run <strong>Install or Update SeveralUDO Sims 3 Clock Sync.bat</strong>.</li>
+    <li>Run <strong>Install or Update SeveralUDO Sims 3 Clock Sync.bat</strong> while Sims 3 is closed.</li>
     <li>Run the included self-test, then start the relay.</li>
-    <li>When you want to align the tracker, run <strong>Report Sims 3 Clock Now.bat</strong> and enter the day and time displayed in-game.</li>
-    <li>On the first report, give the game save a stable name. Use the same name for that save afterward.</li>
+    <li>Open your Sims 3 save. The first automatic report is prepared shortly after the world finishes loading.</li>
+    <li>Keep the relay running while you play; it sends updated clock times automatically.</li>
   </ol>
-  <div class="notice"><strong>Current scope:</strong> the Sims 3 kit safely advances the tracker clock and protects the save pairing. It does not yet claim to automatically read Sims, pregnancy, health, portraits, or other Sims 4-only telemetry.</div>
+  <div class="notice"><strong>Current scope:</strong> the automatic package reads the Sims 3 day and clock time only. It advances the tracker clock and protects save pairing; it does not claim to read Sims, pregnancy, health, portraits, or other Sims 4-only telemetry.</div>
 </section>
 
 <section class="panel">
   <p class="eyebrow">REUSABLE · NO PRIVATE TOKEN</p>
   <h2>Download the complete Sims 3 kit</h2>
-  <p>Use this for an update or to prepare a computer before you create its private link.</p>
+  <p>Use this for an update or to prepare a computer before creating its private link.</p>
   <p><a class="button primary" href="/downloads/clock-sync?game_mode=sims3">Download Sims 3 Clock Sync {{clock_sync_version}} complete kit</a></p>
-  <details><summary>Download individual files</summary><div class="action-bar"><a class="button" href="/downloads/clock-sync/relay?game_mode=sims3">Relay</a><a class="button" href="/downloads/clock-sync/starter?game_mode=sims3">Relay starter</a><a class="button" href="/downloads/clock-sync/reporter?game_mode=sims3">Clock reporter</a><a class="button" href="/downloads/clock-sync/self-test?game_mode=sims3">Self-test</a><a class="button" href="/downloads/clock-sync/updater-starter?game_mode=sims3">Installer / updater</a><a class="button" href="/downloads/clock-sync/config-template?game_mode=sims3">Config template</a><a class="button" href="/downloads/clock-sync/instructions?game_mode=sims3">Installation guide</a><a class="button" href="/downloads/clock-sync/source?game_mode=sims3">Package protocol reference</a></div></details>
+  <details><summary>Download individual files</summary><div class="action-bar"><a class="button primary" href="/downloads/clock-sync/script?game_mode=sims3">Automatic Sims 3 package</a><a class="button" href="/downloads/clock-sync/relay?game_mode=sims3">Relay</a><a class="button" href="/downloads/clock-sync/starter?game_mode=sims3">Relay starter</a><a class="button" href="/downloads/clock-sync/self-test?game_mode=sims3">Self-test</a><a class="button" href="/downloads/clock-sync/updater-starter?game_mode=sims3">Installer / updater</a><a class="button" href="/downloads/clock-sync/config-template?game_mode=sims3">Config template</a><a class="button" href="/downloads/clock-sync/instructions?game_mode=sims3">Installation guide</a><a class="button" href="/downloads/clock-sync/source?game_mode=sims3">Package source</a></div></details>
 </section>
 
 <section class="grid">
-  <article class="panel"><h2>What the kit changes</h2><p>Nothing inside your <code>.sims3</code> save. It only creates queued JSON reports inside its own SeveralUDOClockSync folder and the relay sends them to this private tracker link.</p></article>
-  <article class="panel"><h2>What stays separate</h2><p>Sims 4 Clock Sync remains its own <code>.ts4script</code> kit. A Sims 3 private link will reject a Sims 4 report, and vice versa, before any tracker data changes.</p></article>
+  <article class="panel"><h2>What the kit changes</h2><p>Nothing inside your <code>.sims3</code> save. It installs one clock-reading package and creates temporary JSON snapshots inside its own SeveralUDOClockSync folder.</p></article>
+  <article class="panel"><h2>What stays separate</h2><p>Sims 4 Clock Sync remains its own <code>.ts4script</code> kit. A Sims 3 private link rejects a Sims 4 report, and vice versa, before any tracker data changes.</p></article>
 </section>
 {% endblock %}

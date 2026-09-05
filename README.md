@@ -3,6 +3,8 @@
 A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI application with server-rendered HTML and small targeted interactions. It does not use Streamlit and does not load every feature after each button press.
 
 ## Current milestone
+`4.6.6` ships Sims 3 Clock Sync 1.0: an installable Sims 3 .package reads the active game day and time after a world loads, while a separate local relay securely forwards those clock snapshots to the linked tracker save.
+
 `4.6.5` adds a hosted-only, privacy-respecting support placement. After the creator configures an approved Google AdSense unit, signed-in visitors receive a one-time choice: show one small footer ad or continue without ads. Google’s script is never loaded unless they opt in; desktop/local tracking remains permanently ad-free, and the choice can be changed from the sidebar.
 
 `4.6.4` adds a game edition choice for every new chronicle. Sims 3 saves get their own Clock Sync screen, a separate private kit, save-pairing protection, and a safe manual day-and-time reporter; Sims 4 saves keep the existing automatic `.ts4script` kit unchanged.

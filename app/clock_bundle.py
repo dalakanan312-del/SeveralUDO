@@ -13,7 +13,7 @@ from . import game_modes
 CLOCK_SYNC_VERSION = "2.2.10"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
-SIMS3_CLOCK_SYNC_VERSION = "0.1.0"
+SIMS3_CLOCK_SYNC_VERSION = "1.0.0"
 SIMS3_CLOCK_SYNC_FOLDER = "SeveralUDOSims3ClockSync"
 SIMS3_BRIDGE_ROOT = ROOT / "clock_bridge_sims3"
 CLOCK_SYNC_REQUIRED_FILES = (
@@ -27,6 +27,7 @@ CLOCK_SYNC_REQUIRED_FILES = (
     "TROUBLESHOOTING.txt",
 )
 SIMS3_CLOCK_SYNC_REQUIRED_FILES = (
+    "SeveralUDOSims3ClockSync.package",
     "SeveralUDOClockRelay.ps1",
     "Start SeveralUDO Sims 3 Clock Relay.bat",
     "Report Sims 3 Clock Now.ps1",
@@ -145,6 +146,7 @@ def bridge_file(name: str, game_mode: object = game_modes.SIMS4) -> Path:
         "instructions": "README - Install Clock Sync.txt",
         "troubleshooting": "TROUBLESHOOTING.txt",
     } if mode == game_modes.SIMS4 else {
+        "script": "SeveralUDOSims3ClockSync.package",
         "relay": "SeveralUDOClockRelay.ps1",
         "starter": "Start SeveralUDO Sims 3 Clock Relay.bat",
         "self-test": "Test SeveralUDO Sims 3 Clock Sync.bat",

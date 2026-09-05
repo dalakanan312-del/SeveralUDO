@@ -1,41 +1,59 @@
-SeveralUDO Sims 3 Clock Sync 0.1.0
-====================================
+SeveralUDO Sims 3 Clock Sync 1.0.0
+===================================
 
-This kit connects a Sims 3 Decades Tracker save to its private Clock Sync link. It never edits a Sims 3 save file.
+This kit links one Sims 3 Decades Tracker save to its private Clock Sync link.
+It never edits a .sims3 save.
 
-IMPORTANT STATUS
-----------------
-This is the Sims 3 manual clock bridge. The tracker and relay are Sims 3-aware and safely pair one named Sims 3 save with one tracker chronicle. Because Sims 3 uses a different package-based scripting system, this release does NOT include a compiled .package game mod. It reports the exact game day and time you enter from the in-game clock.
+WHAT IS NEW
+-----------
+SeveralUDOSims3ClockSync.package is a real Sims 3 script mod. It reads only
+the active save's in-game day and time, writes a small local snapshot, and
+leaves the relay to send that snapshot safely to your private tracker link.
 
-INSTALL
--------
-1. Download the private Sims 3 kit from a Sims 3 tracker save.
-2. Extract the ZIP.
-3. Open SeveralUDOSims3ClockSync and double-click Install or Update SeveralUDO Sims 3 Clock Sync.bat.
-4. Run Test SeveralUDO Sims 3 Clock Sync.bat. It checks the private link without changing the tracker.
-5. Start SeveralUDO Sims 3 Clock Relay.bat once. It can stay open in the background.
+INSTALL (WITH SIMS 3 CLOSED)
+----------------------------
+1. Download the private Sims 3 kit from your tracker save and extract it.
+2. Open SeveralUDOSims3ClockSync.
+3. Double-click Install or Update SeveralUDO Sims 3 Clock Sync.bat.
+4. Run Test SeveralUDO Sims 3 Clock Sync.bat.
+5. Start SeveralUDO Sims 3 Clock Relay.bat once. Leave its window open while
+   playing.
+6. Open your Sims 3 save. The game package makes its first automatic snapshot
+   just after the world finishes loading, then refreshes it every ten in-game
+   minutes while the clock runs.
+7. Refresh Game Clock in the tracker after a minute or two. The first report
+   anchors the calendars; later higher game days advance Global Day once.
 
-DAILY USE
----------
-1. Open your Sims 3 save.
-2. Read the in-game day and time.
-3. Double-click Report Sims 3 Clock Now.bat and enter that day, hour, and minute.
-4. On the first report, give the save a stable name. Reuse that exact name for future reports.
-5. Refresh Game Clock in the tracker. The first report anchors the calendars; later higher game days advance tracker Global Day.
+WHERE THE FILES GO
+------------------
+- The relay and private config go in:
+  DocumentsElectronic ArtsThe Sims 3ModsSeveralUDOClockSync
+- The automatic script package goes in:
+  DocumentsElectronic ArtsThe Sims 3ModsPackages+    SeveralUDOSims3ClockSync.package
 
-WHAT IT DOES
-------------
-- Safely links a named Sims 3 save to one Decades Tracker save.
-- Queues reports offline and sends them in order through the local relay.
-- Advances the tracker only forward from higher reported Sims 3 days.
-- Keeps the manual reports separate from Sims 4 telemetry.
+The installer places both of these for you. Do not rename config.json and do
+not share it: it contains the private link for one tracker save.
 
-WHAT IT DOES NOT YET DO
------------------------
-- It does not read Sims, pregnancies, health, traits, or births automatically.
-- It does not install or impersonate a Sims 4 .ts4script.
-- It does not contain a compiled Sims 3 .package. A genuine automatic Sims 3 reporter must be compiled against the player's Sims 3 scripting assemblies and packaged as a .package before it can run in-game. The included source/protocol reference documents that future component.
+WHAT THE AUTOMATIC PACKAGE READS
+--------------------------------
+- Current Sims 3 game day
+- Current in-game hour and minute
 
-PRIVATE CONFIG
---------------
-config.json is private. Do not share it. Downloading another private kit rotates the link and stops the old config from working.
+It does not read or modify save files, Sims, pregnancies, health, traits,
+portraits, or any other gameplay data. The relay—not the package—uses your
+private config to send the clock report.
+
+MANUAL FALLBACK
+---------------
+Report Sims 3 Clock Now.bat remains in the kit for a one-off recovery report.
+Normally you do not need it: use the automatic package and leave the relay
+running instead.
+
+IF NO REPORT ARRIVES
+--------------------
+- Confirm the game package is visible under ModsPackages.
+- Confirm script mods are enabled in Sims 3's Options > Other, then restart
+  the game after changing that option.
+- Confirm the relay remains open and its self-test shows the receiver is
+  reachable.
+- Read TROUBLESHOOTING.txt before creating another private link.

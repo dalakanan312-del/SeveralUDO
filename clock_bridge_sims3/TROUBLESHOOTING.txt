@@ -1,22 +1,40 @@
 Sims 3 Clock Sync troubleshooting
-===============================
+==================================
 
-Self-test says config is missing
-- Download a private Sims 3 kit from Game Clock for the selected Sims 3 tracker save.
-- Keep config.json beside the relay and reporter files.
+Self-test says the automatic package is missing
+- Close Sims 3.
+- Run Install or Update SeveralUDO Sims 3 Clock Sync.bat from the extracted
+  private kit.
+- Confirm this file exists:
+  DocumentsElectronic ArtsThe Sims 3ModsPackages+  SeveralUDOSims3ClockSync.package
 
 Tracker says Waiting
-- Start the relay, then run Report Sims 3 Clock Now.bat and enter the day/time from game.
-- Open relay_health.json to see whether the queued report was accepted.
+- Start the relay and keep it running.
+- Open a Sims 3 save and wait for the world to finish loading.
+- After a short time, look for sims3_game_clock.json in:
+  DocumentsElectronic ArtsThe Sims 3ModsSeveralUDOClockSync
+- The relay turns that snapshot into a report automatically. Check
+  relay_health.json for its current state.
+
+There is no sims3_game_clock.json
+- In Sims 3, open Options > Other and make sure "Enable Script Mods" is on.
+- Restart the game after changing that setting.
+- Confirm ModsResource.cfg is present and that other script mods are working.
+- Delete only The Sims 3's scriptCache.package after closing the game, then
+  start it again. This cache is rebuilt by Sims 3.
 
 Wrong game save
-- Use the exact same Sims 3 save name for future manual reports.
-- If you intentionally changed saves, use “pair a different game save” on the tracker Game Clock page before reporting again.
+- The automatic kit creates a stable private identity for its linked tracker
+  save. If you intentionally change Sims 3 saves, use "Pair a different Sims
+  3 save" on the tracker Game Clock page before the new save reports.
 
 The tracker does not advance
-- The first report only anchors game day to the current Global Day.
-- A later report must use a higher Sims 3 game day. The tracker never rewinds for lower or older reports.
+- The first automatic report anchors the Sims 3 day to the current Global Day.
+- Later reports must have a higher Sims 3 game day. The tracker never rewinds
+  for an older save or a lower game day.
 
 A script or antivirus warning appears
-- The relay is a PowerShell script that sends your local queued JSON report to the private tracker link.
-- Use only files from your tracker, and do not approve renamed executables or scripts.
+- The Sims 3 .package only reads the in-game clock and writes a JSON snapshot.
+- The relay is a PowerShell helper which sends that snapshot to your private
+  tracker link. Use only kit files downloaded from the tracker and do not
+  share config.json.

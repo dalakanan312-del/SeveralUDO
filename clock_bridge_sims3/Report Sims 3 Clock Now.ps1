@@ -53,7 +53,7 @@ if (-not $SaveIdentity) { throw "A Sims 3 save name is required for safe pairing
 $sequence = [long]($state.last_sequence) + 1
 $report = [ordered]@{
     protocol_version = 1
-    clock_sync_version = "Sims3-0.1.0-manual-bridge"
+    clock_sync_version = "Sims3-1.0.0-manual-fallback"
     game_edition = "sims3"
     report_sequence = $sequence
     report_id = [guid]::NewGuid().ToString("N")
