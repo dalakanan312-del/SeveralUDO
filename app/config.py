@@ -69,9 +69,13 @@ class Settings:
     openai_image_model: str = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
     desktop_installer_url: str = os.getenv(
         "DESKTOP_INSTALLER_URL",
-        "https://github.com/dalakanan312-del/SeveralUDO/releases/download/v4.6.4/Decades-Tracker-4.6.4-Setup.exe",
+        "https://github.com/dalakanan312-del/SeveralUDO/releases/download/v4.6.5/Decades-Tracker-4.6.5-Setup.exe",
     )
     skip_startup_migrations: bool = os.getenv("DECADES_SKIP_STARTUP_MIGRATIONS", "").casefold() in {"1","true","yes","on"}
+    # Advertising is deliberately opt-in. These values are configured only on the hosted service.
+    google_adsense_client_id: str = os.getenv("GOOGLE_ADSENSE_CLIENT_ID", "").strip()
+    google_adsense_footer_slot: str = os.getenv("GOOGLE_ADSENSE_FOOTER_SLOT", "").strip()
+    advertising_enabled: bool = os.getenv("DECADES_ADVERTISING_ENABLED", "").strip().casefold() in {"1", "true", "yes", "on"}
     automatic_snapshots: bool = _automatic_snapshots(database_url)
 
     @property
@@ -82,6 +86,24 @@ class Settings:
     def local_mode(self) -> bool:
         return self.database_url.startswith("sqlite")
 
+    @property
+    def ads_config(self) -> dict[str, str | bool]:
+        """Public configuration for an explicitly consented hosted ad unit.
+
+        The desktop tracker never receives this configuration. In browsers, the
+        Google script is loaded only after the visitor chooses to see ads.
+        """
+        available = bool(
+            not self.local_mode
+            and self.advertising_enabled
+            and self.google_adsense_client_id
+            and self.google_adsense_footer_slot
+        )
+        return {
+            "available": available,
+            "client": self.google_adsense_client_id if available else "",
+            "footer_slot": self.google_adsense_footer_slot if available else "",
+        }
     @property
     def sqlalchemy_database_url(self) -> str:
         """Use SQLAlchemy's psycopg 3 driver for ordinary Neon URLs."""

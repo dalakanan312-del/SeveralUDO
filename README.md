@@ -3,6 +3,7 @@
 A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI application with server-rendered HTML and small targeted interactions. It does not use Streamlit and does not load every feature after each button press.
 
 ## Current milestone
+`4.6.5` adds a hosted-only, privacy-respecting support placement. After the creator configures an approved Google AdSense unit, signed-in visitors receive a one-time choice: show one small footer ad or continue without ads. Google’s script is never loaded unless they opt in; desktop/local tracking remains permanently ad-free, and the choice can be changed from the sidebar.
 
 `4.6.4` adds a game edition choice for every new chronicle. Sims 3 saves get their own Clock Sync screen, a separate private kit, save-pairing protection, and a safe manual day-and-time reporter; Sims 4 saves keep the existing automatic `.ts4script` kit unchanged.
 
@@ -124,3 +125,7 @@ Uploaded images and local ComfyUI generation do not use paid API credits. OpenAI
 - Recovery keys are stored only as hashes.
 - Device and clock tokens are stored only as hashes.
 - `.env`, databases, portraits, runtime files and exports are excluded from Git.
+
+## Optional hosted ads
+
+Advertising is disabled by default and never runs in the local desktop tracker. To enable the single opt-in footer placement on the hosted deployment only after AdSense has approved the site, set `DECADES_ADVERTISING_ENABLED=true`, `GOOGLE_ADSENSE_CLIENT_ID` (for example, `ca-pub-…`), and `GOOGLE_ADSENSE_FOOTER_SLOT` (the display unit slot). Without all three, no prompt, ad space, or Google script is included.

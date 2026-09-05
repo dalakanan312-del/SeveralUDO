@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.4")
+app = FastAPI(title="Decades Tracker", version="4.6.5")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -795,7 +795,7 @@ def context(request: Request, session, **extra):
             "visual_theme": visual_theme,
             "features": FEATURES, "navigation_groups": NAVIGATION_GROUPS,
             "navigation_group": navigation_group_for(current_page),
-            "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "last_roll": last_roll,
+            "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "ads_config": settings.ads_config, "last_roll": last_roll,
             "occult_notice": request.session.pop("occult_notice", None),
             "master_automation_notice": request.session.pop("master_automation_notice", None),
             "manual_roll_notice": request.session.pop("manual_roll_notice", None),
@@ -5209,11 +5209,11 @@ def download_clock_sync_component(request: Request, component: str, game_mode: s
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.6.4-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.6.5-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.4-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.5-Setup.exe"',"Cache-Control":"no-store",
     })
 
 
