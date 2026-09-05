@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Sims 3 Game Clock · Decades Tracker{% endblock %}
+{% block body %}
+<header class="hero compact">
+  <p class="eyebrow">THE SIMS 3 · GAME CLOCK</p>
+  <h1>Sims 3 Clock Sync</h1>
+  <p>Keep this Sims 3 chronicle aligned with its game calendar. The first report sets the anchor; only later, higher game days move Global Day forward.</p>
+</header>
+{% if clock_notice %}<div class="notice">{{clock_notice}}</div>{% endif %}
+
+<section class="metrics">
+  <article><strong>{{'Active' if clock_link and clock_link.enabled else 'Not linked'}}</strong><span>private receiver</span></article>
+  <article><strong>{{clock_link.last_game_day if clock_link and clock_link.last_game_day is not none else 'Waiting'}}</strong><span>last Sims 3 game day</span></article>
+  <article><strong>{{save.global_day}}</strong><span>tracker Global Day</span></article>
+</section>
+{% if clock_last_advance %}<div class="notice"><strong>Last automatic advance:</strong> Sims 3 game day {{clock_last_advance.game_day}} moved the tracker from GD {{clock_last_advance.from_global_day}} to GD {{clock_last_advance.global_day}}{% if clock_last_advance.at %} · {{clock_last_advance.at}}{% endif %}.</div>{% endif %}
+{% if clock_link and clock_link.last_game_day is not none %}<div class="notice"><strong>Last report:</strong> game day {{clock_link.last_game_day}} · {{'%02d'|format(clock_link.last_game_hour or 0)}}:{{'%02d'|format(clock_link.last_game_minute or 0)}} · {{clock_link.last_seen_at}}</div>{% endif %}
+
+{% if clock_protocol %}{% set protocol=clock_protocol.data %}
+<section class="panel">
+  <div class="section-heading"><div><p class="eyebrow">SAFE PAIRING</p><h2>Connected Sims 3 save</h2></div><span class="status alive">{{protocol.get('game_edition','sims3')|replace('sims','Sims ')|title}}</span></div>
+  <div class="metrics"><article><strong>{{protocol.get('save_slot_name') or protocol.get('save_identity') or 'Waiting for first report'}}</strong><span>paired game save</span></article><article><strong>{{protocol.get('last_report_sequence') or 0}}</strong><span>last report</span></article><article><strong>{{protocol.get('last_report_kind','—')|title}}</strong><span>report type</span></article></div>
+  <details><summary>Pair a different Sims 3 save</summary><p>Use only after intentionally changing the game save. It clears the previous game-save name, not your tracker history or private link.</p><form action="/api/clock/trust-next-save" method="post" onsubmit="return confirm('Pair the next reported Sims 3 save with this tracker chronicle?')"><button>Pair the next Sims 3 save</button></form></details>
+</section>
+{% endif %}
+
+<section class="panel">
+  <p class="eyebrow">PRIVATE · READY TO INSTALL</p>
+  <h2>Download this save’s Sims 3 kit</h2>
+  <p>The private kit is already connected to <strong>{{save.name}}</strong>. It contains the relay, a safe manual game-clock reporter, updater, self-test, and detailed instructions.</p>
+  <form action="/downloads/clock-sync/configured" method="post" onsubmit="return confirm('Create a fresh private Sims 3 Clock Sync link? An older private configuration for this tracker save will stop working.')"><button class="primary">Create link and download private Sims 3 kit</button></form>
+  <p><small>Keep its config.json private. It belongs only to this chronicle.</small></p>
+</section>
+
+<section class="panel">
+  <p class="eyebrow">HOW THIS FIRST SIMS 3 EDITION WORKS</p>
+  <h2>Reliable clock alignment, without touching your save</h2>
+  <p>Sims 3 uses a different package-based mod system than Sims 4. This release provides the tracker-side receiver and a local relay that works with Sims 3. Until a compiled Sims 3 <code>.package</code> reporter is released, it deliberately uses a small manual reporter: read the game’s current day and time, enter them once, and the relay delivers the queued report.</p>
+  <ol>
+    <li>Download and extract the private kit.</li>
+    <li>Run <strong>Install or Update SeveralUDO Sims 3 Clock Sync.bat</strong>.</li>
+    <li>Run the included self-test, then start the relay.</li>
+    <li>When you want to align the tracker, run <strong>Report Sims 3 Clock Now.bat</strong> and enter the day and time displayed in-game.</li>
+    <li>On the first report, give the game save a stable name. Use the same name for that save afterward.</li>
+  </ol>
+  <div class="notice"><strong>Current scope:</strong> the Sims 3 kit safely advances the tracker clock and protects the save pairing. It does not yet claim to automatically read Sims, pregnancy, health, portraits, or other Sims 4-only telemetry.</div>
+</section>
+
+<section class="panel">
+  <p class="eyebrow">REUSABLE · NO PRIVATE TOKEN</p>
+  <h2>Download the complete Sims 3 kit</h2>
+  <p>Use this for an update or to prepare a computer before you create its private link.</p>
+  <p><a class="button primary" href="/downloads/clock-sync?game_mode=sims3">Download Sims 3 Clock Sync {{clock_sync_version}} complete kit</a></p>
+  <details><summary>Download individual files</summary><div class="action-bar"><a class="button" href="/downloads/clock-sync/relay?game_mode=sims3">Relay</a><a class="button" href="/downloads/clock-sync/starter?game_mode=sims3">Relay starter</a><a class="button" href="/downloads/clock-sync/reporter?game_mode=sims3">Clock reporter</a><a class="button" href="/downloads/clock-sync/self-test?game_mode=sims3">Self-test</a><a class="button" href="/downloads/clock-sync/updater-starter?game_mode=sims3">Installer / updater</a><a class="button" href="/downloads/clock-sync/config-template?game_mode=sims3">Config template</a><a class="button" href="/downloads/clock-sync/instructions?game_mode=sims3">Installation guide</a><a class="button" href="/downloads/clock-sync/source?game_mode=sims3">Package protocol reference</a></div></details>
+</section>
+
+<section class="grid">
+  <article class="panel"><h2>What the kit changes</h2><p>Nothing inside your <code>.sims3</code> save. It only creates queued JSON reports inside its own SeveralUDOClockSync folder and the relay sends them to this private tracker link.</p></article>
+  <article class="panel"><h2>What stays separate</h2><p>Sims 4 Clock Sync remains its own <code>.ts4script</code> kit. A Sims 3 private link will reject a Sims 4 report, and vice versa, before any tracker data changes.</p></article>
+</section>
+{% endblock %}

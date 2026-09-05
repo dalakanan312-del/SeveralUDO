@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .models import ChronicleSave, ClockLink, Portrait, Record
 from .domain import AGING_STAGE_OFFSETS, CLOSED_ILLNESSES, age_setting_days, automation_enabled, journal, lifecycle_age_days
-from . import automation, game_metadata, telemetry, sync, notifications, portraits, storyline
+from . import automation, game_metadata, game_modes, telemetry, sync, notifications, portraits, storyline
 
 
 CLOSED_PREGNANCIES = {"delivered", "miscarriage", "stillbirth", "cancelled", "canceled", "ended", "closed"}
@@ -66,13 +66,23 @@ def _protocol_gate(session: Session, save: ChronicleSave, report: dict) -> tuple
         }
     state = _protocol_record(session, save)
     data = dict(state.data or {}) if state else {}
+    expected_edition = game_modes.for_save(save)["id"]
+    received_edition = game_modes.normalize(report.get("game_edition"))
+    if received_edition != expected_edition:
+        return state, data, {
+            "status":"rejected", "ok":False, "permanent_rejection":True,
+            "reason":"wrong_game_edition",
+            "message":f"This Clock Sync link belongs to {game_modes.GAME_MODES[expected_edition]['name']}, not {game_modes.GAME_MODES[received_edition]['name']}. The report was quarantined and the tracker was not changed.",
+            "expected_game_edition":expected_edition, "received_game_edition":received_edition,
+            "report_sequence":sequence,
+        }
     incoming_identity = str(report.get("save_identity") or "").strip()
     bound_identity = str(data.get("save_identity") or "").strip()
     if incoming_identity and bound_identity and incoming_identity != bound_identity:
         return state, data, {
             "status":"rejected", "ok":False, "permanent_rejection":True,
             "reason":"wrong_game_save",
-            "message":"This Clock Sync link is paired with a different Sims 4 save slot. The report was quarantined and the tracker was not changed.",
+            "message":f"This Clock Sync link is paired with a different {game_modes.GAME_MODES[expected_edition]['name']} save. The report was quarantined and the tracker was not changed.",
             "expected_save_identity":bound_identity, "received_save_identity":incoming_identity,
             "report_sequence":sequence,
         }
@@ -101,6 +111,7 @@ def _commit_protocol_state(session: Session, save: ChronicleSave, state: Record 
         **prior,
         "protocol_version":int(report.get("protocol_version") or 0),
         "clock_sync_version":report.get("clock_sync_version") or report.get("mod_version"),
+        "game_edition":game_modes.normalize(report.get("game_edition")),
         "save_identity":accepted.get("save_identity") or None,
         "save_slot_id":report.get("save_slot_id"),
         "save_slot_name":report.get("save_slot_name"),

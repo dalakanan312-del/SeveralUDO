@@ -23,6 +23,7 @@ if ($LASTEXITCODE -ne 0) { throw "Desktop build dependencies could not be instal
   --add-data "assets\decades-app-icon.ico;assets" `
   --add-data "assets\loading.html;assets" `
   --add-data "clock_bridge;clock_bridge" `
+  --add-data "clock_bridge_sims3;clock_bridge_sims3" `
   --collect-all uvicorn --collect-all jinja2 --collect-all sqlalchemy `
   --collect-all webview --collect-all pythonnet --collect-all clr_loader `
   desktop_launcher.py
@@ -37,5 +38,6 @@ Copy-Item -LiteralPath "app\templates" -Destination (Join-Path $AppPayload "temp
 Copy-Item -LiteralPath "app\static" -Destination (Join-Path $AppPayload "static") -Recurse -Force
 Copy-Item -LiteralPath "app\medieval_names.json" -Destination (Join-Path $AppPayload "medieval_names.json") -Force
 Copy-Item -LiteralPath "app\game_localization_fallbacks.json" -Destination (Join-Path $AppPayload "game_localization_fallbacks.json") -Force
+Copy-Item -LiteralPath "clock_bridge_sims3" -Destination (Join-Path $Root "dist\Decades Tracker\_internal\clock_bridge_sims3") -Recurse -Force
 Copy-Item -LiteralPath "assets\README - Native Desktop.txt" -Destination "dist\Decades Tracker\START HERE - Decades Tracker.txt" -Force
 Write-Output (Join-Path $Root "dist\Decades Tracker\Decades Tracker.exe")

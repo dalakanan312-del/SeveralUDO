@@ -1,0 +1,22 @@
+Sims 3 Clock Sync troubleshooting
+===============================
+
+Self-test says config is missing
+- Download a private Sims 3 kit from Game Clock for the selected Sims 3 tracker save.
+- Keep config.json beside the relay and reporter files.
+
+Tracker says Waiting
+- Start the relay, then run Report Sims 3 Clock Now.bat and enter the day/time from game.
+- Open relay_health.json to see whether the queued report was accepted.
+
+Wrong game save
+- Use the exact same Sims 3 save name for future manual reports.
+- If you intentionally changed saves, use “pair a different game save” on the tracker Game Clock page before reporting again.
+
+The tracker does not advance
+- The first report only anchors game day to the current Global Day.
+- A later report must use a higher Sims 3 game day. The tracker never rewinds for lower or older reports.
+
+A script or antivirus warning appears
+- The relay is a PowerShell script that sends your local queued JSON report to the private tracker link.
+- Use only files from your tracker, and do not approve renamed executables or scripts.

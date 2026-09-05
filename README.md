@@ -4,6 +4,8 @@ A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI ap
 
 ## Current milestone
 
+`4.6.4` adds a game edition choice for every new chronicle. Sims 3 saves get their own Clock Sync screen, a separate private kit, save-pairing protection, and a safe manual day-and-time reporter; Sims 4 saves keep the existing automatic `.ts4script` kit unchanged.
+
 `4.6.3` makes the challenge calendar genuinely length-aware. Changing from four to twelve days per year triples future lifecycle ages and pending age-based rolls, marriage and elder limits, age-gated rules, and Hogwarts/Harry Potter milestones. Completed history is never moved.
 
 `4.6.2` makes every supporting Drama Deck scene specific from its first decision: opening choices now name the actual card situation—such as repairing a missed birthday or investigating a missing key—instead of falling back to generic response buttons.

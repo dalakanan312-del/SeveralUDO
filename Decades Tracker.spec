@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('app/templates', 'app/templates'), ('app/static', 'app/static'), ('app/medieval_names.json', 'app'), ('app/game_localization_fallbacks.json', 'app'), ('assets/decades-app-icon.png', 'assets'), ('assets/decades-app-icon.ico', 'assets'), ('assets/loading.html', 'assets'), ('clock_bridge', 'clock_bridge')]
+datas = [('app/templates', 'app/templates'), ('app/static', 'app/static'), ('app/medieval_names.json', 'app'), ('app/game_localization_fallbacks.json', 'app'), ('assets/decades-app-icon.png', 'assets'), ('assets/decades-app-icon.ico', 'assets'), ('assets/loading.html', 'assets'), ('clock_bridge', 'clock_bridge'), ('clock_bridge_sims3', 'clock_bridge_sims3')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('uvicorn')

@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
+from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -62,7 +62,7 @@ FEATURES = {
     "occult-rules": ("Occult Rules", "Occult detection, automatic obligations and follow-up rule library"),
     "historical-guidance": ("Historical Guidance", "Era guidance, death causes and recovered reference data"),
     "health": ("Rules Health", "Coverage, duplicates and maintenance checks"),
-    "clock": ("Game Clock", "Local or hosted Sims 4 time and population receiver"),
+    "clock": ("Game Clock", "Local or hosted Sims 3 or Sims 4 time and game receiver"),
     "sync": ("Sync", "Desktop/cloud status, devices and conflict review"),
     "dice-audit": ("Dice Audit", "Verifiable history and distribution reports"),
     "storyline": ("Storyline", "A living narrative generated from the changing save"),
@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.3")
+app = FastAPI(title="Decades Tracker", version="4.6.4")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -790,6 +790,8 @@ def context(request: Request, session, **extra):
     visual_theme = themes.resolve((active.settings or {}).get("visual_theme") if active else None)
     return {"request": request, "user": user, "saves": saves, "save": active,
             "save_settings": dict(active.settings or {}) if active else {},
+            "game_edition": game_modes.for_save(active) if active else game_modes.GAME_MODES[game_modes.SIMS4],
+            "game_modes": game_modes.GAME_MODES,
             "visual_theme": visual_theme,
             "features": FEATURES, "navigation_groups": NAVIGATION_GROUPS,
             "navigation_group": navigation_group_for(current_page),
@@ -1343,12 +1345,12 @@ def select_save(request: Request, save_id: str = Form(...)):
 
 
 @app.post("/saves")
-def create_save(request: Request, name: str = Form(...), start_year: int = Form(1300), days_per_year: int = Form(4), pregnancy_days: int = Form(4)):
+def create_save(request: Request, name: str = Form(...), start_year: int = Form(1300), days_per_year: int = Form(4), pregnancy_days: int = Form(4), game_mode: str = Form(game_modes.SIMS4)):
     with db() as session:
         user = signed_in(request, session)
         if not user: raise HTTPException(401)
         membership = session.scalar(select(Membership).where(Membership.user_id == user.id))
-        save = ChronicleSave(workspace_id=membership.workspace_id, name=name.strip() or "New Challenge", start_year=start_year, days_per_year=max(1,days_per_year), pregnancy_days=max(1,pregnancy_days))
+        save = ChronicleSave(workspace_id=membership.workspace_id, name=name.strip() or "New Challenge", start_year=start_year, days_per_year=max(1,days_per_year), pregnancy_days=max(1,pregnancy_days), settings={"game_mode": game_modes.normalize(game_mode)})
         session.add(save); session.flush(); domain.seed_defaults(session, save); request.session["save_id"] = save.id
     return RedirectResponse("/", status_code=303)
 
@@ -2084,7 +2086,9 @@ def feature_page(request: Request, page: str):
         if page == "clock" and save:
             link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id))
             ctx["clock_link"] = link
-            ctx["clock_sync_version"] = clock_bundle.CLOCK_SYNC_VERSION
+            ctx["clock_game_mode"] = game_modes.for_save(save)
+            ctx["clock_bundle_details"] = clock_bundle.bundle_details(ctx["clock_game_mode"]["id"])
+            ctx["clock_sync_version"] = ctx["clock_bundle_details"]["version"]
             ctx["clock_protocol"] = session.scalar(select(Record).where(
                 Record.save_id == save.id, Record.kind == "clock_protocol_state", Record.deleted.is_(False),
             ).limit(1))
@@ -2261,7 +2265,7 @@ def feature_page(request: Request, page: str):
             "world":"world.html", "legacy-lab":"legacy_lab.html", "historical-life":"historical_life.html", "life-records":"life-records.html",
             "clock":"clock.html", "sync":"sync.html", "account":"account.html", "appearance":"appearance.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html", "save-a-sims":"save_a_sims.html", "drama":"drama.html",
         }
-        return templates.TemplateResponse(request, dedicated.get(page, "feature.html"), ctx)
+        return templates.TemplateResponse(request, "clock_sims3.html" if page == "clock" and ctx.get("clock_game_mode", {}).get("id") == game_modes.SIMS3 else dedicated.get(page, "feature.html"), ctx)
 
 
 @app.get("/storyline/export")
@@ -5138,15 +5142,17 @@ def scan_sim_tray_portrait(request: Request, sim_id: str):
 
 
 @app.get("/downloads/clock-sync")
-def download_clock_sync(request: Request):
+def download_clock_sync(request: Request, game_mode: str = game_modes.SIMS4):
+    mode = game_modes.normalize(game_mode)
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
     try:
-        package = clock_bundle.build_bundle()
+        package = clock_bundle.build_bundle(game_mode=mode)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+    details = clock_bundle.bundle_details(mode)
     return Response(package, media_type="application/zip", headers={
-        "Content-Disposition": f'attachment; filename="SeveralUDO-Clock-Sync-{clock_bundle.CLOCK_SYNC_VERSION}-Complete.zip"',
+        "Content-Disposition": f'attachment; filename="SeveralUDO-{details["folder"]}-{details["version"]}-Complete.zip"',
         "Cache-Control": "no-store",
     })
 
@@ -5159,32 +5165,35 @@ def download_configured_clock_sync(request: Request, capture_portraits: str = Fo
         save = ctx["save"]
         if not save:
             raise HTTPException(400, "Open a tracker save before creating a private Clock Sync kit.")
+        mode = game_modes.for_save(save)["id"]
         raw = rotate_clock_link(session, save.id)
         base_url = str(request.base_url).rstrip("/") if settings.local_mode else settings.public_url
         try:
             package = clock_bundle.build_bundle(
                 f"{base_url}/api/clock/report", raw,
-                str(capture_portraits).casefold() in {"1", "true", "on", "yes"},
+                str(capture_portraits).casefold() in {"1", "true", "on", "yes"}, mode,
             )
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
+        details = clock_bundle.bundle_details(mode)
     return Response(package, media_type="application/zip", headers={
-        "Content-Disposition": f'attachment; filename="SeveralUDO-Clock-Sync-{clock_bundle.CLOCK_SYNC_VERSION}-Private.zip"',
+        "Content-Disposition": f'attachment; filename="SeveralUDO-{details["folder"]}-{details["version"]}-Private.zip"',
         "Cache-Control": "no-store, private",
     })
 
 
 @app.get("/downloads/clock-sync/{component}")
-def download_clock_sync_component(request: Request, component: str):
+def download_clock_sync_component(request: Request, component: str, game_mode: str = game_modes.SIMS4):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
+    mode = game_modes.normalize(game_mode)
     if component == "config-template":
-        return Response(clock_bundle.config_document(), media_type="application/json", headers={
+        return Response(clock_bundle.config_document(game_mode=mode), media_type="application/json", headers={
             "Content-Disposition": 'attachment; filename="config-template.json"',
             "Cache-Control": "no-store",
         })
     try:
-        source = clock_bundle.bridge_file(component)
+        source = clock_bundle.bridge_file(component, mode)
     except KeyError as exc:
         raise HTTPException(404, "That Clock Sync file is not available.") from exc
     if not source.is_file():
@@ -5200,11 +5209,11 @@ def download_clock_sync_component(request: Request, component: str):
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.6.3-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.6.4-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.3-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.4-Setup.exe"',"Cache-Control":"no-store",
     })
 
 
@@ -5231,9 +5240,11 @@ def clock_ping(authorization: str | None = Header(None)):
         if not link:
             raise HTTPException(401, "Invalid clock token")
         save = session.get(ChronicleSave, link.save_id)
+        edition = game_modes.for_save(save)["id"]
         return {
-            "ok": True, "clock_sync_version": clock_bundle.CLOCK_SYNC_VERSION,
+            "ok": True, "clock_sync_version": clock_bundle.bundle_details(edition)["version"],
             "save_id": save.id, "save_name": save.name,
+            "game_edition": edition,
             "tracker_global_day": save.global_day, "last_game_day": link.last_game_day,
         }
 
