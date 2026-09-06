@@ -33,7 +33,7 @@ function Write-RelayHealth {
     $queued = @(Get-ChildItem -LiteralPath $queuePath -Filter "report-*.json" -File -ErrorAction SilentlyContinue).Count
     $quarantined = @(Get-ChildItem -LiteralPath $quarantinePath -Filter "*.json" -File -ErrorAction SilentlyContinue).Count
     $value = @{
-        relay_version = "Sims3-1.0.0"
+        relay_version = "Sims3-1.1.0"
         state = $State
         message = $Message
         queue_depth = $queued
@@ -124,6 +124,7 @@ function Import-AutomaticGameClockSnapshot {
         $config = Read-JsonFile $configPath
         if (-not $config.receiver_url -or -not $config.sync_token -or $config.enabled -eq $false) { return }
         if ([string]$config.game_edition -and [string]$config.game_edition -ne "sims3") { return }
+
         $snapshot = Read-JsonFile $gameSnapshotPath
         $gameDay = [int]$snapshot.game_day
         $hour = [int]$snapshot.hour
@@ -131,9 +132,20 @@ function Import-AutomaticGameClockSnapshot {
         if ($gameDay -lt 1 -or $hour -lt 0 -or $hour -gt 23 -or $minute -lt 0 -or $minute -gt 59) {
             throw "The automatic package wrote an invalid game time."
         }
+
+        $members = if ($null -eq $snapshot.household_members) { @() } else { @($snapshot.household_members) }
+        $memberIds = @(
+            $members |
+                ForEach-Object { [string]$_.game_sim_id } |
+                Where-Object { $_ }
+        )
+        $snapshotSignature = [string]$snapshot.snapshot_signature
+        if (-not $snapshotSignature) {
+            $snapshotSignature = "$gameDay/$hour/$minute/$($memberIds -join ',')"
+        }
         $state = if (Test-Path -LiteralPath $reporterStatePath -PathType Leaf) { Read-JsonFile $reporterStatePath } else { [pscustomobject]@{} }
-        $signature = "$gameDay/$hour/$minute"
-        if ([string]$state.last_automatic_signature -eq $signature) { return }
+        if ([string]$state.last_automatic_signature -eq $snapshotSignature) { return }
+
         $saveIdentity = [string]$config.sims3_save_identity
         if (-not $saveIdentity) { $saveIdentity = [string]$state.save_identity }
         if (-not $saveIdentity) {
@@ -144,14 +156,17 @@ function Import-AutomaticGameClockSnapshot {
             }
             finally { $sha.Dispose() }
         }
+
         $sequence = [long]$state.last_sequence + 1
+        $hasRichSnapshot = [int]$snapshot.schema -ge 2 -and $memberIds.Count -gt 0
         $report = [ordered]@{
             protocol_version = 1
-            clock_sync_version = "Sims3-1.0.0-automatic"
+            clock_sync_version = "Sims3-1.1.0-automatic"
             game_edition = "sims3"
             report_sequence = $sequence
             report_id = [guid]::NewGuid().ToString("N")
-            report_kind = "clock"
+            # A Sims 3 whole-town report is authoritative for the loaded save.
+            report_kind = if ($hasRichSnapshot) { "full" } else { "clock" }
             game_time_source = "automatic_package"
             save_identity = $saveIdentity
             save_slot_name = $saveIdentity
@@ -159,8 +174,16 @@ function Import-AutomaticGameClockSnapshot {
             hour = $hour
             minute = $minute
             second = 0
-            household_members = @()
-            population_complete = $false
+            household_id = [string]$snapshot.household_id
+            household_name = [string]$snapshot.household_name
+            household_funds = $snapshot.household_funds
+            household_member_game_ids = @($snapshot.household_member_game_ids)
+            household_members = $members
+            population_complete = $hasRichSnapshot
+            population_scope = "town"
+            population_sim_ids = $memberIds
+            telemetry_version = [int]$snapshot.telemetry_version
+            telemetry_capabilities = $snapshot.telemetry_capabilities
             generated_at = [DateTimeOffset]::UtcNow.ToString("o")
         }
         $envelope = [ordered]@{
@@ -174,12 +197,14 @@ function Import-AutomaticGameClockSnapshot {
         Write-JsonAtomic -Path $reporterStatePath -Value ([ordered]@{
             last_sequence = $sequence
             save_identity = $saveIdentity
-            last_automatic_signature = $signature
+            last_automatic_signature = $snapshotSignature
             last_reported_at = [DateTimeOffset]::UtcNow.ToString("o")
+            last_snapshot_schema = [int]$snapshot.schema
+            last_household_member_count = $memberIds.Count
         })
     }
     catch {
-        Write-RelayHealth -State "needs_attention" -Message ("The automatic Sims 3 clock snapshot could not be queued: " + $_.Exception.Message)
+        Write-RelayHealth -State "needs_attention" -Message ("The automatic Sims 3 game snapshot could not be queued: " + $_.Exception.Message)
     }
 }
 

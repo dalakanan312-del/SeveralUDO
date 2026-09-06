@@ -13,7 +13,7 @@ from . import game_modes
 CLOCK_SYNC_VERSION = "2.2.10"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
-SIMS3_CLOCK_SYNC_VERSION = "1.0.0"
+SIMS3_CLOCK_SYNC_VERSION = "1.1.0"
 SIMS3_CLOCK_SYNC_FOLDER = "SeveralUDOSims3ClockSync"
 SIMS3_BRIDGE_ROOT = ROOT / "clock_bridge_sims3"
 CLOCK_SYNC_REQUIRED_FILES = (
@@ -75,6 +75,7 @@ def config_document(endpoint: str = "PASTE_ENDPOINT_FROM_TRACKER", token: str = 
         document["capture_portraits"] = bool(capture_portraits)
     else:
         document["sims3_save_identity"] = ""
+        document["sims3_population_scope"] = "town"
     return (json.dumps(document, indent=2) + "\n").encode("utf-8")
 
 

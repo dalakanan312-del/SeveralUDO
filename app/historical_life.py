@@ -176,7 +176,7 @@ def education_summary(grouped: dict[str, list[Record]], save: ChronicleSave) -> 
         age = _sim_age(sim, save)
         stage = _text((sim.data or {}).get("game_age") or (sim.data or {}).get("life_stage") or (sim.data or {}).get("age_stage"))
         school = _text((sim.data or {}).get("game_school"))
-        is_young = stage.casefold() in {"child", "teen"} or (age is not None and 24 <= age < 96)
+        is_young = stage.casefold() in {"child", "teen"} or (age is not None and domain.lifecycle_age_days(save, 24) <= age < domain.lifecycle_age_days(save, 96))
         if is_young or school or sim.id in plan_by_sim:
             candidates.append({"sim": sim, "age": age, "stage": stage or "Age not reported", "school": school, "plan": plan_by_sim.get(sim.id)})
     candidates.sort(key=lambda row: (row["plan"] is not None, row["age"] if row["age"] is not None else 10**9, row["sim"].label.casefold()))
@@ -294,7 +294,7 @@ def marriage_market(grouped: dict[str, list[Record]], save: ChronicleSave) -> di
     sims = [item for item in grouped.get("sim", []) if _living(item, save)]
     sims_by_id = {item.id: item for item in sims}
     married = _partner_ids(grouped.get("relationship", []))
-    min_age = _int((save.settings or {}).get("marriage_min_age_days"), 72)
+    min_age = domain.age_setting_days(save, "marriage_min_age_days", 72)
     depth = max(1, min(8, _int((save.settings or {}).get("kinship_detection_generations"), 3)))
     eligible = [sim for sim in sims if sim.id not in married and (_sim_age(sim, save) or -1) >= min_age]
     pairs = []

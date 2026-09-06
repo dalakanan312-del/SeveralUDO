@@ -18,6 +18,19 @@ LIFE_STAGES = (
 )
 
 
+def life_stages(save: ChronicleSave | None = None) -> tuple[tuple[str, int], ...]:
+    """Return life-stage thresholds in this save's challenge-day calendar.
+
+    The SeveralUDO chart is defined in four-day years. A longer save year
+    changes the number of tracker days in a historical year, so every display
+    and stage comparison must use the same converted thresholds as the roll
+    scheduler.
+    """
+    if save is None:
+        return LIFE_STAGES
+    return tuple((label, domain.lifecycle_age_days(save, minimum)) for label, minimum in LIFE_STAGES)
+
+
 def integer(value, default=None):
     try:
         return int(value)
@@ -34,7 +47,7 @@ def historical_year(save: ChronicleSave, global_day) -> int | None:
     return None if day is None else save.start_year + (day - 1) // max(1, save.days_per_year)
 
 
-def life_stage(sim: Record, global_day: int) -> str:
+def life_stage(sim: Record, global_day: int, save: ChronicleSave | None = None) -> str:
     data = sim.data or {}
     birth = integer(data.get("birth_global_day", sim.global_day))
     if birth is None:
@@ -42,8 +55,9 @@ def life_stage(sim: Record, global_day: int) -> str:
         return raw or "Unknown"
     death = integer(data.get("death_global_day"))
     age = max(0, min(global_day, death) - birth if death is not None else global_day - birth)
-    result = LIFE_STAGES[0][0]
-    for label, minimum in LIFE_STAGES:
+    stages = life_stages(save)
+    result = stages[0][0]
+    for label, minimum in stages:
         if age >= minimum:
             result = label
     return result
@@ -361,8 +375,8 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
                 lifespan = max(0, death - birth)
                 death_ages.append(lifespan)
                 completed_lifespans.append((lifespan, sim.label, sim.id))
-                stage_at_death = LIFE_STAGES[0][0]
-                for label, minimum in LIFE_STAGES:
+                stage_at_death = life_stages(save)[0][0]
+                for label, minimum in life_stages(save):
                     if lifespan >= minimum:
                         stage_at_death = label
                 death_stages[stage_at_death] += 1
@@ -390,7 +404,7 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
         generation_survival[generation_key]["deceased" if dead_now else "living"] += 1
         generation_survival[generation_key]["total"] += 1
         sexes[str(data.get("sex") or "Unspecified")] += 1
-        stages[life_stage(sim, current)] += 1
+        stages[life_stage(sim, current, save)] += 1
         occult_types = data.get("game_occult_types")
         if isinstance(occult_types, (list, tuple, set)) and occult_types:
             species_label = " / ".join(str(value) for value in occult_types if value)
@@ -727,7 +741,7 @@ def household_census(records: list[Record], save: ChronicleSave) -> dict:
     for household in households:
         members = [sim for sim in sims if (sim.data or {}).get("current_household_id") == household.id]
         living_members = [sim for sim in members if sim in living]
-        stages = Counter(life_stage(sim, save.global_day) for sim in living_members)
+        stages = Counter(life_stage(sim, save.global_day, save) for sim in living_members)
         child_stages = {"Newborn", "Infant", "Toddler", "Child", "Preteen", "Teen"}
         member_ids = {sim.id for sim in living_members}
         money = [item for item in finances if (item.data or {}).get("tracker_household_id") == household.id]

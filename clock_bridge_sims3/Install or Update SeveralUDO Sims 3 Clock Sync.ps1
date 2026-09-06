@@ -26,11 +26,11 @@ Copy-Item -LiteralPath (Join-Path $source "SeveralUDOSims3ClockSync.package") -D
 $privateConfig = Join-Path $source "config.json"
 if (Test-Path -LiteralPath $privateConfig -PathType Leaf) { Copy-Item -LiteralPath $privateConfig -Destination (Join-Path $target "config.json") -Force }
 @(
-  "SeveralUDO Sims 3 Clock Sync 1.0.0 installed.",
+  "SeveralUDO Sims 3 Clock Sync 1.1.0 installed.",
   "Relay folder: $target",
   "Automatic game package: $packageTarget",
-  "The package reads only the active Sims 3 game clock; it does not modify a .sims3 save.",
+  "The package reads the loaded Sims 3 town for tracker reporting; it does not modify a .sims3 save.",
   "Run Test SeveralUDO Sims 3 Clock Sync.bat, then Start SeveralUDO Sims 3 Clock Relay.bat.",
-  "Open a save. The package writes its first clock snapshot shortly after loading, and the relay sends it automatically."
+  "Open a save. The package writes a first full-town snapshot shortly after loading, then the relay sends it automatically."
 ) | Set-Content -LiteralPath (Join-Path $source "install_result.txt") -Encoding UTF8
 Get-Content -LiteralPath (Join-Path $source "install_result.txt")

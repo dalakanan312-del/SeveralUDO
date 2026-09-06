@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.6")
+app = FastAPI(title="Decades Tracker", version="4.6.7")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -670,7 +670,7 @@ def succession_ranking(sims: list[Record], save: ChronicleSave) -> list[dict]:
 
 
 def planner_analysis(sims: list[Record], pregnancies: list[Record], plans: list[Record], save: ChronicleSave) -> tuple[list[dict], list[dict]]:
-    by_id = {item.id:item for item in sims}; adulthood = int((save.settings or {}).get("adulthood_age_days") or 72)
+    by_id = {item.id:item for item in sims}; adulthood = domain.age_setting_days(save, "adulthood_age_days", 72)
     plan_rows = []
     for plan in plans:
         data = plan.data or {}; sim = by_id.get(str(data.get("sim_id") or "")); children = []
@@ -698,9 +698,9 @@ def planner_analysis(sims: list[Record], pregnancies: list[Record], plans: list[
             birth = int_or_none((sim.data or {}).get("birth_global_day"))
             if birth is not None:
                 for label, offset in sorted(domain.AGING_STAGE_OFFSETS.items(), key=lambda item:item[1]):
-                    due = birth + int(offset)
+                    due = birth + domain.lifecycle_age_days(save, offset)
                     if due >= save.global_day: forecast.append({"label":label.title(),"global_day":due})
-                marriage_due = birth + int((save.settings or {}).get("marriage_min_age_days") or 72)
+                marriage_due = birth + domain.age_setting_days(save, "marriage_min_age_days", 72)
                 if marriage_due >= save.global_day: forecast.append({"label":"Marriage eligibility","global_day":marriage_due})
         plan_rows.append({"record":plan,"sim":sim,"children":len(children),"survived":survived,"died_young":died_young,"pending":pending,"remaining":pregnancies_remaining if pregnancy_plan else max(0,target-len(children)),"next_conception":max(births)+spacing if births and spacing else None,"forecast":sorted(forecast,key=lambda item:item["global_day"])[:12],"pregnancy_plan":pregnancy_plan,"pregnancies_used":pregnancies_used,"target_pregnancies":target_pregnancies or 0,"pregnancies_remaining":pregnancies_remaining})
     dynasties: dict[str, dict] = {}
@@ -1812,7 +1812,7 @@ def feature_page(request: Request, page: str):
             for relationship in relationships:
                 data=relationship.data or {}
                 if bool(data.get("legally_married")) or "marriage" in str(data.get("type") or "").casefold(): married_ids.update((str(data.get("partner1_id") or ""),str(data.get("partner2_id") or "")))
-            minimum_age=int((save.settings or {}).get("marriage_min_age_days") or 72)
+            minimum_age=domain.age_setting_days(save,"marriage_min_age_days",72)
             match_eligible=[item for item in sims if _living_sim(item,save) and item.id not in married_ids and int_or_none((item.data or {}).get("birth_global_day")) is not None and save.global_day-int((item.data or {}).get("birth_global_day"))>=minimum_age]
             kinship_depth=max(1,min(8,int((save.settings or {}).get("kinship_detection_generations") or 3)))
             selected_match=request.query_params.get("match_sim") or (match_eligible[0].id if match_eligible else "");match_candidates=[]
@@ -2063,7 +2063,7 @@ def feature_page(request: Request, page: str):
                 if death_day is not None and death_day<=g and age_label!="Birth day unknown": age_label=f"{age_label} at death"
                 age_check.append({
                     "sim":sim,"age_days":age_days,"age_label":age_label,
-                    "life_stage":insights.life_stage(sim,g),"status":sim_status(sim,save),
+                    "life_stage":insights.life_stage(sim,g,save),"status":sim_status(sim,save),
                     "birth_label":challenge_date_label(save,birth_day) if birth_day is not None else "Birth day not recorded",
                 })
             age_check.sort(key=lambda row:(row["age_days"] is None, -(row["age_days"] or 0), row["sim"].label.casefold()))
@@ -2222,7 +2222,7 @@ def feature_page(request: Request, page: str):
                 rel_data=relationship.data or {}
                 if bool(rel_data.get("legally_married")) or "marriage" in str(rel_data.get("type") or "").casefold():
                     married_ids.update((str(rel_data.get("partner1_id") or ""),str(rel_data.get("partner2_id") or "")))
-            minimum_age=int((save.settings or {}).get("marriage_min_age_days") or 72)
+            minimum_age=domain.age_setting_days(save,"marriage_min_age_days",72)
             match_eligible=[item for item in relationship_sims if _living_sim(item,save) and item.id not in married_ids and int_or_none((item.data or {}).get("birth_global_day")) is not None and save.global_day-int((item.data or {}).get("birth_global_day"))>=minimum_age]
             kinship_depth=max(1,min(8,int((save.settings or {}).get("kinship_detection_generations") or 3)))
             selected_match=request.query_params.get("match_sim") or (match_eligible[0].id if match_eligible else "")
@@ -2496,13 +2496,16 @@ def sim_profile(request: Request, sim_id: str):
         birth_day=int_or_none(sim_data.get("birth_global_day",sim.global_day));death_day=int_or_none(sim_data.get("death_global_day"))
         age_end=death_day if death_day is not None and death_day<=save.global_day else save.global_day
         age_days=max(0,age_end-birth_day) if birth_day is not None else None
-        life_stage=insights.life_stage(sim,save.global_day)
-        stage_index=next((index for index,(label,_) in enumerate(insights.LIFE_STAGES) if label==life_stage),None)
+        age_years,age_days_in_year=divmod(age_days,max(1,save.days_per_year)) if age_days is not None else (None,None)
+        age_label=f"{age_years}y {age_days_in_year}d · {age_days} tracker days" if age_years is not None else "Age not recorded"
+        life_stage=insights.life_stage(sim,save.global_day,save)
+        stage_definitions=insights.life_stages(save)
+        stage_index=next((index for index,(label,_) in enumerate(stage_definitions) if label==life_stage),None)
         next_stage=None;stage_progress=None
         if age_days is not None and stage_index is not None:
-            stage_start=insights.LIFE_STAGES[stage_index][1]
-            if stage_index+1<len(insights.LIFE_STAGES):
-                next_label,next_start=insights.LIFE_STAGES[stage_index+1]
+            stage_start=stage_definitions[stage_index][1]
+            if stage_index+1<len(stage_definitions):
+                next_label,next_start=stage_definitions[stage_index+1]
                 span=max(1,next_start-stage_start)
                 stage_progress=max(0,min(100,round((age_days-stage_start)*100/span)))
                 next_stage={"label":next_label,"global_day":birth_day+next_start,"days_remaining":max(0,next_start-age_days)}
@@ -2517,7 +2520,7 @@ def sim_profile(request: Request, sim_id: str):
         university_profile=next((row for row in university_dashboard["rows"] if str((row["enrollment"].data or {}).get("sim_id") or "")==sim.id),None)
         pending_rolls=[item for item in related_rolls if not (item.data or {}).get("completed")]
         completed_rolls=[item for item in related_rolls if (item.data or {}).get("completed")]
-        profile_summary={"life_stage":life_stage,"age_days":age_days,"stage_progress":stage_progress,"next_stage":next_stage,"active_illnesses":active_illnesses,"active_pregnancies":active_pregnancies,"pending_rolls":pending_rolls,"completed_rolls":completed_rolls}
+        profile_summary={"life_stage":life_stage,"age_days":age_days,"age_label":age_label,"stage_progress":stage_progress,"next_stage":next_stage,"active_illnesses":active_illnesses,"active_pregnancies":active_pregnancies,"pending_rolls":pending_rolls,"completed_rolls":completed_rolls}
         pregnancy_plan=domain.pregnancy_allowance_status(session,save,sim)
         catchup_roll_count=len(domain.prior_lifecycle_rolls(session,save,sim)) if sim_status(sim,save)!="Deceased" else 0
         sim_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==sim.id).order_by(Portrait.created_at)))
@@ -5218,11 +5221,11 @@ def download_clock_sync_component(request: Request, component: str, game_mode: s
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.6.6-Setup.exe"
+    package=ROOT / "release" / "Decades-Tracker-4.6.7-Setup.exe"
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.6-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.7-Setup.exe"',"Cache-Control":"no-store",
     })
 
 
@@ -5267,7 +5270,7 @@ def portrait(request: Request, record_id: str, stage: str):
         if stage == "current" and record.kind == "sim":
             raw=str((record.data or {}).get("game_age_stage") or "").replace("Age.","").replace("_","").replace(" ","").casefold()
             stage_map={"baby":"newborn","newborn":"newborn","infant":"infant","toddler":"toddler","child":"child","preteen":"preteen","teen":"teen","youngadult":"youngadult","adult":"adult","elder":"elder"}
-            stage=stage_map.get(raw,insights.life_stage(record,save.global_day))
+            stage=stage_map.get(raw,insights.life_stage(record,save.global_day,save))
         stage_key="".join(character for character in str(stage).casefold() if character.isalpha()) or "default"
         stage_items=list(session.scalars(select(Portrait).where(
             Portrait.record_id == record_id, func.lower(func.replace(Portrait.stage," ","")) == stage_key,

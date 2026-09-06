@@ -13,7 +13,7 @@ Tracker says Waiting
 - Open a Sims 3 save and wait for the world to finish loading.
 - After a short time, look for sims3_game_clock.json in:
   DocumentsElectronic ArtsThe Sims 3ModsSeveralUDOClockSync
-- The relay turns that snapshot into a report automatically. Check
+- The relay turns that full-town snapshot into a report automatically. Check
   relay_health.json for its current state.
 
 There is no sims3_game_clock.json
@@ -34,7 +34,7 @@ The tracker does not advance
   for an older save or a lower game day.
 
 A script or antivirus warning appears
-- The Sims 3 .package only reads the in-game clock and writes a JSON snapshot.
+- The Sims 3 .package reads the loaded town and writes a JSON snapshot; it never changes save data or sends network traffic.
 - The relay is a PowerShell helper which sends that snapshot to your private
   tracker link. Use only kit files downloaded from the tracker and do not
   share config.json.

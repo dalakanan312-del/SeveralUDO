@@ -46,7 +46,7 @@
 </nav>
 
 <section class="profile-metrics" aria-label="At a glance">
-  <article><span>Life stage</span><strong>{{profile_summary.life_stage}}</strong>{% if profile_summary.next_stage and not deceased %}<small>{{profile_summary.next_stage.days_remaining}} day(s) to {{profile_summary.next_stage.label}}</small>{% else %}<small>{{profile_summary.age_days if profile_summary.age_days is not none else 'Unknown'}} recorded life days</small>{% endif %}</article>
+  <article><span>Life stage</span><strong>{{profile_summary.life_stage}}</strong><small>{{profile_summary.age_label}} · {{save.days_per_year}}-day years{% if profile_summary.next_stage and not deceased %} · {{profile_summary.next_stage.days_remaining}} day(s) to {{profile_summary.next_stage.label}}{% endif %}</small></article>
   <article><span>Household</span><strong>{{current_household.label if current_household else 'Unassigned'}}</strong><small>{{sim.data.get('historical_household') or 'No historical household noted'}}</small></article>
   <article><span>Close family</span><strong>{{children|length}} child{{'' if children|length==1 else 'ren'}}</strong><small>{{parents|length}} parent link{{'' if parents|length==1 else 's'}} · {{siblings|length}} sibling{{'' if siblings|length==1 else 's'}}</small></article>
   <article><span>Open obligations</span><strong>{{profile_summary.pending_rolls|length}}</strong><small>{{profile_summary.active_illnesses|length}} active illness{{'' if profile_summary.active_illnesses|length==1 else 'es'}} · {{profile_summary.active_pregnancies|length}} active pregnanc{{'y' if profile_summary.active_pregnancies|length==1 else 'ies'}}</small></article>

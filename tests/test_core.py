@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from sqlalchemy import delete, func, select
 
-from app import accounts, advanced, auth, automation, avatar_rules, backup_service, core_rulesets, decade_portraits, exports, game_of_thrones_rules, harry_potter_rules, insights, legacy_neon, names, notifications, sync, telemetry
+from app import accounts, advanced, auth, automation, avatar_rules, backup_service, core_rulesets, decade_portraits, domain, exports, game_of_thrones_rules, harry_potter_rules, insights, legacy_neon, names, notifications, sync, telemetry
 from app.automation import candidate as automation_candidate, classify_game_relationship, reconcile_sim, repair_relationship_classifications, repair_relationship_inbox
 from app.calendar_utils import date_range_label, exact_historical_label
 from app.clock import _game_illnesses, _store_game_portrait, attach_game_identity, estimate_new_sim_birth, imported_sim_match, report_checksum, receive as receive_clock
@@ -143,6 +143,37 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertEqual(completed.global_day,57)
             self.assertTrue(completed.data["completed"])
             self.assertEqual(schedule_rolls(session,save),0)
+            session.rollback()
+
+    def test_twelve_day_year_scales_life_stage_displays_and_age_gates(self):
+        save=ChronicleSave(start_year=1300,days_per_year=12,global_day=216)
+        sim=Record(id="calendar-sim",kind="sim",label="Calendar Sim",global_day=1,data={"birth_global_day":1})
+        household=Record(id="calendar-house",kind="household",label="Calendar House",global_day=1,data={})
+        sim.data["current_household_id"]=household.id
+
+        self.assertEqual(dict(insights.life_stages(save))["Young Adult"],216)
+        self.assertEqual(insights.life_stage(sim,216,save),"Teen")
+        self.assertEqual(insights.life_stage(sim,217,save),"Young Adult")
+
+        census=household_census([household,sim],save)
+        self.assertEqual(dict(census["rows"][household.id]["stages"])["Teen"],1)
+
+        preteen=Record(kind="roll_rule",label="Preteen maternal",data={"start_year":-9999,"end_year":9999})
+        teen=Record(kind="roll_rule",label="Teen maternal",data={"start_year":-9999,"end_year":9999})
+        self.assertIs(domain.maternal_rule_for_day(save,[preteen,teen],sim,157),teen)
+
+    def test_defaults_repair_unmarked_four_day_age_settings_in_twelve_day_save(self):
+        with SessionLocal() as session:
+            workspace=Workspace(name="Calendar defaults");session.add(workspace);session.flush()
+            save=ChronicleSave(workspace_id=workspace.id,name="Calendar defaults",days_per_year=12,settings={
+                "marriage_min_age_days":72,"elder_min_age_days":240,"elder_max_age_days":320,
+            })
+            session.add(save);session.flush();seed_defaults(session,save)
+            self.assertEqual(save.settings["marriage_min_age_days"],216)
+            self.assertEqual(save.settings["adulthood_age_days"],216)
+            self.assertEqual(save.settings["elder_min_age_days"],720)
+            self.assertEqual(save.settings["elder_max_age_days"],960)
+            self.assertEqual(save.settings["age_calendar_days_per_year"],12)
             session.rollback()
 
     def test_elder_rng_uses_age_60_to_120_and_is_anchored_to_birth(self):

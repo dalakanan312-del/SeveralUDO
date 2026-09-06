@@ -92,6 +92,19 @@ class Sims3ModeTests(unittest.TestCase):
                         session.commit()
 
 
+    def test_sims3_clock_sync_sweeps_the_loaded_town_and_marks_a_complete_population(self):
+        source = (clock_bundle.SIMS3_BRIDGE_ROOT / 'SeveralUDOClockSync-Sims3-Source.cs').read_text(encoding='utf-8')
+        relay = (clock_bundle.SIMS3_BRIDGE_ROOT / 'SeveralUDOClockRelay.ps1').read_text(encoding='utf-8')
+        self.assertEqual(clock_bundle.SIMS3_CLOCK_SYNC_VERSION, '1.1.0')
+        self.assertIn('Household.EverySimDescription()', source)
+        self.assertIn('population_complete', source)
+        self.assertIn('population_scope', source)
+        self.assertIn('new AlarmTimerCallback(WriteGameSnapshot), 30f, TimeUnit.Minutes', source)
+        self.assertIn('report_kind = if ($hasRichSnapshot) { "full" } else { "clock" }', relay)
+        self.assertIn('population_scope = "town"', relay)
+        self.assertIn('population_complete = $hasRichSnapshot', relay)
+
+
 if __name__ == '__main__':
     unittest.main()
 

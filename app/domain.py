@@ -17,7 +17,7 @@ from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
 from .early_event_catalog_data import EARLY_EVENT_LIBRARY_GZIP_BASE64
 
 
-DEFAULTS_SCHEMA_VERSION = "4.6.3-calendar-scaled-lifecycle"
+DEFAULTS_SCHEMA_VERSION = "4.6.4-calendar-aware-age-displays"
 
 # Authoritative pre-1700 SeveralUDO mortality table recovered from the
 # original Rules Config. The age offsets remain challenge-day milestones;
@@ -45,6 +45,7 @@ ORIGINAL_AGING_CHART = "Original SeveralUDO lifecycle mortality chart"
 STANDARD_CHALLENGE_DAYS_PER_YEAR = 4
 AGE_SCALED_SETTING_DEFAULTS = {
     "marriage_min_age_days": 72,
+    "adulthood_age_days": 72,
     "elder_min_age_days": 240,
     "elder_max_age_days": 320,
 }
@@ -1478,9 +1479,13 @@ def maternal_rule_for_day(
         age = int(day) - int(birth)
     except (TypeError, ValueError):
         return None
+    preteen_age = lifecycle_age_days(save, 52)
+    young_adult_age = lifecycle_age_days(save, 72)
+    adult_age = lifecycle_age_days(save, 160)
+    elder_age = lifecycle_age_days(save, 240)
     stage = (
-        "preteen" if age < 52 else "teen" if age < 72 else
-        "young adult" if age < 160 else "adult" if age < 240 else "elder"
+        "preteen" if age < preteen_age else "teen" if age < young_adult_age else
+        "young adult" if age < adult_age else "adult" if age < elder_age else "elder"
     )
     due_year = save.start_year + (int(day) - 1) // max(1, save.days_per_year)
     eligible = [
@@ -1489,7 +1494,7 @@ def maternal_rule_for_day(
         <= int((rule.data or {}).get("end_year", 9999))
     ]
     return (
-        next((rule for rule in eligible if stage in rule.label.casefold()), None)
+        next((rule for rule in eligible if re.search(rf"(?<![a-z]){re.escape(stage)}(?![a-z])", rule.label.casefold())), None)
         or next((
             rule for rule in eligible
             if "all ages" in rule.label.casefold() or "birth" in rule.label.casefold()
@@ -1799,9 +1804,24 @@ def seed_defaults(session: Session, save: ChronicleSave) -> int:
     generation_updates=sync_generations(session,save)
     save.revision+=generation_updates
     save_settings=dict(save.settings or {})
+    recorded_calendar=save_settings.get("age_calendar_days_per_year")
+    try:
+        recorded_calendar=int(recorded_calendar) if recorded_calendar not in (None, "") else None
+    except (TypeError, ValueError):
+        recorded_calendar=None
     for setting, standard_age in AGE_SCALED_SETTING_DEFAULTS.items():
-        if save_settings.get(setting) in (None, ""):
+        configured=save_settings.get(setting)
+        if configured in (None, ""):
             save_settings[setting] = lifecycle_age_days(save, standard_age)
+            continue
+        # Older 12-day saves could retain the original four-day default after
+        # opening Rule Setup. That exact unmarked default was never a custom
+        # age choice, so upgrade it once with the rest of the default data.
+        if (save.days_per_year != STANDARD_CHALLENGE_DAYS_PER_YEAR
+                and recorded_calendar in (None, STANDARD_CHALLENGE_DAYS_PER_YEAR)
+                and str(configured).strip() == str(standard_age)):
+            save_settings[setting] = lifecycle_age_days(save, standard_age)
+    save_settings["age_calendar_days_per_year"]=int(save.days_per_year)
     save_settings["defaults_schema_version"]=DEFAULTS_SCHEMA_VERSION;save.settings=save_settings
     return created+event_created+generation_updates
 
@@ -4181,7 +4201,7 @@ def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, r
 
         due = save.global_day
         if str(spec.get("due") or "") == "child_stage" and targets:
-            try: due = max(save.global_day, int((targets[0].data or {}).get("birth_global_day", targets[0].global_day)) + 20)
+            try: due = max(save.global_day, int((targets[0].data or {}).get("birth_global_day", targets[0].global_day)) + lifecycle_age_days(save, 20))
             except (TypeError, ValueError): due = save.global_day
         rule_year = _occult_year(save, due)
         rule = _followup_rule(session, save, child_key, rule_year, str(spec.get("rule_id") or ""))
@@ -4197,7 +4217,7 @@ def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, r
                 birth = target_data.get("birth_global_day", target.global_day)
                 try: age_days = max(0, int(roll.global_day or save.global_day) - int(birth))
                 except (TypeError, ValueError): age_days = 52 if stage in {"teen", "young adult", "adult", "elder"} else 20
-                teen_plus = stage in {"teen", "young adult", "adult", "elder"} if stage else age_days >= 52
+                teen_plus = stage in {"teen", "young adult", "adult", "elder"} if stage else age_days >= lifecycle_age_days(save, 52)
                 if (age_group == "child" and teen_plus) or (age_group == "teen_plus" and not teen_plus):
                     continue
             repeats = 1
@@ -5543,7 +5563,7 @@ def auto_pass_lifecycle_rolls_for_added_sim(session: Session, save: ChronicleSav
     raw_stage = {"youngadult": "young adult", "beingborn": "being born"}.get(raw_stage.replace(" ", ""), raw_stage)
     if raw_stage not in AGING_STAGE_OFFSETS:
         current_age = max(0, save.global_day - birth)
-        eligible = [(stage.casefold(), offset) for stage, offset, _die, _bad in DEFAULT_STAGES if offset <= current_age and "elder" not in stage.casefold()]
+        eligible = [(stage.casefold(), offset) for stage, offset, _die, _bad in DEFAULT_STAGES if lifecycle_age_days(save, offset) <= current_age and "elder" not in stage.casefold()]
         raw_stage = max(eligible, key=lambda item: item[1], default=("being born", 0))[0]
     stage_start = lifecycle_age_days(save, AGING_STAGE_OFFSETS.get(raw_stage, 0))
     result = pass_prior_lifecycle_rolls(session, save, sim, birth + stage_start - 1)

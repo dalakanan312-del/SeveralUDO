@@ -81,7 +81,7 @@ def _is_minor(sim: Record, save: ChronicleSave) -> bool:
     if stage:
         return stage in CHILD_STAGES
     age = _age(sim, save)
-    threshold = max(1, _int((save.settings or {}).get("marriage_min_age_days"), 72))
+    threshold = max(1, domain.age_setting_days(save, "marriage_min_age_days", 72))
     return age is not None and age < threshold
 
 
@@ -90,7 +90,7 @@ def _is_adult(sim: Record, save: ChronicleSave) -> bool:
     if stage:
         return stage in ADULT_STAGES
     age = _age(sim, save)
-    threshold = max(1, _int((save.settings or {}).get("marriage_min_age_days"), 72))
+    threshold = max(1, domain.age_setting_days(save, "marriage_min_age_days", 72))
     return age is not None and age >= threshold
 
 
@@ -262,7 +262,7 @@ def milestones_and_dispersal(grouped: dict[str, list[Record]], save: ChronicleSa
         kind = _text(data.get("type")).casefold()
         if status not in {"ended", "divorced", "annulled"} and (bool(data.get("legally_married")) or "marriage" in kind or "spouse" in kind):
             married.update((_text(data.get("partner1_id")), _text(data.get("partner2_id"))))
-    threshold = max(1, _int((save.settings or {}).get("marriage_min_age_days"), 72))
+    threshold = max(1, domain.age_setting_days(save, "marriage_min_age_days", 72))
     coming = []
     dispersal = []
     for sim in sims:
