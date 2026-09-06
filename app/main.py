@@ -863,6 +863,15 @@ def _search_result_for(record: Record, save: ChronicleSave) -> dict:
     return {"label": record.label, "kind": kind, "detail": detail, "href": href}
 
 
+@app.get("/ads.txt", include_in_schema=False)
+def ads_txt():
+    """Publish the public AdSense authorization record for the hosted site."""
+    publisher = str(settings.ads_config.get("verification_client") or "").removeprefix("ca-")
+    if not publisher:
+        return Response(status_code=404)
+    return Response(f"google.com, {publisher}, DIRECT, f08c47fec0942fa0\n", media_type="text/plain")
+
+
 @app.get("/api/search")
 def global_search(request: Request, q: str = ""):
     """Fast label-only finder for Sims and every commonly used tracker record."""

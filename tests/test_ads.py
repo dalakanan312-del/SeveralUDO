@@ -15,7 +15,7 @@ class AdvertisingConsentTests(unittest.TestCase):
             google_adsense_client_id="ca-pub-example",
             google_adsense_footer_slot="1234567890",
         )
-        self.assertEqual(config.ads_config, {"consent_available": False, "available": False, "client": "", "footer_slot": ""})
+        self.assertEqual(config.ads_config, {"consent_available": False, "verification_available": False, "verification_client": "", "available": False, "client": "", "footer_slot": ""})
 
     def test_hosted_ads_require_owner_enablement_and_a_complete_unit(self):
         disabled = Settings(
@@ -32,7 +32,7 @@ class AdvertisingConsentTests(unittest.TestCase):
         )
         self.assertFalse(disabled.ads_config["available"])
         self.assertTrue(disabled.ads_config["consent_available"])
-        self.assertEqual(enabled.ads_config, {"consent_available": True, "available": True, "client": "ca-pub-example", "footer_slot": "1234567890"})
+        self.assertEqual(enabled.ads_config, {"consent_available": True, "verification_available": True, "verification_client": "ca-pub-example", "available": True, "client": "ca-pub-example", "footer_slot": "1234567890"})
 
     def test_shared_shell_and_client_require_an_explicit_opt_in(self):
         template = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
@@ -43,6 +43,8 @@ class AdvertisingConsentTests(unittest.TestCase):
         self.assertIn('help support the creator', template)
         self.assertIn('data-manage-ad-preference', template)
         self.assertIn('ads_config.consent_available', template)
+        self.assertIn('google-adsense-account', template)
+        self.assertIn('ads_config.verification_client', template)
         self.assertIn("if(preference==='accepted')loadOptInAdvertising()", script)
         self.assertIn("pagead2.googlesyndication.com", script)
         self.assertIn("decades-ad-preference", script)

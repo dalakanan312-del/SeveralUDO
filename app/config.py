@@ -74,6 +74,9 @@ class Settings:
     skip_startup_migrations: bool = os.getenv("DECADES_SKIP_STARTUP_MIGRATIONS", "").casefold() in {"1","true","yes","on"}
     # Advertising is deliberately opt-in. These values are configured only on the hosted service.
     google_adsense_client_id: str = os.getenv("GOOGLE_ADSENSE_CLIENT_ID", "").strip()
+    # This is a public account identifier used only for site ownership checks.
+    # Ad delivery still requires a separately configured client, slot, and opt-in.
+    google_adsense_verification_id: str = os.getenv("GOOGLE_ADSENSE_VERIFICATION_ID", "ca-pub-7784501722688975").strip()
     google_adsense_footer_slot: str = os.getenv("GOOGLE_ADSENSE_FOOTER_SLOT", "").strip()
     advertising_enabled: bool = os.getenv("DECADES_ADVERTISING_ENABLED", "").strip().casefold() in {"1", "true", "yes", "on"}
     automatic_snapshots: bool = _automatic_snapshots(database_url)
@@ -97,6 +100,8 @@ class Settings:
         # ready. Hosted visitors can make (and later change) their choice now;
         # the local desktop tracker remains permanently ad-free.
         consent_available = not self.local_mode
+        verification_client = self.google_adsense_client_id or self.google_adsense_verification_id
+        verification_available = bool(consent_available and verification_client)
         available = bool(
             consent_available
             and self.advertising_enabled
@@ -105,6 +110,8 @@ class Settings:
         )
         return {
             "consent_available": consent_available,
+            "verification_available": verification_available,
+            "verification_client": verification_client if verification_available else "",
             "available": available,
             "client": self.google_adsense_client_id if available else "",
             "footer_slot": self.google_adsense_footer_slot if available else "",

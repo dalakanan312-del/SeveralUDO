@@ -22,6 +22,7 @@
 <link rel="stylesheet" href="/static/timeline.css?v={{static_version}}">
 <link rel="stylesheet" href="/static/ads.css?v={{static_version}}">
   <script src="/static/htmx.min.js?v={{static_version}}" defer></script>
+{% if ads_config.verification_available %}<meta name="google-adsense-account" content="{{ads_config.verification_client}}">{% endif %}
 {% if user and ads_config.consent_available %}<script id="decades-ad-config" type="application/json">{{ads_config|tojson}}</script>{% endif %}
 </head>
 <body data-page="{{page or 'home'}}" data-theme-mode="{{visual_theme.mode}}" data-theme-density="{{visual_theme.density}}" data-theme-scale="{{visual_theme.text_scale}}" data-heading-style="{{visual_theme.heading_style}}" data-theme-motion="{{'reduce' if visual_theme.reduce_motion else 'full'}}" {% if user and save %}data-notification-feed="/api/notifications" data-notification-cursor="{{notification_cursor}}" data-live-status="/api/live-status" data-current-global-day="{{save.global_day}}" data-save-id="{{save.id}}"{% endif %}>
