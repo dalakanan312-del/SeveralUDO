@@ -93,13 +93,18 @@ class Settings:
         The desktop tracker never receives this configuration. In browsers, the
         Google script is loaded only after the visitor chooses to see ads.
         """
+        # Consent is independent from whether an approved Google placement is
+        # ready. Hosted visitors can make (and later change) their choice now;
+        # the local desktop tracker remains permanently ad-free.
+        consent_available = not self.local_mode
         available = bool(
-            not self.local_mode
+            consent_available
             and self.advertising_enabled
             and self.google_adsense_client_id
             and self.google_adsense_footer_slot
         )
         return {
+            "consent_available": consent_available,
             "available": available,
             "client": self.google_adsense_client_id if available else "",
             "footer_slot": self.google_adsense_footer_slot if available else "",
