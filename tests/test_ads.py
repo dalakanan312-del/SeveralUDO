@@ -34,6 +34,12 @@ class AdvertisingConsentTests(unittest.TestCase):
         self.assertTrue(disabled.ads_config["consent_available"])
         self.assertEqual(enabled.ads_config, {"consent_available": True, "verification_available": True, "verification_client": "ca-pub-example", "available": True, "client": "ca-pub-example", "footer_slot": "1234567890"})
 
+    def test_hosted_default_support_unit_is_ready_after_opt_in(self):
+        config = Settings(database_url="postgresql://example.invalid/decades")
+        self.assertTrue(config.ads_config["available"])
+        self.assertEqual(config.ads_config["client"], "ca-pub-7784501722688975")
+        self.assertEqual(config.ads_config["footer_slot"], "2263415805")
+
     def test_shared_shell_and_client_require_an_explicit_opt_in(self):
         template = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
         script = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
