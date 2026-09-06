@@ -53,6 +53,8 @@ class AdvertisingConsentTests(unittest.TestCase):
         self.assertIn('ads_config.verification_client', template)
         self.assertIn("if(preference==='accepted')loadOptInAdvertising()", script)
         self.assertIn("pagead2.googlesyndication.com", script)
+        self.assertIn("event.preventDefault()", script)
+        self.assertIn(".ad-consent-dialog[hidden]{display:none!important}", (ROOT / 'app' / 'static' / 'ads.css').read_text(encoding='utf-8'))
         self.assertIn("decades-ad-preference", script)
 
 
