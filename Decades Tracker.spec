@@ -31,6 +31,10 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Never distribute device-specific clock credentials or local install logs.
+a.datas = [entry for entry in a.datas if entry[0].replace('\\', '/') not in {
+    'clock_bridge/config.json', 'clock_bridge/install_result.txt',
+}]
 pyz = PYZ(a.pure)
 
 exe = EXE(
