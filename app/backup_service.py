@@ -83,7 +83,12 @@ def _remap(value, mapping: dict[str, str]):
 
 def restore_as_copy(session: Session, workspace_id: str, raw: bytes,
                     suffix: str = "Restored") -> ChronicleSave:
+    from .infinite_decades import detached_settings, copy_record_data, state
     manifest, rows, portrait_manifest, archive, _stream = inspect_package(raw)
+    previous_branch_operation = session.info.get("infinite_branch_operation")
+    # A complete imported dynasty is one atomic new save, never a mutation of
+    # the source dynasty or a partial branch switch.
+    session.info["infinite_branch_operation"] = True
     try:
         save = ChronicleSave(
             workspace_id=workspace_id,
@@ -92,11 +97,12 @@ def restore_as_copy(session: Session, workspace_id: str, raw: bytes,
             start_year=int(manifest.get("start_year") or 1300),
             days_per_year=max(1, int(manifest.get("days_per_year") or 4)),
             pregnancy_days=max(1, int(manifest.get("pregnancy_days") or 4)),
-            settings=dict(manifest.get("settings") or {}),
+            settings=detached_settings(manifest.get("settings")),
         )
         session.add(save)
         session.flush()
         mapping = {str(row["id"]): uuid4().hex for row in rows}
+        save.settings = detached_settings(save.settings, mapping)
         for row in rows:
             item = Record(
                 id=mapping[str(row["id"])],
@@ -104,7 +110,7 @@ def restore_as_copy(session: Session, workspace_id: str, raw: bytes,
                 kind=row["kind"],
                 label=row.get("label") or "",
                 global_day=row.get("global_day"),
-                data=_remap(row.get("data") or {}, mapping),
+                data=copy_record_data(row["kind"], row.get("data") or {}, mapping),
                 version=1,
                 deleted=bool(row.get("deleted")),
             )
@@ -125,9 +131,11 @@ def restore_as_copy(session: Session, workspace_id: str, raw: bytes,
                     source="backup-restore",
                 ))
         save.revision = len(rows)
+        if state(save): sync.ensure_save_metadata(session, save)
         session.flush()
         return save
     finally:
+        session.info["infinite_branch_operation"] = previous_branch_operation
         archive.close()
 
 
@@ -155,7 +163,8 @@ def create_snapshot(session: Session, save: ChronicleSave, reason: str = "automa
     history = list(session.scalars(select(BackupSnapshot).where(
         BackupSnapshot.save_id == save.id,
     ).order_by(BackupSnapshot.created_at.desc())))
-    for old in history[14:]:
+    ordinary_history = [old for old in history if not old.reason.startswith("infinite:")]
+    for old in ordinary_history[14:]:
         session.delete(old)
     return row
 

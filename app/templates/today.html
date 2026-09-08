@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Today · Decades Tracker{% endblock %}
 {% block body %}
+{% if infinite_meta %}<div class="notice"><strong>Infinite Decades · {{save.name}}</strong> — only this family line progresses. <a href="/p/infinite-decades">Capture a split or manage branches</a></div>{% endif %}
 <header class="hero compact today-hero">
   <div>
     <p class="eyebrow">{{save.name}} · {{tracker_weekday(save.global_day)}}</p>

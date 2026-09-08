@@ -21,6 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain
+from . import infinite_decades, infinite_decades_ui
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
@@ -42,6 +43,7 @@ FEATURES = {
     "family-tree": ("Family Tree", "Ancestors, descendants and dynasty lines"),
     "timeline": ("Chronicle", "A narrative history of the save"),
     "planner": ("Play Planner", "Household rotations, family plans and forecasts"),
+    "infinite-decades": ("Infinite Decades", "Play one branch to its ending, then return to the newest unplayed split"),
     "historical-life": ("Historical Life", "Era preparation, estates, education, reputation, service, memorials and family strategy"),
     "life-records": ("Life Records", "Dowries, guardians, milestones, law, wellbeing and chronicle reliability"),
     "challenge": ("Challenge Management", "Succession, matchmaking and campaigns"),
@@ -82,7 +84,7 @@ NAVIGATION_GROUPS = (
         "label": "Play",
         "description": "What needs attention now",
         "icon": "▶",
-        "pages": ("today", "automation", "clock", "planner", "rolls"),
+        "pages": ("today", "automation", "clock", "planner", "infinite-decades", "rolls"),
     },
     {
         "id": "family",
@@ -149,7 +151,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.13")
+app = FastAPI(title="Decades Tracker", version="4.6.14")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -545,10 +547,13 @@ def structured_form_data(form) -> dict:
 def sim_is_deceased(record: Record, save: ChronicleSave) -> bool:
     data = record.data or {}
     death = int_or_none(data.get("death_global_day"))
-    return bool(data.get("game_was_dead") or data.get("death_confirmed") or (death is not None and death <= save.global_day))
+    observed_day = int_or_none(data.get("infinite_frozen_global_day")) if data.get("infinite_frozen") else None
+    return bool(data.get("game_was_dead") or data.get("death_confirmed") or (death is not None and death <= (observed_day if observed_day is not None else save.global_day)))
 
 
 def sim_status(record: Record, save: ChronicleSave) -> str:
+    if (record.data or {}).get("infinite_frozen") and not sim_is_deceased(record, save):
+        return f"Frozen · GD {record.data.get('infinite_frozen_global_day', '?')}"
     death = int_or_none((record.data or {}).get("death_global_day"))
     if sim_is_deceased(record, save): return "Deceased"
     return "Alive · death scheduled" if death is not None else "Alive"
@@ -751,7 +756,7 @@ def startup() -> None:
                 save = ChronicleSave(workspace_id=workspace.id, name="My Decades Challenge")
                 session.add(save); session.flush(); domain.seed_defaults(session, save)
             for existing_save in session.scalars(select(ChronicleSave)):
-                if not settings.skip_startup_migrations and str((existing_save.settings or {}).get("defaults_schema_version") or "")!=domain.DEFAULTS_SCHEMA_VERSION:
+                if not infinite_decades.frozen(existing_save) and not settings.skip_startup_migrations and str((existing_save.settings or {}).get("defaults_schema_version") or "")!=domain.DEFAULTS_SCHEMA_VERSION:
                     domain.seed_defaults(session,existing_save)
                 # Record repair is performed once for the active save after
                 # the UI opens, then continuously by Clock Sync/save scans.
@@ -788,15 +793,19 @@ def context(request: Request, session, **extra):
         active = next((item for item in saves if item.id == requested), saves[0] if saves else None)
         if active:
             request.session["save_id"] = active.id
-            if not settings.skip_startup_migrations and str((active.settings or {}).get("defaults_schema_version") or "") != domain.DEFAULTS_SCHEMA_VERSION:
+            infinite_decades.guard_request(request, active)
+            if not infinite_decades.frozen(active) and not settings.skip_startup_migrations and str((active.settings or {}).get("defaults_schema_version") or "") != domain.DEFAULTS_SCHEMA_VERSION:
                 domain.seed_defaults(session, active)
-            if str((active.settings or {}).get("event_catalog_version") or "") != domain.EVENT_CATALOG_VERSION:
+            if not infinite_decades.frozen(active) and str((active.settings or {}).get("event_catalog_version") or "") != domain.EVENT_CATALOG_VERSION:
                 domain.seed_event_catalog(session, active)
     last_roll = request.session.pop("last_roll", None)
     current_page = extra.get("page")
     visual_theme = themes.resolve((active.settings or {}).get("visual_theme") if active else None)
     return {"request": request, "user": user, "saves": saves, "save": active,
             "save_settings": dict(active.settings or {}) if active else {},
+            "infinite_meta": infinite_decades.state(active), "infinite_frozen": infinite_decades.frozen(active),
+            "infinite_enabled": infinite_decades.enabled(active),
+            "infinite_save_state": infinite_decades.state, "infinite_mode_enabled": infinite_decades.enabled,
             "game_edition": game_modes.for_save(active) if active else game_modes.GAME_MODES[game_modes.SIMS4],
             "game_modes": game_modes.GAME_MODES,
             "visual_theme": visual_theme,
@@ -818,6 +827,7 @@ def owned_save(request: Request, session, save_id: str) -> ChronicleSave:
     workspaces = select(Membership.workspace_id).where(Membership.user_id == user.id)
     save = session.scalar(select(ChronicleSave).where(ChronicleSave.id == save_id, ChronicleSave.workspace_id.in_(workspaces)))
     if not save: raise HTTPException(404)
+    infinite_decades.guard_request(request, save)
     return save
 
 
@@ -1394,8 +1404,14 @@ def rename_save(request: Request, save_id: str, name: str = Form(...)):
 def duplicate_save(request: Request, save_id: str, name: str = Form("")):
     with db() as session:
         original=owned_save(request,session,save_id)
-        clone=ChronicleSave(workspace_id=original.workspace_id,name=name.strip() or f"{original.name} — Copy",global_day=original.global_day,start_year=original.start_year,days_per_year=original.days_per_year,pregnancy_days=original.pregnancy_days,settings=dict(original.settings or {}))
+        if infinite_decades.state(original):
+            clone = backup_service.restore_as_copy(session, original.workspace_id, backup_service.build_package(session, original), "Copy")
+            clone.name = name.strip() or f"{original.name} — Copy"
+            request.session["save_id"] = clone.id
+            return RedirectResponse("/p/saves", status_code=303)
+        clone=ChronicleSave(workspace_id=original.workspace_id,name=name.strip() or f"{original.name} — Copy",global_day=original.global_day,start_year=original.start_year,days_per_year=original.days_per_year,pregnancy_days=original.pregnancy_days,settings=infinite_decades.detached_settings(original.settings))
         session.add(clone);session.flush();source=list(session.scalars(select(Record).where(Record.save_id==original.id)));mapping={item.id:__import__('uuid').uuid4().hex for item in source}
+        clone.settings=infinite_decades.detached_settings(original.settings, mapping)
         for item in source:
             copied=Record(id=mapping[item.id],save_id=clone.id,kind=item.kind,label=item.label,global_day=item.global_day,data=remap_payload(item.data or {},mapping),version=1,deleted=item.deleted);session.add(copied);session.flush();domain.journal(session,copied,"upsert",0)
         for portrait in session.scalars(select(Portrait).where(Portrait.save_id==original.id)):
@@ -1529,6 +1545,12 @@ def feature_page(request: Request, page: str):
         ctx = context(request, session, page=page, title=FEATURES[page][0], subtitle=FEATURES[page][1])
         if not ctx["user"]: return RedirectResponse("/", status_code=303)
         save = ctx["save"]
+        if page == "family-tree" and not save:
+            return RedirectResponse("/p/saves", status_code=303)
+        if infinite_decades.state(save) and page == "family-tree":
+            return infinite_decades_ui.render_tree(request, session, ctx, templates)
+        if page == "infinite-decades" or (infinite_decades.frozen(save) and page != "saves"):
+            return infinite_decades_ui.render(request, session, ctx, templates)
         if save:
             # Add newly shipped Harry Potter entries the first time an existing
             # Harry Potter save opens its library.  This is idempotent and keeps
@@ -1646,14 +1668,9 @@ def feature_page(request: Request, page: str):
             if hidden_event_ids:
                 view_records=[item for item in view_records if item.id not in hidden_event_ids and str((item.data or {}).get("event_id") or "") not in hidden_event_ids]
         if page == "family-tree" and save:
-            focus = request.query_params.get("focus")
-            mode = request.query_params.get("mode", "direct")
-            if mode not in {"direct", "family", "ancestors", "descendants"}: mode = "direct"
-            depth = max(1, min(8, int_or_none(request.query_params.get("depth")) or 3))
-            tree_photos=request.query_params.get("photos","1")!="0";tree_dates=request.query_params.get("dates","1")!="0"
-            ctx.update(tree=insights.family_view(view_records, focus, mode, depth), tree_mode=mode, tree_depth=depth,tree_photos=tree_photos,tree_dates=tree_dates,
-                       all_sims=sorted_sims((item for item in view_records if item.kind == "sim" and bool((item.data or {}).get("include_in_family_tree",True))), save),
-                       photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id == save.id))))
+            from .family_tree import context_for as family_context
+            ctx.update(family_context(view_records, save, request.query_params,
+                       set(session.scalars(select(Portrait.record_id).where(Portrait.save_id == save.id)))))
             records = []
         if page == "statistics" and save:
             ctx["statistics"] = insights.statistics(view_records, save); records = []
@@ -2265,12 +2282,12 @@ def feature_page(request: Request, page: str):
             ctx["all_households"] = sorted((item for item in support_rows if item.kind=="household" and not item.deleted),key=lambda item:item.label.casefold())
             ctx["deceased_sim_ids"] = {item.id for item in ctx["all_sims"] if sim_status(item,save)=="Deceased"}
             ctx["photo_record_ids"] = set(session.scalars(select(Portrait.record_id).where(Portrait.save_id == save.id)))
-            archived_probe=sorted((item for item in support_rows if item.kind==kind and item.deleted),key=lambda item:item.label.casefold())[:101] if support_rows_cache is not None else list(session.scalars(select(Record).where(
-                Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(True),
+            archived_probe=sorted((item for item in support_rows if item.kind==kind and item.deleted and not (item.data or {}).get("infinite_frozen")),key=lambda item:item.label.casefold())[:101] if support_rows_cache is not None else list(session.scalars(select(Record).where(
+                Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(True),Record.data["infinite_frozen"].as_boolean().is_not(True),
             ).order_by(Record.label).limit(101))) if kind else []
             ctx["archived_records"]=archived_probe[:100]
             ctx["archived_count"]=(len(archived_probe) if len(archived_probe)<=100 else session.scalar(
-                select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(True))
+                select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(True),Record.data["infinite_frozen"].as_boolean().is_not(True))
             )) if kind else 0
             if page=="sims":
                 ctx["name_cultures"]=names.library_names(session,save.id,include_recorded=bool(ctx["all_sims"]))
@@ -2278,7 +2295,7 @@ def feature_page(request: Request, page: str):
         dedicated = {
             "today":"today.html", "sims":"sims.html", "relationships":"relationships.html", "households":"households.html",
             "pregnancies":"pregnancies.html", "university":"university.html", "illnesses":"illnesses.html", "automation":"automation.html", "storyline":"storyline.html",
-            "family-tree":"family_tree.html", "timeline":"timeline.html", "statistics":"statistics.html", "health":"health.html",
+            "family-tree":"family_explorer.html", "timeline":"timeline.html", "statistics":"statistics.html", "health":"health.html",
             "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "roll-tables":"roll_tables.html", "occult-rules":"occult_rules.html", "historical-guidance":"historical_guidance.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
             "world":"world.html", "legacy-lab":"legacy_lab.html", "historical-life":"historical_life.html", "life-records":"life-records.html",
@@ -2479,8 +2496,11 @@ def generate_names(request: Request, culture: str = "", sex: str = "Female", sur
 def sim_profile(request: Request, sim_id: str):
     with db() as session:
         sim = session.get(Record, sim_id)
-        if not sim or sim.kind != "sim" or sim.deleted: raise HTTPException(404)
+        if not sim or sim.kind != "sim" or (sim.deleted and not (sim.data or {}).get("infinite_frozen")): raise HTTPException(404)
         save = owned_save(request, session, sim.save_id)
+        if infinite_decades.frozen(save) or (sim.data or {}).get("infinite_frozen"):
+            request.session["save_id"] = save.id
+            return RedirectResponse(f"/p/infinite-decades?sim_id={sim.id}#dynasty-person", 303)
         all_sims = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False)).order_by(Record.label)))
         households = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False)).order_by(Record.label)))
         relationships = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "relationship", Record.deleted.is_(False)).where((Record.data["partner1_id"].as_string() == sim.id) | (Record.data["partner2_id"].as_string() == sim.id))))
@@ -5368,6 +5388,9 @@ def generate_marriage_portrait(request: Request, relationship_id: str, first_sim
         session.flush();sync.sync_portrait(session,session.get(ChronicleSave,relationship.save_id),item,relationship.id,"marriage")
         request.session["portrait_notice"]="Marriage portrait generated."
     return RedirectResponse(request.headers.get("referer") or "/p/relationships", status_code=303)
+
+
+infinite_decades_ui.register(app, db, owned_save)
 
 
 @app.get("/healthz")

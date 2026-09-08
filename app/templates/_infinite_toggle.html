@@ -1,0 +1,14 @@
+{% set toggle_meta = infinite_save_state(toggle_save) %}
+{% set toggle_on = infinite_mode_enabled(toggle_save) %}
+<section class="panel" aria-label="Infinite Decades setting for {{toggle_save.name}}">
+  <div class="actions">
+    <strong>Infinite Decades</strong>
+    <form action="/infinite/{{toggle_save.id}}/toggle{% if toggle_meta %}?_dynasty_epoch={{toggle_meta.epoch}}{% endif %}" method="post" data-dynasty-epoch="{{toggle_meta.get('epoch','')}}" hx-boost="false">
+      <input type="hidden" name="enabled" value="{{'false' if toggle_on else 'true'}}">
+      <input type="hidden" name="return_to" value="{{toggle_return_to}}">
+      <button type="submit" class="automation-toggle-button {% if toggle_on %}active{% endif %}" role="switch" aria-checked="{{'true' if toggle_on else 'false'}}" aria-label="Infinite Decades for {{toggle_save.name}}" aria-describedby="infinite-help-{{toggle_save.id}}"><span aria-hidden="true"></span>{{'On' if toggle_on else 'Off'}}</button>
+    </form>
+    {% if toggle_meta and toggle_return_to == '/p/saves' and save and save.id == toggle_save.id %}<a class="button" href="/p/infinite-decades">Branches & checkpoints</a>{% endif %}
+  </div>
+  <p id="infinite-help-{{toggle_save.id}}"><small>{% if toggle_on %}This save plays one family line at a time. Turning this off pauses the dynasty and keeps every branch.{% elif toggle_meta %}Dynasty paused. Branches, dates and history are preserved. Turn on to resume; this does not merge branches into normal play.{% else %}Normal save. Turn on to choose a starting family and set up one dynasty save. Other saves are unaffected.{% endif %}</small></p>
+</section>

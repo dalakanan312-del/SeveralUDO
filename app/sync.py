@@ -10,6 +10,7 @@ from .models import Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudi
 
 
 SYNC_KINDS = {
+    "dynasty_branch",
     "sim", "household", "relationship", "pregnancy", "roll", "event",
     "event_result", "illness", "note", "era_rule", "roll_rule", "roll_rule_era", "event_rule", "plant",
     "campaign", "service", "migration", "play_rotation", "family_plan", "portrait_meta",
@@ -238,6 +239,10 @@ def merged_conflict_payload(conflict: Conflict, desktop_fields: set[str]) -> dic
 
 
 def apply_change(session: Session, save: ChronicleSave, device: Device, incoming: dict) -> dict:
+    from .infinite_decades import state, KIND, KEY, BranchFrozenError
+    payload_data = (incoming.get("payload") or {}).get("data") or {}
+    if state(save) or incoming.get("kind") == KIND or (incoming.get("kind") == "save_metadata" and (payload_data.get("settings") or {}).get(KEY)):
+        raise BranchFrozenError("Infinite Decades must be transferred as a whole dynasty export/import; partial record sync cannot safely switch branches.")
     if incoming.get("kind") not in SYNC_KINDS:
         raise ValueError("Unsupported record kind")
     change_id = str(incoming["change_id"])

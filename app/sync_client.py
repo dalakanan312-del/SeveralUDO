@@ -37,6 +37,10 @@ def cycle() -> dict:
     if not config.get("token"): return {"status": "not-configured"}
     headers = {"Authorization": f"Bearer {config['token']}"}
     with SessionLocal() as session:
+        from .infinite_decades import state
+        if state(session.get(ChronicleSave, config["local_save_id"])):
+            return {"status":"paused", "pushed":0, "pulled":0,
+                    "message":"Infinite Decades uses whole-dynasty export/import. Record-by-record cloud sync is paused to protect branch checkpoints."}
         outgoing = list(session.scalars(select(Change).where(
             Change.save_id == config["local_save_id"],
             Change.sequence > int(config.get("pushed_sequence", 0)),

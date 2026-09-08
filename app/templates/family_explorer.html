@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Family Tree · Decades Tracker{% endblock %}
+{% block body %}
+<link rel="stylesheet" href="/static/family-tree.css?v={{static_version}}">
+<section class="ft-explorer" id="family-explorer">
+  <header class="ft-heading"><div><h1>Family Tree</h1><p>{{save.name}}</p></div>{% if family_graph.infinite %}<a class="button" href="/p/infinite-decades">Branches & checkpoints</a>{% endif %}</header>
+  {% if family_graph.infinite %}<p class="notice">Frozen relatives keep their preserved dates. Exploring this tree never activates a branch or schedules rolls.</p>{% endif %}
+  {% if family_graph.nodes %}
+  <div class="ft-controls" aria-label="Family tree controls">
+    <label class="ft-search">Find a Sim<input type="search" name="search" placeholder="Name, birth surname, or Sim number" autocomplete="off" aria-controls="family-search-results"><span class="ft-search-results" id="family-search-results" data-search-results aria-live="polite"></span></label>
+    <label>Family view<select name="mode"><option value="direct">Immediate family</option><option value="family">Extended family</option><option value="ancestors">Ancestors</option><option value="descendants">Descendants</option></select></label>
+    <label>Depth<input type="number" name="depth" min="1" max="8" value="{{family_options.depth}}" title="Number of connections to expand; immediate family uses one family group"></label>
+    <label {% if not family_graph.infinite %}hidden{% endif %}>Dynasty scope<select name="scope"><option value="dynasty">Whole dynasty</option><option value="current">Current branch</option></select></label>
+    <label>Display<select name="view"><option value="tree">Diagram</option><option value="list">Family list</option></select></label>
+  </div>
+  <div class="ft-actions"><button type="button" data-action="previous" data-previous disabled>← Previous focus</button><button type="button" data-action="center">Center focus</button><button type="button" data-action="zoom-out" aria-label="Zoom out">−</button><span data-zoom-label>100%</span><button type="button" data-action="zoom-in" aria-label="Zoom in">+</button><button type="button" data-action="fit">Fit tree</button><button type="button" data-action="print">Print / PDF</button><button type="button" data-action="export">Download SVG</button></div>
+  <p class="ft-message" role="status"></p>
+  <div class="ft-workspace"><div>
+    <div class="ft-viewport" tabindex="0" aria-label="Family diagram. Scroll or drag the background to explore; use zoom controls to resize."><div class="ft-extent"><div class="ft-stage"></div></div></div>
+    <ul class="ft-list" hidden aria-label="Visible family members"></ul>
+    <div class="ft-legend" aria-label="Connection key"><span>Recorded parents / partners</span><span class="former">Former relationship</span><span class="adoptive">Recorded adoption</span></div>
+  </div><section class="ft-details" aria-label="Selected Sim details" aria-live="polite"></section></div>
+  <details class="ft-tools"><summary>Connections & display options</summary>
+    <div class="ft-tool-fields"><label><input type="checkbox" name="photos" checked> Small portraits</label><label><input type="checkbox" name="dates" checked> Life dates</label></div>
+    <h2>How are they related?</h2><div class="ft-tool-fields">
+      <label>First Sim<select name="trace_from">{% for person in family_graph.nodes %}<option value="{{person.id}}" {% if person.id==family_options.focus %}selected{% endif %}>{{person.name}}</option>{% endfor %}</select></label>
+      <label>Second Sim<select name="trace_to">{% for person in family_graph.nodes %}<option value="{{person.id}}">{{person.name}}</option>{% endfor %}</select></label>
+      <button type="button" data-action="trace">Trace connection</button><button type="button" data-action="clear-trace">Clear highlight</button>
+    </div><div class="ft-trace-output" data-trace-output aria-live="polite"></div>
+    <p>Use “More family” to expand a person’s connections. “Hide children” folds their descendants. Shared relatives remain one Sim, not duplicate records. Unknown parents are never invented. Exported diagrams contain names, dates, and connections; portraits are not embedded.</p>
+  </details>
+  <div class="ft-print" aria-label="Printable family diagram"></div>
+  <noscript><p>Enable JavaScript for the interactive diagram. Your family register is available below.</p><ul>{% for person in family_graph.nodes %}<li><a href="{{person.profile}}">{{person.name}}</a> · {{person.status}} · {{person.birth}}</li>{% endfor %}</ul></noscript>
+  {% else %}<div class="empty"><h2>No Sims in this tree yet.</h2><p>Add a Sim or enable “Include in family tree” on an existing profile.</p><a class="button" href="/p/sims">Open Sims</a></div>{% endif %}
+  <script type="application/json" data-family-graph>{{family_graph|tojson}}</script>
+  <script type="application/json" data-family-options>{{family_options|tojson}}</script>
+</section>
+{% if family_graph.nodes %}<script src="/static/family-tree.js?v={{static_version}}"></script>{% endif %}
+{% endblock %}

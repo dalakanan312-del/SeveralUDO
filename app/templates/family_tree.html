@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Family Tree · Decades Tracker{% endblock %}
 {% block body %}
+{% if infinite_meta %}<p class="notice">This shared tree includes every dynasty branch. Frozen relatives keep their last played dates and do not receive current-branch rolls. <a href="/p/infinite-decades">Manage branches</a>.</p>{% endif %}
 <header class="hero compact">
   <p class="eyebrow">{{save.name}}</p>
   <h1>Family Tree</h1>

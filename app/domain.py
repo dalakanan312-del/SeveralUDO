@@ -97,6 +97,9 @@ def record_label(value: object, *, maximum: int = RECORD_LABEL_MAX_LENGTH) -> st
 
 def automation_enabled(save: ChronicleSave) -> bool:
     """Return the save-wide master automation state; existing saves default on."""
+    from .infinite_decades import frozen
+    if frozen(save):
+        return False
     value = (save.settings or {}).get("automation_enabled", True)
     if isinstance(value, str):
         return value.strip().casefold() not in {"0", "false", "off", "no", "paused"}

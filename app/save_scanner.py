@@ -551,6 +551,11 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
     from .models import Record
 
     households, sims = relevant_population(scan)
+    from . import infinite_decades
+    if infinite_decades.state(save):
+        scan = infinite_decades.filter_scan(session, save, scan)
+        households, sims = relevant_population(scan)
+        selected_game_ids = set(selected_game_ids) & {str(item.get("game_sim_id")) for item in sims}
     household_by_id = {str(item["game_household_id"]): item for item in households}
     slot = scan.get("slot") or {}
     game_day = slot.get("game_day")

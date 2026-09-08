@@ -1094,6 +1094,11 @@ def _reconcile_population_manifest(session: Session, save: ChronicleSave, report
 
 def receive(session: Session, link: ClockLink, report: dict) -> dict:
     save = session.get(ChronicleSave, link.save_id)
+    from . import infinite_decades
+    infinite_decades.lock_current_branch(session, save)
+    if not infinite_decades.import_allowed(save):
+        return {"ok": True, "status": "paused", "automation_paused": True, "advanced": 0,
+                "tracker_global_day": save.global_day, "message": "Infinite Decades branch is frozen or awaiting its matching game checkpoint."}
     # The experimental Sims 3 reporter/relay is retired everywhere. Keep old
     # reports from changing records; the local saved-file reader is independent.
     if game_modes.for_save(save)['id'] == 'sims3':
@@ -1104,6 +1109,12 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     protocol_state, protocol_prior, protocol_result = _protocol_gate(session, save, report)
     if protocol_result and "sequence" not in protocol_result:
         return protocol_result
+    # Validate the original signed payload first; scoping must not alter its
+    # checksum or sequence identity. The original report object stays intact.
+    if infinite_decades.state(save):
+        members = infinite_decades.filter_members(session, save, report.get("household_members", report.get("household_sims", [])) or [])
+        report = {**report, "household_members": members, "household_sims": members, "population_complete": False,
+                  "population_sim_ids": [str(item.get("game_sim_id")) for item in members]}
     game_day = int(report["game_day"])
     hour = max(0, min(23, int(report.get("hour", report.get("game_hour", 0)))))
     minute = max(0, min(59, int(report.get("minute", report.get("game_minute", 0)))))

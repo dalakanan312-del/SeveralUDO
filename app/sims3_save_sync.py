@@ -85,6 +85,11 @@ def _population(scan, scope):
 
 def apply_scan(session, save, scan, selected, *, sync_clock=False, clock_reset_id=None):
     from . import backup_service, game_modes, domain
+    from . import infinite_decades
+    try:
+        scan = infinite_decades.filter_scan(session, save, scan)
+    except ValueError as exc:
+        raise sims3_save.SaveReadError(str(exc)) from exc
     from .models import Record
     if game_modes.for_save(save)['id'] != 'sims3' or scan.get('game_edition') != 'sims3':
         raise sims3_save.SaveReadError('This reader can only import into a Sims 3 tracker save.')

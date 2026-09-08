@@ -10,6 +10,10 @@ from .sims3_save import SaveReadError
 
 def apply_clock(session, save, scan, reset_id=None):
     from . import sync
+    from .infinite_decades import import_allowed, lock_current_branch
+    lock_current_branch(session, save)
+    if not import_allowed(save):
+        return {'advanced':0, 'status':'Infinite Decades branch is frozen or awaiting its matching game checkpoint.'}
     clock = scan.get('saved_clock')
     if not clock or clock.get('verified') is not True:
         return {'advanced':0, 'status':'Clock unavailable; tracker day unchanged.'}
@@ -59,4 +63,3 @@ def apply_clock(session, save, scan, reset_id=None):
     link.last_seen_at = now
     sync.sync_clock_state(session,save,link)
     return {'advanced':advanced, 'status':message, 'saved_clock':clock}
-
