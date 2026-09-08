@@ -27,6 +27,7 @@ from .db import Base, SessionLocal, engine
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
 from .security import hash_secret, token
 from .session_policy import REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware, set_session_mode
+from .workflow import related_tasks, page_sections
 
 
 FEATURES = {
@@ -41,12 +42,12 @@ FEATURES = {
     "events": ("Events", "Historical events, eligibility and effects"),
     "illnesses": ("Illnesses", "Disease, severity, treatment and outcomes"),
     "family-tree": ("Family Tree", "Ancestors, descendants and dynasty lines"),
-    "timeline": ("Chronicle", "A narrative history of the save"),
+    "timeline": ("Timeline", "Dated events and a visual history of the save"),
     "planner": ("Play Planner", "Household rotations, family plans and forecasts"),
     "infinite-decades": ("Infinite Decades", "Play one branch to its ending, then return to the newest unplayed split"),
     "historical-life": ("Historical Life", "Era preparation, estates, education, reputation, service, memorials and family strategy"),
     "life-records": ("Life Records", "Dowries, guardians, milestones, law, wellbeing and chronicle reliability"),
-    "challenge": ("Challenge Management", "Succession, matchmaking and campaigns"),
+    "challenge": ("Succession & Campaigns", "Heirs, matchmaking, wars and campaign planning"),
     "save-a-sims": ("Save-a-Sims", "Earn, track and spend death-prevention credits"),
     "world": ("World & Migration", "Birth countries, moves, historical locations and migration routes"),
     "legacy-lab": ("Legacy Lab", "Progress, biographies, compatibility, consistency and safe rule experiments"),
@@ -63,9 +64,9 @@ FEATURES = {
     "roll-tables": ("Roll Tables", "Aging, pregnancy, marriage, remarriage and multiple-birth rules by era"),
     "occult-rules": ("Occult Rules", "Occult detection, automatic obligations and follow-up rule library"),
     "historical-guidance": ("Historical Guidance", "Era guidance, death causes and recovered reference data"),
-    "health": ("Rules Health", "Coverage, duplicates and maintenance checks"),
-    "clock": ("Game Clock", "Local or hosted Sims 3 or Sims 4 time and game receiver"),
-    "sync": ("Sync", "Desktop/cloud status, devices and conflict review"),
+    "health": ("Data & Rules Health", "Coverage, duplicates and maintenance checks"),
+    "clock": ("Game Connection", "Sims 4 Clock Sync and desktop Sims 3 saved-game reading"),
+    "sync": ("Desktop / Online Sync", "Move tracker changes between devices and review conflicts"),
     "dice-audit": ("Dice Audit", "Verifiable history and distribution reports"),
     "storyline": ("Storyline", "A living narrative generated from the changing save"),
     "drama": ("Drama Deck", "Optional card-based decisions for grounded household drama"),
@@ -81,45 +82,52 @@ FEATURES = {
 NAVIGATION_GROUPS = (
     {
         "id": "play",
-        "label": "Play",
-        "description": "What needs attention now",
+        "label": "Play Session",
+        "description": "Today, game updates and dice",
         "icon": "▶",
-        "pages": ("today", "automation", "clock", "planner", "infinite-decades", "rolls"),
+        "pages": ("today", "automation", "clock", "rolls", "save-a-sims"),
     },
     {
         "id": "family",
-        "label": "Family & Life",
-        "description": "People, homes and life events",
+        "label": "Sims & Families",
+        "description": "People, relationships and life records",
         "icon": "♟",
-        "pages": ("sims", "family-tree", "relationships", "households", "pregnancies", "university", "illnesses", "historical-life", "life-records"),
+        "pages": ("sims", "households", "relationships", "pregnancies", "illnesses", "university", "family-tree", "life-records"),
+    },
+    {
+        "id": "planning",
+        "label": "Plan Ahead",
+        "description": "Rotations, heirs, homes and events",
+        "icon": "⌛",
+        "pages": ("planner", "infinite-decades", "challenge", "world", "historical-life", "events"),
     },
     {
         "id": "history",
-        "label": "History & Story",
-        "description": "The chronicle, world and memories",
+        "label": "Story & Progress",
+        "description": "History, drama and statistics",
         "icon": "✒",
-        "pages": ("events", "world", "timeline", "storyline", "drama", "notes"),
+        "pages": ("timeline", "storyline", "drama", "notes", "statistics", "legacy-lab"),
     },
     {
         "id": "challenge",
-        "label": "Challenge & Rules",
-        "description": "Rulesets, succession and play aids",
+        "label": "Rules & Add-ons",
+        "description": "Configure how the challenge works",
         "icon": "⚖",
-        "pages": ("challenge", "save-a-sims", "rules", "roll-tables", "historical-guidance", "occult-rules", "guides", "plants", "names", "avatar", "harry-potter", "game-of-thrones"),
+        "pages": ("rules", "roll-tables", "occult-rules", "avatar", "harry-potter", "game-of-thrones"),
     },
     {
-        "id": "insights",
-        "label": "Insights",
-        "description": "Progress, statistics and checks",
-        "icon": "⌁",
-        "pages": ("statistics", "legacy-lab", "dice-audit", "health"),
+        "id": "reference",
+        "label": "Guides & Tools",
+        "description": "How to play and historical references",
+        "icon": "▤",
+        "pages": ("tutorial", "guides", "historical-guidance", "names", "plants"),
     },
     {
         "id": "setup",
         "label": "Settings & Help",
-        "description": "Saves, devices, access and guidance",
+        "description": "Backups, appearance and maintenance",
         "icon": "⚙",
-        "pages": ("saves", "sync", "account", "appearance", "tutorial", "support"),
+        "pages": ("saves", "sync", "appearance", "account", "health", "dice-audit", "support"),
     },
 )
 
@@ -151,7 +159,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.15")
+app = FastAPI(title="Decades Tracker", version="4.6.16")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -811,6 +819,7 @@ def context(request: Request, session, **extra):
             "game_modes": game_modes.GAME_MODES,
             "visual_theme": visual_theme,
             "features": FEATURES, "navigation_groups": NAVIGATION_GROUPS,
+            "related_tasks": related_tasks, "page_sections": page_sections,
             "navigation_group": navigation_group_for(current_page),
             "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "ads_config": settings.ads_config, "last_roll": last_roll,
             "occult_notice": request.session.pop("occult_notice", None),
@@ -2266,13 +2275,24 @@ def feature_page(request: Request, page: str):
             match_candidates.sort(key=lambda item:(item["score"],item["sim"].label.casefold()),reverse=True)
             sim_by_id={item.id:item for item in relationship_sims}
             generated_marriage_rolls=[]
+            marriage_rolls=[]
             for roll in session.scalars(select(Record).where(
                 Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),
-                Record.data["completed"].as_boolean().is_(True),
+                or_(*(Record.data[field].as_string().ilike("%marriage%")
+                      for field in ("source", "source_id", "roll_type"))),
             ).order_by(Record.updated_at.desc())):
+                if not domain._marriage_roll(roll):
+                    continue
+                marriage_rolls.append(roll)
                 roll_data=roll.data or {};suggested=int_or_none(roll_data.get("suggested_marriage_global_day"))
-                if domain._marriage_roll(roll) and suggested is not None:
+                if roll_data.get("completed") and suggested is not None:
                     generated_marriage_rolls.append({"roll":roll,"sim":sim_by_id.get(str(roll_data.get("sim_id") or "")),"global_day":suggested})
+            ctx.update(marriage_rolls=sorted(marriage_rolls,key=lambda item:item.global_day or 0),
+                       marriage_roll_counts={
+                           "pending":sum(not bool((item.data or {}).get("completed")) for item in marriage_rolls),
+                           "may":sum(any(text in str((item.data or {}).get("outcome") or "").casefold() for text in ("may marry","may remarry")) for item in marriage_rolls),
+                           "no":sum(any(text in str((item.data or {}).get("outcome") or "").casefold() for text in ("does not marry","does not remarry")) for item in marriage_rolls),
+                       })
             selected_match_roll=next((row for row in generated_marriage_rolls if row["sim"] and row["sim"].id==selected_match),None)
             ctx.update(match_eligible=sorted_sims(match_eligible,save),selected_match=selected_match,
                        selected_match_roll=selected_match_roll,match_candidates=match_candidates,

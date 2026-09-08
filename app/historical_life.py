@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from itertools import combinations
 from typing import Iterable
 
-from . import advanced
+from . import advanced, domain
 from .models import ChronicleSave, Record
 
 

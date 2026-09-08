@@ -1,0 +1,9 @@
+<section class="session-hub" aria-labelledby="session-heading">
+  <div class="section-heading"><div><p class="eyebrow">YOUR PLAY SESSION</p><h2 id="session-heading">Ready for the next day</h2></div><a id="resume-last-page" class="button" hidden>Resume last task</a></div>
+  <div class="session-steps">
+    <article><span class="session-step-number">01 · PREPARE</span><h3>Choose your household</h3><p>Check rotations, family plans and upcoming events.</p><a class="button" href="/p/planner">Open play planner</a><a href="/p/clock">Check game connection</a></article>
+    <article><span class="session-step-number">02 · PLAY</span><h3>Handle today’s tasks</h3><p>Roll the dice, check ages and review births, illnesses and deaths.</p><a class="button primary" href="/p/today">Open Today</a><a href="/p/save-a-sims">Save-a-Sim credits</a></article>
+    <article><span class="session-step-number">03 · REVIEW</span><h3>Confirm game updates</h3><p>{% if automation_pending %}{{automation_pending}} detected update{{'s' if automation_pending != 1 else ''}} waiting for your review.{% else %}Review detected changes before accepting them into your records.{% endif %}</p><a class="button" href="/p/automation">Open automation inbox</a><a href="/p/sims">Check Sim profiles</a></article>
+    <article><span class="session-step-number">04 · WRAP UP</span><h3>Keep the story</h3><p>Record the session, read the year’s story and back up your save.</p><a class="button" href="/p/storyline">Read the storyline</a><a href="/p/saves">Saves & backups</a></article>
+  </div>
+</section>

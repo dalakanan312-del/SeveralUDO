@@ -1,0 +1,2 @@
+{% if page_sections(page) %}<details class="page-contents" open><summary>On this page</summary><nav aria-label="On this page" hx-boost="false">{% for label,anchor in page_sections(page) %}<a href="#{{anchor}}">{{label}}</a>{% endfor %}</nav></details>{% endif %}
+{% if related_tasks(page) %}<details class="workflow-tools"><summary>Related tasks</summary><nav aria-label="Related tasks">{% for label,href in related_tasks(page) %}<a href="{{href}}">{{label}}</a>{% endfor %}</nav></details>{% endif %}

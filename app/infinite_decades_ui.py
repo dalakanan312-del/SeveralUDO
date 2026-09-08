@@ -42,7 +42,7 @@ def render(request, session, ctx, templates):
         branch_notice=request.session.pop("infinite_notice", None), viewed_branch=selected, viewed_snapshot=point,
         branch_history=history[:100], branch_history_count=len(history), dynasty_focus=focus,
         dynasty_focus_day=focus_day, dynasty_focus_age=focus_age, dynasty_names={r.id:r.label for r in sims},
-        navigation_group=next((g for g in ctx["navigation_groups"] if g["id"] == "play"), None))
+        navigation_group=next((g for g in ctx["navigation_groups"] if "infinite-decades" in g["pages"]), None))
     return templates.TemplateResponse(request, "infinite_decades.html", ctx)
 
 

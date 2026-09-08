@@ -20,8 +20,10 @@
   <a href="#story"><span>06</span>Chronicle</a>
   <a href="#backups"><span>07</span>Backups</a>
   <a href="#troubleshooting"><span>08</span>Help</a>
+  <a href="#tracker-layout"><span>09</span>Where things live</a>
 </nav>
 
+<details class="panel dashboard-directory" id="tracker-layout"><summary><strong>Where things live</strong><small>The tracker follows a play session</small></summary><p>Start at <a href="/">Session Home</a>, prepare a household, work through <a href="/p/today">Today</a>, review the <a href="/p/automation">Automation Inbox</a>, then save your story and a backup. You do not have to complete every step each time.</p><div class="dashboard-map">{% for group in navigation_groups %}<article class="dashboard-map-card"><h3>{{group.label}}</h3><p>{{group.description}}</p><div class="dashboard-map-links">{% for key in group.pages %}<a href="/p/{{key}}">{{features[key][0]}}</a>{% endfor %}</div></article>{% endfor %}</div><p><strong>Marriage planning:</strong> rolls, courtships and wedding dates are on Relationships; dowries are linked under Related tasks. <strong>Game Connection</strong> receives game reports or reads local Sims 3 saves. <strong>Desktop / Online Sync</strong> transfers tracker records between editions. These are different connections.</p><p>Use <strong>Find a page</strong> in the sidebar, <strong>On this page</strong> for long screens, and <strong>Related tasks</strong> to continue elsewhere. Old page addresses still work.</p></details>
 <section class="tutorial-paths" aria-label="Choose a tutorial path">
   <article>
     <p class="eyebrow">NEW CHALLENGE</p>

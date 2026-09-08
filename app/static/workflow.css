@@ -1,0 +1,26 @@
+/* Workflow surfaces reuse the active save's light/dark appearance tokens. */
+.session-hub{margin:1.25rem 0 1.75rem}
+.session-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.8rem}
+.session-steps>article{display:flex;flex-direction:column;gap:.65rem;padding:1.1rem;border:1px solid var(--line);border-radius:var(--radius,12px);background:var(--panel)}
+.session-step-number{font-size:.875rem;font-weight:700;color:var(--gold);letter-spacing:.06em}
+.session-steps h3{font-size:1.2rem;margin:0}
+.session-steps p{font-size:1rem;line-height:1.5;margin:0 0 .3rem;color:var(--muted);flex:1}
+.session-steps a{font-size:.875rem;overflow-wrap:anywhere}
+.session-steps .button{min-height:44px;text-align:center}
+.dashboard-directory{margin:1.25rem 0}
+.dashboard-directory>summary{display:flex;align-items:center;justify-content:space-between;gap:1rem;cursor:pointer;min-height:44px}
+.dashboard-directory>summary small{color:var(--muted);font-size:.875rem;font-weight:400;line-height:1.5}
+.dashboard-directory[open]>summary{margin-bottom:1rem}
+.workflow-tools{margin:0 0 1rem;padding:.7rem 1rem;border:1px solid var(--line);border-radius:var(--radius,12px);background:var(--panel)}
+.workflow-tools>summary{cursor:pointer;font-size:.875rem;min-height:30px;align-content:center;color:var(--ink)}
+.workflow-tools nav{display:flex;flex-wrap:wrap;gap:.5rem;margin:.5rem 0 0}
+.workflow-tools a{display:inline-flex;align-items:center;padding:.55rem .8rem;min-height:44px;border:1px solid var(--line);border-radius:8px;font-size:.875rem;line-height:1.4;color:var(--ink);background:var(--panel-raised)}
+.workflow-tools a:hover,.workflow-tools a:focus-visible{border-color:var(--gold)}
+.page-contents{margin:.75rem 0 1.25rem;border-bottom:1px solid var(--line);padding:0 0 .8rem}
+.page-contents summary{cursor:pointer;font-size:.875rem;min-height:36px;align-content:center}
+.page-contents nav{display:flex;flex-wrap:wrap;gap:.4rem 1rem;padding:.5rem 0}
+.page-contents a{font-size:.875rem;min-height:36px;display:inline-flex;align-items:center;line-height:1.4;max-width:100%;overflow-wrap:anywhere}
+.workflow-section-target{scroll-margin-top:1rem}
+@media(max-width:1150px){.session-steps{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.session-steps{grid-template-columns:1fr}.session-steps>article{padding:1rem}.dashboard-directory>summary{align-items:flex-start;flex-direction:column;gap:.3rem}.workflow-tools nav{display:grid;grid-template-columns:1fr}.session-hub .section-heading{align-items:flex-start;gap:.65rem}}
+@media print{.session-hub,.workflow-tools,.page-contents{display:none}}
