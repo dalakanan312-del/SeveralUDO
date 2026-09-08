@@ -1,5 +1,7 @@
 # Decades Tracker 4
 
+`4.6.15` fills missing Sim birth times with a stable randomized time inside the recorded birth Global Day, deriving a matching historical date for four-day and custom-length years. Profiles and timelines label generated dates as randomized. Known times/dates, year-only migrations, uncertain multi-day estimates, paused automation and frozen dynasty relatives remain untouched. New births use the same fallback; manual time edits replace the estimate.
+
 `4.6.14` introduces the family explorer: compact portraits and details beside the diagram, parent-specific child groups, remarriages and co-parent connections, explicit adoption, branch folding, search, previous focus, zoom/fit, a mobile family list, kinship tracing, and connected SVG/print/PDF output. Large views are capped at 180 people without changing saved records. Infinite Decades uses the same canonical Sim IDs across active and frozen branches; preserved relatives remain read-only. This release includes the completed Infinite Decades branch/checkpoint controls and keeps the withdrawn Sims 3 clock mod disabled.
 
 `4.6.13` withdraws the unreliable Sims 3 Clock Sync experiment. Its downloads, setup/token actions, relay auto-start, and incoming reports are disabled, and its kit is excluded from desktop/hosted distributions. The Clock page explains the creator's decision and the desktop save-data supplement, including its capabilities and limits. The local saved-file reader from 4.6.9–4.6.12 remains available; existing tracker records and Sims 4 Clock Sync are unchanged.

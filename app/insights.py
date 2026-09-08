@@ -775,7 +775,9 @@ def timeline(records: list[Record], save: ChronicleSave, *, kinds: set[str] | No
         data = item.data or {}
         candidates = []
         if item.kind == "sim":
-            candidates.append((data.get("birth_global_day", item.global_day), "birth", f"Birth of {item.label}", data.get("birthplace") or "", data.get("historical_birth_date") or data.get("historical_birth_date_range"), data.get("birth_time")))
+            birth_label = data.get("historical_birth_date") or data.get("historical_birth_date_range") or ""
+            if data.get("birth_time_randomized"): birth_label += " (randomized)"
+            candidates.append((data.get("birth_global_day", item.global_day), "birth", f"Birth of {item.label}", data.get("birthplace") or "", birth_label, data.get("birth_time")))
             if data.get("death_global_day") is not None:
                 candidates.append((data.get("death_global_day"), "death", f"Death of {item.label}", data.get("cause_of_death") or "", data.get("historical_death_date") or data.get("historical_death_date_range"), data.get("death_time")))
         elif item.kind == "relationship":

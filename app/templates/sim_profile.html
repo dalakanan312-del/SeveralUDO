@@ -32,6 +32,7 @@
       {% if sim.data.get('death_global_day') is not none %}<div class="death-vital"><small>{{'Scheduled death' if sim.data.get('death_global_day') > save.global_day else 'Died'}}</small><strong>{{sim_death_display(save,sim)}}{% if sim.data.get('death_time') %} · {{sim.data.get('death_time')}}{% endif %}</strong><span>Global Day {{sim.data.get('death_global_day')}}{% if sim.data.get('cause_of_death') %} · {{sim.data.get('cause_of_death')}}{% endif %}</span></div>{% endif %}
     </div>
     <div class="profile-actions">
+      {% if sim.data.get('birth_time_randomized') %}<p class="muted">Birth time was randomized within the recorded Global Day because the exact time was unknown. You can replace it under Edit profile.</p>{% endif %}
       <a class="button primary" href="#edit-sim">Edit profile</a>
       <a class="button" href="/p/family-tree?focus={{sim.id}}">View family tree</a>
       <a class="button" href="/p/today?task=rolls">Open Today</a>

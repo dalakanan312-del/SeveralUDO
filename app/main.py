@@ -21,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain
-from . import infinite_decades, infinite_decades_ui
+from . import infinite_decades, infinite_decades_ui, birth_dates
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
@@ -151,7 +151,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.14")
+app = FastAPI(title="Decades Tracker", version="4.6.15")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -356,7 +356,8 @@ def sim_birth_display(save: ChronicleSave, record: Record) -> str:
     data=record.data or {}
     if data.get("birth_year_only") and data.get("birth_year") is not None:
         return f"{data.get('birth_year')} (exact date unknown)"
-    return str(data.get("historical_birth_date") or data.get("historical_birth_date_range") or challenge_date_label(save,data.get("birth_global_day")))
+    label = str(data.get("historical_birth_date") or data.get("historical_birth_date_range") or challenge_date_label(save,data.get("birth_global_day")))
+    return label + (" (randomized)" if data.get("birth_time_randomized") else "")
 
 
 def sim_death_display(save: ChronicleSave, record: Record) -> str:
@@ -1552,6 +1553,8 @@ def feature_page(request: Request, page: str):
         if page == "infinite-decades" or (infinite_decades.frozen(save) and page != "saves"):
             return infinite_decades_ui.render(request, session, ctx, templates)
         if save:
+            if page in {"sims", "today", "pregnancies", "timeline", "storyline"}:
+                birth_dates.fill_missing(session, save)
             # Add newly shipped Harry Potter entries the first time an existing
             # Harry Potter save opens its library.  This is idempotent and keeps
             # a save's existing on/off choices intact.
@@ -2501,6 +2504,9 @@ def sim_profile(request: Request, sim_id: str):
         if infinite_decades.frozen(save) or (sim.data or {}).get("infinite_frozen"):
             request.session["save_id"] = save.id
             return RedirectResponse(f"/p/infinite-decades?sim_id={sim.id}#dynasty-person", 303)
+        if birth_dates.apply_to_record(sim, save):
+            base = sim.version; sim.version += 1
+            domain.journal(session, sim, "upsert", base); save.revision += 1
         all_sims = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False)).order_by(Record.label)))
         households = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False)).order_by(Record.label)))
         relationships = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "relationship", Record.deleted.is_(False)).where((Record.data["partner1_id"].as_string() == sim.id) | (Record.data["partner2_id"].as_string() == sim.id))))
@@ -2582,6 +2588,7 @@ async def add_sim(request: Request):
         if sim_data["generation"] is not None: sim_data["generation_source"]="manual"
         sim_data.update(birth_fields);sim_data.update(death_calendar_fields(save,death,form.get("death_game_hour"),form.get("death_game_minute")))
         record = Record(save_id=save.id, kind="sim", label=name, global_day=birth, data=sim_data)
+        session.add(record); session.flush(); birth_dates.apply_to_record(record, save)
         session.add(record); session.flush(); session.add(Change(save_id=save.id, device_id="local" if settings.local_mode else "web", record_id=record.id, kind="sim", operation="upsert", base_version=0, new_version=1, payload=sync.serialize(record))); save.revision += 1+domain.sync_generations(session,save); domain.schedule_rolls(session, save); domain.auto_pass_lifecycle_rolls_for_added_sim(session,save,record)
         return RedirectResponse(f"/sims/{record.id}", status_code=303)
 
@@ -2614,10 +2621,12 @@ async def edit_sim(request: Request, sim_id: str):
         for key in ("birth_game_hour","birth_game_minute","birth_time","historical_birth_date","historical_birth_date_range","birth_date_precision","birth_year","birth_year_only","birth_global_day_estimated","birth_estimate_precision","birth_estimate_source","original_birth_estimate_global_day","estimated_birth_global_day_range_start","estimated_birth_global_day_range_end"):
             data.pop(key,None)
         data.update(birth_fields)
+        birth_dates.retain_edit_provenance(record.data or {}, data, save)
         for key in ("death_game_hour","death_game_minute","death_time","historical_death_date","historical_death_date_range","death_date_precision"):
             data.pop(key,None)
         data.update(death_calendar_fields(save,data["death_global_day"],form.get("death_game_hour"),form.get("death_game_minute")))
         record.label = " ".join(part for part in (title,first_name,last_name,suffix) if part); record.global_day = data["birth_global_day"]; record.data = data; record.version += 1
+        birth_dates.apply_to_record(record, save)
         session.add(Change(save_id=save.id, device_id="local" if settings.local_mode else "web", record_id=record.id, kind="sim", operation="upsert", base_version=base, new_version=record.version, payload=sync.serialize(record))); save.revision += 1+domain.sync_generations(session,save)
         if data["death_global_day"] is not None:
             save.revision += domain.end_illnesses_for_death(session, save, record, data["death_global_day"])

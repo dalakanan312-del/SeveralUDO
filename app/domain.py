@@ -966,6 +966,9 @@ def event_is_ignored(record: Record) -> bool:
 
 
 def journal(session: Session, record: Record, operation: str, base_version: int) -> None:
+    if record.kind == "sim" and operation == "upsert" and not record.deleted:
+        from .birth_dates import apply_to_record
+        apply_to_record(record, session.get(ChronicleSave, record.save_id))
     session.add(Change(
         save_id=record.save_id, device_id="automation", record_id=record.id,
         kind=record.kind, operation=operation, base_version=base_version,
