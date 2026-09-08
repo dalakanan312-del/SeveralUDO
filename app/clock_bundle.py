@@ -13,7 +13,14 @@ from . import game_modes
 CLOCK_SYNC_VERSION = "2.2.10"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
-SIMS3_CLOCK_SYNC_VERSION = "1.1.0"
+SIMS3_CLOCK_SYNC_VERSION = "retired"
+SIMS3_CLOCK_RETIRED_MESSAGE = "Sims 3 Clock Sync has been withdrawn because it could not be made to work reliably. The desktop tracker reads completed Sims 3 saves as a supplement, not live Clock Sync."
+
+
+def require_supported(game_mode):
+    if game_modes.normalize(game_mode) == game_modes.SIMS3:
+        raise ValueError(SIMS3_CLOCK_RETIRED_MESSAGE)
+
 SIMS3_CLOCK_SYNC_FOLDER = "SeveralUDOSims3ClockSync"
 SIMS3_BRIDGE_ROOT = ROOT / "clock_bridge_sims3"
 CLOCK_SYNC_REQUIRED_FILES = (
@@ -27,27 +34,25 @@ CLOCK_SYNC_REQUIRED_FILES = (
     "TROUBLESHOOTING.txt",
 )
 SIMS3_CLOCK_SYNC_REQUIRED_FILES = (
-    "SeveralUDOSims3ClockSync.package",
     "SeveralUDOClockRelay.ps1",
     "Start SeveralUDO Sims 3 Clock Relay.bat",
     "Report Sims 3 Clock Now.ps1",
     "Report Sims 3 Clock Now.bat",
+    "Sync Sims 3 Save Safely.ps1",
+    "Sync Sims 3 Save Safely.bat",
     "Test SeveralUDO Sims 3 Clock Sync.bat",
     "Install or Update SeveralUDO Sims 3 Clock Sync.ps1",
     "Install or Update SeveralUDO Sims 3 Clock Sync.bat",
     "README - Install Sims 3 Clock Sync.txt",
     "TROUBLESHOOTING.txt",
-    "SeveralUDOClockSync-Sims3-Source.cs",
 )
-
-
 def bundle_details(game_mode: object = game_modes.SIMS4) -> dict:
     mode = game_modes.normalize(game_mode)
     if mode == game_modes.SIMS3:
         return {
             "mode": mode, "version": SIMS3_CLOCK_SYNC_VERSION,
             "folder": SIMS3_CLOCK_SYNC_FOLDER, "root": SIMS3_BRIDGE_ROOT,
-            "required": SIMS3_CLOCK_SYNC_REQUIRED_FILES,
+            "required": (), "available": False,
         }
     return {
         "mode": game_modes.SIMS4, "version": CLOCK_SYNC_VERSION,
@@ -64,6 +69,7 @@ def missing_files(game_mode: object = game_modes.SIMS4) -> list[str]:
 
 def config_document(endpoint: str = "PASTE_ENDPOINT_FROM_TRACKER", token: str = "PASTE_PRIVATE_TOKEN_FROM_TRACKER",
                     capture_portraits: bool = True, game_mode: object = game_modes.SIMS4) -> bytes:
+    require_supported(game_mode)
     mode = game_modes.normalize(game_mode)
     document = {
         "receiver_url": endpoint,
@@ -82,6 +88,7 @@ def config_document(endpoint: str = "PASTE_ENDPOINT_FROM_TRACKER", token: str = 
 def build_bundle(endpoint: str = "", token: str = "", capture_portraits: bool = True,
                  game_mode: object = game_modes.SIMS4) -> bytes:
     """Build a complete Windows Clock Sync folder without retaining secrets."""
+    require_supported(game_mode)
     details = bundle_details(game_mode)
     required = details["required"]
     root = details["root"]
@@ -136,6 +143,7 @@ def build_bundle(endpoint: str = "", token: str = "", capture_portraits: bool = 
 
 
 def bridge_file(name: str, game_mode: object = game_modes.SIMS4) -> Path:
+    require_supported(game_mode)
     mode = game_modes.normalize(game_mode)
     allowed = {
         "script": "SeveralUDOClockSync.ts4script",
@@ -147,15 +155,20 @@ def bridge_file(name: str, game_mode: object = game_modes.SIMS4) -> Path:
         "instructions": "README - Install Clock Sync.txt",
         "troubleshooting": "TROUBLESHOOTING.txt",
     } if mode == game_modes.SIMS4 else {
-        "script": "SeveralUDOSims3ClockSync.package",
+        "script": "Sync Sims 3 Save Safely.ps1",
         "relay": "SeveralUDOClockRelay.ps1",
         "starter": "Start SeveralUDO Sims 3 Clock Relay.bat",
         "self-test": "Test SeveralUDO Sims 3 Clock Sync.bat",
         "updater": "Install or Update SeveralUDO Sims 3 Clock Sync.ps1",
         "updater-starter": "Install or Update SeveralUDO Sims 3 Clock Sync.bat",
         "reporter": "Report Sims 3 Clock Now.bat",
-        "source": "SeveralUDOClockSync-Sims3-Source.cs",
+        "safe-sync": "Sync Sims 3 Save Safely.bat",
         "instructions": "README - Install Sims 3 Clock Sync.txt",
         "troubleshooting": "TROUBLESHOOTING.txt",
     }
     return bundle_details(mode)["root"] / allowed[name]
+
+
+
+
+

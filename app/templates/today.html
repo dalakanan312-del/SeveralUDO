@@ -46,7 +46,7 @@
   </div>
 </section>
 
-{% if clock_link and clock_link.last_game_day is not none %}<div class="clock-strip"><span class="clock-dot" aria-hidden="true"></span><strong>Clock Sync</strong><span>{{sim_weekday(clock_link.last_game_day)}} · game day {{clock_link.last_game_day}} at {{'%02d'|format(clock_link.last_game_hour or 0)}}:{{'%02d'|format(clock_link.last_game_minute or 0)}}</span><span>Tracker GD {{save.global_day}}</span></div>{% endif %}
+{% if clock_link and clock_link.last_game_day is not none %}<div class="clock-strip"><span class="clock-dot" aria-hidden="true"></span><strong>{{'Saved game clock' if save_settings.get('sims3_saved_clock_enabled') else 'Clock Sync'}}</strong><span>{{sim_weekday(clock_link.last_game_day)}} · game day {{clock_link.last_game_day}} at {{'%02d'|format(clock_link.last_game_hour or 0)}}:{{'%02d'|format(clock_link.last_game_minute or 0)}}</span><span>Tracker GD {{save.global_day}}</span>{% if save_settings.get('sims3_saved_clock_enabled') %}<small>Updates when you save in Sims 3 · not live</small>{% endif %}</div>{% endif %}
 
 <section class="attention-shell">
   <div class="attention-heading"><div><p class="eyebrow">WHAT NEEDS ATTENTION</p><h2>Today’s work</h2></div><span class="attention-total">{{today_counts.rolls + today_counts.pregnancies + today_counts.university + today_counts.events + today_counts.illnesses + today_counts.deaths}} active</span></div>

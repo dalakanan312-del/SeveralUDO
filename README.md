@@ -1,9 +1,19 @@
 # Decades Tracker 4
 
+`4.6.13` withdraws the unreliable Sims 3 Clock Sync experiment. Its downloads, setup/token actions, relay auto-start, and incoming reports are disabled, and its kit is excluded from desktop/hosted distributions. The Clock page explains the creator's decision and the desktop save-data supplement, including its capabilities and limits. The local saved-file reader from 4.6.9–4.6.12 remains available; existing tracker records and Sims 4 Clock Sync are unchanged.
+
+`4.6.12` reads the active Sims 3 world's saved clock directly from its serialized SimClockUtils singleton. The local Clock page can automatically advance Global Day when completed saves cross game midnights. Initial alignment preserves the current challenge day; repeated snapshots cannot double-count days, older clocks are rejected, and town changes or paused/manual day adjustments re-align without backfilling. Today labels this as a saved-game clock, not live telemetry. No in-game mod is required, and observation time is never mistaken for exact birth or death time.
+
+`4.6.11` reads Sims 3 traits from completed saves, using a bundled dictionary of 337 built-in trait identifiers. Traits update linked profiles and new-Sim review payloads; full 64-bit custom IDs stay explicit. Missing or unreadable managers cannot clear traits, while verified empty lists can. Decoder revisions enrich previously read files once without duplicate imports or changing Global Day. The housed-households scope now covers every readable saved world while excluding homeless/service NPCs (the active household remains included).
+
+`4.6.10` adds **Entire save** to the local Sims 3 save reader: all readable full human Sim records across saved .nhd worlds, including homeless and service Sims without requiring household rotation. It deduplicates game Sim IDs, scopes household IDs by world, preserves existing household records, and rejects older per-Sim snapshots. Other worlds represent their last saved state, not live updates. Pets and partial travel-only records remain unsupported; clock confirmation is still manual.
+
 A clean, fast rebuild of the Ultimate Decades tracker. Version 4 is a FastAPI application with server-rendered HTML and small targeted interactions. It does not use Streamlit and does not load every feature after each button press.
 
 ## Current milestone
-`4.6.7` corrects calendar-aware age displays and eligibility throughout 12-day saves, safely repairs older unscaled defaults, and ships Sims 3 Clock Sync 1.1 with complete town snapshots.
+`4.6.9` adds an external, read-only Sims 3 save reader to the local desktop Clock page. Choose a regular .sims3 folder, preview its data, and enable automatic reading after each completed game save. It imports verified human Sim identities, stages, household data, available family links, learned skills and positive pregnancy signals; new Sims go to Automation Inbox. It uses temporary copies, waits for quiet files, avoids duplicate imports, respects the master automation switch and backs up tracker data before reconciliation. Exact game time, pregnancy completion, illnesses, traits and portraits are not decoded; the manual clock confirmation remains necessary. No in-game Sims 3 package is required or installed by this feature.
+
+`4.6.8` corrected calendar-aware age displays and eligibility throughout 12-day saves. Its experimental in-game Sims 3 reporter has since been replaced by the external save-safe workflow because of loading issues.
 
 `4.6.5` adds a hosted-only, privacy-respecting support placement. After the creator configures an approved Google AdSense unit, signed-in visitors receive a one-time choice: show one small footer ad or continue without ads. Google’s script is never loaded unless they opt in; desktop/local tracking remains permanently ad-free, and the choice can be changed from the sidebar.
 

@@ -52,6 +52,38 @@ def history_event(session: Session, save: ChronicleSave, *, category: str, label
     return record
 
 
+def capture_town_conditions(session: Session, save: ChronicleSave, snapshot: dict) -> list[str]:
+    """Keep one concise history entry when Sims 3 town conditions change."""
+    current = {
+        key: " ".join(str(snapshot.get(key) or "").replace("_", " ").split())
+        for key in ("world_name", "season", "weather", "moon_phase")
+        if snapshot.get(key) not in (None, "")
+    }
+    if not current:
+        return []
+    settings = dict(save.settings or {})
+    prior = settings.get("sims3_town_conditions")
+    if prior == current:
+        return []
+    settings["sims3_town_conditions"] = current
+    save.settings = settings
+    save.revision += 1
+    if not isinstance(prior, dict) or not prior:
+        return []
+    changed = [
+        f"{key.replace('_', ' ')}: {value}"
+        for key, value in current.items()
+        if str(prior.get(key) or "") != value
+    ]
+    if not changed:
+        return []
+    label = "Town conditions changed — " + "; ".join(changed) + "."
+    history_event(
+        session, save, category="town_conditions", label=label, snapshot=snapshot,
+        details={"previous": prior, "current": current, "game_edition": snapshot.get("game_edition")},
+    )
+    return [label]
+
 def capture_sim_changes(session: Session, save: ChronicleSave, sim: Record, snapshot: dict,
                         previous: dict) -> list[str]:
     """Create passive life-history entries from fields already sent by Clock Sync."""
@@ -67,6 +99,18 @@ def capture_sim_changes(session: Session, save: ChronicleSave, sim: Record, snap
                                "occult_types": occult.get("types") or [], "source": occult.get("source")})
         entries.append(label)
 
+    old_world = _text(previous.get("last_game_world"))
+    old_lot = _text(previous.get("last_game_lot"))
+    new_world = _text(snapshot.get("world_name"))
+    new_lot = _text(snapshot.get("lot_name") or snapshot.get("lot_address"))
+    if (new_world or new_lot) and (old_world or old_lot) and (new_world, new_lot) != (old_world, old_lot):
+        prior_place = " · ".join(value for value in (old_lot, old_world) if value) or "an unknown location"
+        current_place = " · ".join(value for value in (new_lot, new_world) if value) or "an unknown location"
+        label = f"{sim.label}'s game location changed from {prior_place} to {current_place}."
+        history_event(session, save, category="location", label=label, snapshot=snapshot, sim=sim,
+                      details={"from_world": old_world or None, "from_lot": old_lot or None,
+                               "to_world": new_world or None, "to_lot": new_lot or None})
+        entries.append(label)
     old_stage = _text(previous.get("game_age_stage"))
     new_stage = _text(snapshot.get("age_stage"))
     if new_stage and new_stage.casefold() != old_stage.casefold():
@@ -232,6 +276,37 @@ def capture_sim_changes(session: Session, save: ChronicleSave, sim: Record, snap
         label = f"{sim.label}'s skill progress was recorded: {skill}."
         history_event(session, save, category="skill", label=label, snapshot=snapshot, sim=sim,
                       details={"skill": skill})
+        entries.append(label)
+    # Sims 3 does not expose Sims 4-style sentiments, but it does expose the
+    # long-term relationship score. Record only material changes and only once
+    # per pair, keeping the storyline useful without generating a chatter log.
+    prior_relationships = {
+        str(row.get("other_game_sim_id") or ""): row
+        for row in (previous.get("game_relationships") or [])
+        if isinstance(row, dict) and row.get("other_game_sim_id")
+    }
+    self_game_id = str(previous.get("game_sim_id") or snapshot.get("game_sim_id") or "")
+    for relation in (snapshot.get("relationships") or []):
+        if not isinstance(relation, dict):
+            continue
+        other_id = str(relation.get("other_game_sim_id") or "")
+        prior = prior_relationships.get(other_id)
+        if not other_id or not prior or (self_game_id and self_game_id > other_id):
+            continue
+        try:
+            before = float(prior.get("friendship_score"))
+            after = float(relation.get("friendship_score"))
+        except (TypeError, ValueError):
+            continue
+        if abs(after - before) < 25:
+            continue
+        other_name = _text(relation.get("other_name") or other_id)
+        direction = "grew" if after > before else "fell"
+        label = f"{sim.label}'s bond with {other_name} {direction} ({before:.0f} to {after:.0f})."
+        history_event(session, save, category="relationship_strength", label=label, snapshot=snapshot, sim=sim,
+                      details={"other_game_sim_id": other_id, "other_name": other_name,
+                               "from_friendship_score": before, "to_friendship_score": after,
+                               "relationship_category": relation.get("category")})
         entries.append(label)
     return entries
 

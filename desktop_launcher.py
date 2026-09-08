@@ -53,26 +53,47 @@ def write_startup_error(details: str) -> Path:
     return destination
 
 
-def clock_sync_folder() -> Path | None:
-    """Locate the user's installed Clock Sync folder without changing it."""
-    override = str(os.environ.get("SEVERALUDO_CLOCK_SYNC_DIR") or "").strip()
-    roots = [Path(override)] if override else []
+def clock_sync_folders() -> list[Path]:
+    """Find Sims 4 relays only; the withdrawn Sims 3 relay is never started."""
+    candidates: list[Path] = []
+    for variable in ("SEVERALUDO_CLOCK_SYNC_DIR",):
+        override = str(os.environ.get(variable) or "").strip()
+        if override:
+            candidates.append(Path(override))
+    roots: list[Path] = []
     for variable in ("USERPROFILE", "OneDrive", "OneDriveConsumer"):
         value = str(os.environ.get(variable) or "").strip()
         if value:
             roots.append(Path(value) / "Documents")
     roots.append(Path.home() / "Documents")
-    seen: set[str] = set()
     for root in roots:
-        folder = root if root.name == "SeveralUDOClockSync" else root / "Electronic Arts" / "The Sims 4" / "Mods" / "SeveralUDOClockSync"
+        candidates.extend((
+            root / "Electronic Arts" / "The Sims 4" / "Mods" / "SeveralUDOClockSync",
+        ))
+    found: list[Path] = []
+    seen: set[str] = set()
+    for folder in candidates:
+        try:
+            config = json.loads((folder / 'config.json').read_text(encoding='utf-8-sig'))
+            edition = str(config.get('game_edition') or '').casefold().replace(' ', '')
+            if edition in {'sims3', 'thesims3', 'ts3', '3'} or 'the sims 3' in str(folder).casefold():
+                continue
+        except (OSError, ValueError, TypeError):
+            if 'the sims 3' in str(folder).casefold():
+                continue
         key = str(folder).casefold()
         if key in seen:
             continue
         seen.add(key)
         if (folder / RELAY_SCRIPT).is_file():
-            return folder
-    return None
+            found.append(folder)
+    return found
 
+
+def clock_sync_folder() -> Path | None:
+    """Return the first installed relay folder for backwards-compatible callers."""
+    folders = clock_sync_folders()
+    return folders[0] if folders else None
 
 def relay_heartbeat_fresh(folder: Path, maximum_age: float = 12.0) -> bool:
     """Use the relay's heartbeat to recognize an already-running instance."""
@@ -88,51 +109,61 @@ def relay_heartbeat_fresh(folder: Path, maximum_age: float = 12.0) -> bool:
 
 
 class RelaySupervisor:
-    """Keep the installed relay alive while the native tracker is open."""
+    """Keep every configured installed relay alive while the native tracker is open."""
 
     def __init__(self, check_seconds: float = 3.0) -> None:
         self.check_seconds = check_seconds
-        self.process: subprocess.Popen | None = None
+        self.processes: dict[str, subprocess.Popen] = {}
+        self.launched_at: dict[str, float] = {}
         self.thread: threading.Thread | None = None
         self.stop_event = threading.Event()
-        self.launched_at = 0.0
+
+    @staticmethod
+    def _key(folder: Path) -> str:
+        return str(folder).casefold()
 
     def _launch(self, folder: Path) -> None:
         system_root = Path(os.environ.get("SystemRoot") or r"C:\Windows")
         powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
         executable = str(powershell if powershell.is_file() else "powershell.exe")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        self.process = subprocess.Popen(
+        key = self._key(folder)
+        self.processes[key] = subprocess.Popen(
             [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(folder / RELAY_SCRIPT)],
             cwd=str(folder), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=flags,
         )
-        self.launched_at = time.monotonic()
+        self.launched_at[key] = time.monotonic()
 
-    def _stop_owned_process(self) -> None:
-        if self.process is None or self.process.poll() is not None:
-            self.process = None
+    def _stop_owned_process(self, folder: Path) -> None:
+        key = self._key(folder)
+        process = self.processes.get(key)
+        if process is None or process.poll() is not None:
+            self.processes.pop(key, None)
+            self.launched_at.pop(key, None)
             return
-        self.process.terminate()
+        process.terminate()
         try:
-            self.process.wait(timeout=5)
+            process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            self.process.kill()
-        self.process = None
+            process.kill()
+        self.processes.pop(key, None)
+        self.launched_at.pop(key, None)
 
     def ensure_running(self) -> None:
-        folder = clock_sync_folder()
-        if folder is None:
-            return
-        fresh = relay_heartbeat_fresh(folder)
-        if self.process is not None and self.process.poll() is None:
-            if fresh or time.monotonic() - self.launched_at <= 15:
-                return
-            self._stop_owned_process()
-        else:
-            self.process = None
-        if not fresh:
-            self._launch(folder)
+        for folder in clock_sync_folders():
+            key = self._key(folder)
+            fresh = relay_heartbeat_fresh(folder)
+            process = self.processes.get(key)
+            if process is not None and process.poll() is None:
+                if fresh or time.monotonic() - self.launched_at.get(key, 0.0) <= 15:
+                    continue
+                self._stop_owned_process(folder)
+            else:
+                self.processes.pop(key, None)
+                self.launched_at.pop(key, None)
+            if not fresh:
+                self._launch(folder)
 
     def _monitor(self) -> None:
         while not self.stop_event.is_set():
@@ -151,10 +182,10 @@ class RelaySupervisor:
 
     def stop(self) -> None:
         self.stop_event.set()
-        self._stop_owned_process()
+        for folder in clock_sync_folders():
+            self._stop_owned_process(folder)
         if self.thread is not None and self.thread.is_alive():
             self.thread.join(timeout=5)
-
 
 class LocalTracker:
     """Own the local API server only when this process started it."""

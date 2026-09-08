@@ -1094,6 +1094,13 @@ def _reconcile_population_manifest(session: Session, save: ChronicleSave, report
 
 def receive(session: Session, link: ClockLink, report: dict) -> dict:
     save = session.get(ChronicleSave, link.save_id)
+    # The experimental Sims 3 reporter/relay is retired everywhere. Keep old
+    # reports from changing records; the local saved-file reader is independent.
+    if game_modes.for_save(save)['id'] == 'sims3':
+        from .clock_bundle import SIMS3_CLOCK_RETIRED_MESSAGE
+        return {'ok':False, 'status':'retired', 'reason':'sims3_clock_retired',
+                'permanent_rejection':True, 'tracker_global_day':save.global_day,
+                'message':SIMS3_CLOCK_RETIRED_MESSAGE}
     protocol_state, protocol_prior, protocol_result = _protocol_gate(session, save, report)
     if protocol_result and "sequence" not in protocol_result:
         return protocol_result
@@ -1180,6 +1187,23 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     candidates = []; illnesses_created = illnesses_ended = portrait_updates = 0; journal_entries = []
     roll_inputs_changed = False
     members = list(report.get("household_members", report.get("household_sims", [])) or [])
+
+    # Sims 3 reports town-wide conditions once per snapshot. Apply the shared
+    # context to each member so profile history can safely record moves, while
+    # creating just one concise town-condition storyline record.
+    if str(report.get("game_edition") or "").casefold() == "sims3":
+        town_context = {
+            key: report.get(key) for key in ("world_name", "season", "weather", "moon_phase")
+            if report.get(key) not in (None, "")
+        }
+        if town_context:
+            town_context.update({
+                "game_edition": "sims3", "detected_game_day": game_day,
+                "detected_game_hour": hour, "detected_game_minute": minute,
+                "detected_game_second": second,
+            })
+            members = [{**town_context, **item} if isinstance(item, dict) else item for item in members]
+            journal_entries.extend(telemetry.capture_town_conditions(session, save, town_context))
     incoming_ids = {str(item.get("game_sim_id") or "") for item in members if item.get("game_sim_id")}
     tracked = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),

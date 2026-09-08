@@ -1,0 +1,37 @@
+<section class="panel" id="save-reader">
+  <p class="eyebrow">LOCAL DESKTOP · NO GAME MOD NEEDED</p>
+  <h2>Read Sims 3 saves automatically</h2>
+  <p>Choose the game save that belongs to <strong>{{save.name}}</strong>. While the tracker is running, it checks every 10 seconds and reads a temporary copy after the game files have been unchanged for at least 30 seconds. Save normally in Sims 3 to send new information.</p>
+  <p><strong>Supported:</strong> human Sims, names, sex, life stage, households and funds, saved family links, partner identity, traits, learned skills, and a positive pregnancy signal when present. Traits update existing Sim profiles and are included when reviewing new Sims in <a href="/p/automation">Automation Inbox</a>; matching by game identity avoids duplicates.</p>
+  <p><strong>Trait names:</strong> built-in traits use a bundled Sims 3 name dictionary, including saved hidden and reward traits. Unknown custom traits retain their full ID instead of a guessed name. Unreadable trait data does not erase previous traits. Save in the game to capture changes.</p>
+  <p><strong>Saved clock, not live:</strong> the active world's day and time are read directly from the completed save. Turn on automatic day advancement below to follow future game midnights. The first reading keeps your current Global Day; a town change starts a fresh time alignment without losing challenge progress. Older clocks are rejected. This does not reveal exact birth/death times, illness, portraits, or delivery details.</p>
+  {% if sims3_reader.detected_clock %}{% set saved_clock=sims3_reader.detected_clock %}<div class="notice"><strong>Last saved game clock:</strong> {{saved_clock.weekday}} · {{'%02d'|format(saved_clock.game_hour)}}:{{'%02d'|format(saved_clock.game_minute)}} · Week {{saved_clock.week}} · {{saved_clock.world_name}}<br><small>Saved {{saved_clock.saved_at}}. This is the time when the game saved, not a live reading.</small></div>{% endif %}
+  {% if game_save_notice %}<div class="notice">{{game_save_notice}}</div>{% endif %}
+  <div class="notice" role="status"><strong>{{'Automatic reading on' if sims3_reader.enabled else 'Automatic reading off'}}</strong> · {{sims3_reader.status or 'Select a save below to begin.'}}{% if sims3_reader.last_import_at %}<br>Last import: {{sims3_reader.last_import_at}} · saved file: {{sims3_reader.last_modified_at}}{% endif %}</div>
+  {% if sims3_save_files %}
+  <form action="/api/sims3-save/settings" method="post">
+    <label>Game save folder<select name="file_name">{% for file in sims3_save_files %}<option value="{{file}}" {% if sims3_reader.file_name == file %}selected{% endif %}>{{file}}</option>{% endfor %}</select></label>
+    <label>Who to read<select name="scope"><option value="household" {% if sims3_reader.scope not in ['residents','save'] %}selected{% endif %}>Active household</option><option value="residents" {% if sims3_reader.scope == 'residents' %}selected{% endif %}>Housed households across the save — no homeless NPCs</option><option value="save" {% if sims3_reader.scope == 'save' %}selected{% endif %}>Entire save — also include homeless and service Sims</option></select></label>
+    <p><small><strong>Housed households:</strong> reads residents with a home lot across every readable saved world, plus your active household. Homeless Sims and unplaced service households are excluded. Switching this filter does not automatically delete previously accepted Sims.</small></p>
+    <p><small><strong>Entire save:</strong> reads full human Sim records from every readable world file in this selected save, without switching households. Includes homeless Sims and service NPCs, even without a household. One game Sim ID means one person; older travel copies are not separate Sims. Other worlds show their last saved state, not live activity. Pets and partial travel-only identity records are not included.</small></p>
+    <label class="check-row"><input type="checkbox" name="enabled" {% if sims3_reader.enabled %}checked{% endif %}> Automatically read completed saves while this tracker is open</label>
+    <input type="hidden" name="clock_setting_present" value="1">
+    <label class="check-row"><input type="checkbox" name="sync_clock" {% if sims3_reader.sync_clock %}checked{% endif %}> Advance Global Day automatically from the saved game clock</label>
+    <p><small>Updates after each normal game save, not continuously. Repeated saves never count the same day twice. Pausing/resuming or manually changing Global Day starts a new alignment, without backfilling paused days. The withdrawn Sims 3 Clock Sync relay is not used; old relay reports cannot change this save.</small></p>
+    <div class="action-bar"><button class="primary">Save reader settings</button><button formaction="/api/sims3-save/preview">Preview this save now</button></div>
+    <small>The master automation switch also pauses automatic imports. Using Save As requires selecting the new folder here. Backups, unverified worlds and unfinished saves are not imported. Your game files are never edited.</small>
+  </form>
+  {% for warning in sims3_reader.warnings or [] %}<div class="notice">{{warning}}</div>{% endfor %}
+  {% else %}<p>No regular .sims3 folders were found in your Sims 3 Saves folder. Make an in-game save, then refresh this page.</p>{% endif %}
+  {% if sims3_save_preview %}{% set preview=sims3_save_preview %}
+  <h3>Preview: {{preview.file_name}}</h3>
+  {% if preview.saved_clock %}<p><strong>Saved game clock:</strong> {{preview.saved_clock.weekday}} · {{'%02d'|format(preview.saved_clock.game_hour)}}:{{'%02d'|format(preview.saved_clock.game_minute)}} · Week {{preview.saved_clock.week}} · {{preview.saved_clock.world_name}}</p>{% endif %}
+  <p>{{preview.relevant_sims|length}} human Sims in the selected scope · {{preview.world_count or 1}} saved world(s) · active household {{preview.slot.household_name}}. Nothing from this preview has been imported yet.{% if preview.duplicate_sim_copies %} {{preview.duplicate_sim_copies}} duplicate world copies were combined by Sim ID.{% endif %}</p>
+  {% for warning in preview.warnings %}<div class="notice">{{warning}}</div>{% endfor %}
+  <form action="/api/sims3-save/apply" method="post">
+    <div class="scan-list">{% for sim in preview.relevant_sims %}<label class="scan-row"><input type="checkbox" name="game_sim_id" value="{{sim.game_sim_id}}" {% if sim.comparison_status != 'matched' %}checked{% endif %}><span><strong>{{sim.name}}</strong><small>{{sim.age_stage|default('Unknown')|replace('youngadult','young adult')|title}} · {{sim.household_name}} · {{sim.comparison_status|title}}{% if sim.skills %} · {{sim.skills|join(', ')}}{% endif %}{% if sim.is_pregnant %} · Pregnancy present{% endif %}</small>{% if sim.traits_scan_supported %}<small>Traits: {{sim.traits|join(', ') if sim.traits else 'No traits saved'}}</small>{% endif %}</span></label>{% endfor %}</div>
+    <button class="primary">Import selected Sims / send new Sims to review</button>
+    <small>A restorable tracker backup is created first. Missing Sims are never deleted; unsupported facts are left alone.</small>
+  </form>
+  {% endif %}
+</section>

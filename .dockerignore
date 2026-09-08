@@ -21,3 +21,5 @@ tests
 __pycache__
 *.pyc
 .pytest_cache
+tmp
+clock_bridge_sims3

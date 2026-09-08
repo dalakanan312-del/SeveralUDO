@@ -18,7 +18,7 @@ GAME_MODES = {
         "id": SIMS3,
         "name": "The Sims 3",
         "short_name": "Sims 3",
-        "clock_label": "Sims 3 Clock Sync",
+        "clock_label": "Sims 3 save reader",
         "default_days_per_year": 4,
     },
 }

@@ -21,3 +21,6 @@ dist/
 __pycache__/
 *.pyc
 .pytest_cache/
+tmp/
+clock_bridge_sims3/config.json
+clock_bridge_sims3/install_result.txt

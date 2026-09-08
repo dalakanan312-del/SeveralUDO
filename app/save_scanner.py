@@ -348,8 +348,12 @@ def inspect_save(path: Path) -> dict:
 
 def relevant_population(scan: dict) -> tuple[list[dict], list[dict]]:
     """Limit review to player-owned households, including the active household."""
+    if scan.get('game_edition') == 'sims3' and scan.get('population_scope') == 'save':
+        # A full human SimDescription can exist without a household or a lot.
+        return list(scan.get('households') or []), list(scan.get('sims') or [])
     active = str((scan.get("slot") or {}).get("active_household_game_id") or "")
-    households = [item for item in scan.get("households") or () if item.get("is_player") or item.get("game_household_id") == active]
+    households = [item for item in scan.get("households") or () if item.get("is_player") or item.get("game_household_id") == active
+                  or (scan.get('game_edition') == 'sims3' and item.get('include_in_scan'))]
     household_ids = {str(item.get("game_household_id") or "") for item in households}
     sims = [item for item in scan.get("sims") or () if str(item.get("game_household_id") or "") in household_ids]
     return households, sims
@@ -392,7 +396,8 @@ def compare_scan(session, save, scan: dict) -> dict:
         match = by_game_id.get(game_id)
         match_source = "game identity" if match else ""
         if not match:
-            candidates = by_name.get(" ".join(str(game_sim.get("name") or "").casefold().split()), [])
+            candidates = [item for item in by_name.get(" ".join(str(game_sim.get("name") or "").casefold().split()), [])
+                          if not str((item.data or {}).get('game_sim_id') or '').strip()]
             if len(candidates) == 1:
                 match, match_source = candidates[0], "unique exact name"
         differences = []
@@ -411,6 +416,10 @@ def compare_scan(session, save, scan: dict) -> dict:
                     differences.append({"field": label, "tracker": tracker_value, "game": game_value})
             if game_sim.get("pregnancy_scan_supported") and bool(data.get("game_is_pregnant")) != bool(game_sim.get("is_pregnant")):
                 differences.append({"field":"pregnancy", "tracker":bool(data.get("game_is_pregnant")), "game":bool(game_sim.get("is_pregnant"))})
+            if game_sim.get("traits_scan_supported") is True:
+                old_traits, new_traits = data.get("game_traits") or [], game_sim.get("traits") or []
+                if set(old_traits) != set(new_traits):
+                    differences.append({"field":"traits", "tracker":old_traits, "game":new_traits})
             if game_sim.get("portrait_image_base64"):
                 stage = "".join(
                     character for character in str(game_sim.get("age_stage") or "default").casefold()
@@ -529,7 +538,7 @@ def import_portraits(session, save, scan: dict, target_record_id: str | None = N
     return result
 
 
-def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advance_clock: bool = True) -> dict:
+def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advance_clock: bool = True, pre_advanced: int = 0) -> dict:
     """Apply a user-approved read-only scan to tracker records.
 
     The source file remains untouched.  New people become review items; exact
@@ -546,8 +555,9 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
     slot = scan.get("slot") or {}
     game_day = slot.get("game_day")
     hour, minute, second = slot.get("game_hour"), slot.get("game_minute"), slot.get("game_second")
-    advanced = 0
+    advanced = int(pre_advanced)
     settings = dict(save.settings or {})
+    source = 'read-only Sims 3 save scan' if scan.get('game_edition') == 'sims3' else 'read-only Sims 4 save scan'
     if advance_clock and game_day is not None:
         anchor_game = settings.get("save_scan_anchor_game_day")
         anchor_tracker = settings.get("save_scan_anchor_tracker_day")
@@ -592,15 +602,22 @@ def reconcile_scan(session, save, scan: dict, selected_game_ids: set[str], advan
             "detected_game_second": second,
             "detected_tracker_global_day": save.global_day,
             "telemetry_version": 0,
-            "source": "read-only Sims 4 save scan",
+            "source": source,
         }
+        if scan.get('game_edition') == 'sims3':
+            # This is a save observation, not proof of when a birth/death/move
+            # occurred. Inactive worlds must not inherit the active clock.
+            snapshot.update(detected_game_day=None, detected_game_hour=None,
+                            detected_game_minute=None, detected_game_second=None)
+            if item.get('source_world_active'):
+                snapshot.update(observed_game_day=game_day, observed_game_hour=hour, observed_game_minute=minute)
         # The data URI is only for the browser preview. Keep one base64 copy in
         # the review payload instead of duplicating the image in stored JSON.
         snapshot.pop("portrait_data_uri", None)
         selected_snapshots.append((item, snapshot))
     household_matches, households_created, households_updated, household_members_linked = clock.sync_game_households(
         session, save, [snapshot for _, snapshot in selected_snapshots], by_game_id,
-        source="the read-only Sims 4 save scan",
+        source='the ' + source,
     )
     for item, snapshot in selected_snapshots:
         game_id = str(item.get("game_sim_id") or "")

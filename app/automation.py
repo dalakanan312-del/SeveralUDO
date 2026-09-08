@@ -957,6 +957,10 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
         })
     telemetry_version = int(snapshot.get("telemetry_version") or 0)
     clearable = {"game_traits", "game_career", "game_education"} if telemetry_version >= 2 else set()
+    # Save-file readers can verify traits independently of other telemetry.
+    # Never increase their telemetry version merely to permit a trait removal.
+    if snapshot.get("traits_scan_supported") is True:
+        clearable.update({"game_traits", "game_trait_details"})
     # Clock Sync 2.1.0 reports whether the game actually exposed each optional
     # tracker.  An empty supported scan is authoritative; an unavailable scan
     # must not erase skill or milestone data captured by an earlier report.

@@ -149,7 +149,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.7")
+app = FastAPI(title="Decades Tracker", version="4.6.13")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -759,9 +759,16 @@ def startup() -> None:
                 # desktop app feel stuck before its window even appeared.
         from .sync_client import start
         start()
+        from . import sims3_save_sync
+        sims3_save_sync.start()
     if settings.automatic_snapshots:
         backup_service.start()
     notifications.start()
+
+
+from . import sims3_save_sync
+app.include_router(sims3_save_sync.router)
+app.router.add_event_handler('shutdown', sims3_save_sync.stop)
 
 
 def signed_in(request: Request, session):
@@ -1330,7 +1337,8 @@ def live_status(request: Request):
             "save_id": save.id,
             "global_day": int(save.global_day),
             "clock": {
-                "enabled": bool(link and link.enabled),
+                "enabled": bool(link and link.enabled) or bool(advance.get('sims3_saved_clock_enabled')),
+                "source": "save" if advance.get('sims3_saved_clock_enabled') else "relay",
                 "game_day": link.last_game_day if link else None,
                 "hour": link.last_game_hour if link else None,
                 "minute": link.last_game_minute if link else None,
@@ -2120,6 +2128,8 @@ def feature_page(request: Request, page: str):
                 ctx["game_save_files"] = save_scanner.discover_saves()
                 ctx["game_save_scan"] = _SAVE_SCAN_CACHE.get(save.id)
                 ctx["game_save_notice"] = request.session.pop("game_save_notice", None)
+                if ctx["clock_game_mode"]["id"] == 'sims3':
+                    ctx.update(sims3_save_sync.page_context(save.id))
         if page == "today" and save:
             ctx["clock_link"] = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id))
         if page == "storyline" and save:
@@ -4927,6 +4937,7 @@ def create_clock_link(request: Request):
     with db() as session:
         ctx = context(request, session)
         if not ctx["save"]: raise HTTPException(400)
+        require_clock_sync_supported(game_modes.for_save(ctx["save"])["id"])
         raw = rotate_clock_link(session, ctx["save"].id)
         base_url = str(request.base_url).rstrip("/") if settings.local_mode else settings.public_url
         return {"token": raw, "endpoint": f"{base_url}/api/clock/report", "works_offline": settings.local_mode}
@@ -4941,6 +4952,7 @@ def reanchor_clock_link(request: Request):
         if not save:
             raise HTTPException(400, "Open a save first.")
         link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id, ClockLink.enabled.is_(True)))
+        require_clock_sync_supported(game_modes.for_save(save)["id"])
         if not link or link.last_game_day is None:
             raise HTTPException(400, "A game report is required before the clock can be re-anchored.")
         link.game_anchor_day = int(link.last_game_day)
@@ -4961,6 +4973,7 @@ def trust_next_clock_save(request: Request):
         state = session.scalar(select(Record).where(
             Record.save_id == save.id, Record.kind == "clock_protocol_state", Record.deleted.is_(False),
         ).limit(1))
+        require_clock_sync_supported(game_modes.for_save(save)["id"])
         if state:
             base = state.version
             data = dict(state.data or {})
@@ -5153,9 +5166,15 @@ def scan_sim_tray_portrait(request: Request, sim_id: str):
     return RedirectResponse(f"/sims/{sim_id}#portraits", status_code=303)
 
 
+def require_clock_sync_supported(mode):
+    if game_modes.normalize(mode) == game_modes.SIMS3:
+        raise HTTPException(410, clock_bundle.SIMS3_CLOCK_RETIRED_MESSAGE)
+
+
 @app.get("/downloads/clock-sync")
 def download_clock_sync(request: Request, game_mode: str = game_modes.SIMS4):
     mode = game_modes.normalize(game_mode)
+    require_clock_sync_supported(mode)
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
     try:
@@ -5178,6 +5197,7 @@ def download_configured_clock_sync(request: Request, capture_portraits: str = Fo
         if not save:
             raise HTTPException(400, "Open a tracker save before creating a private Clock Sync kit.")
         mode = game_modes.for_save(save)["id"]
+        require_clock_sync_supported(mode)
         raw = rotate_clock_link(session, save.id)
         base_url = str(request.base_url).rstrip("/") if settings.local_mode else settings.public_url
         try:
@@ -5196,6 +5216,7 @@ def download_configured_clock_sync(request: Request, capture_portraits: str = Fo
 
 @app.get("/downloads/clock-sync/{component}")
 def download_clock_sync_component(request: Request, component: str, game_mode: str = game_modes.SIMS4):
+    require_clock_sync_supported(game_mode)
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
     mode = game_modes.normalize(game_mode)
@@ -5221,11 +5242,12 @@ def download_clock_sync_component(request: Request, component: str, game_mode: s
 def download_windows_installer(request: Request):
     with db() as session:
         if not signed_in(request, session): raise HTTPException(401)
-    package=ROOT / "release" / "Decades-Tracker-4.6.7-Setup.exe"
+    filename = f"Decades-Tracker-{app.version}-Setup.exe"
+    package=ROOT / "release" / filename
     if not package.exists():
         return RedirectResponse(settings.desktop_installer_url, status_code=302)
     return StreamingResponse(package.open("rb"),media_type="application/vnd.microsoft.portable-executable",headers={
-        "Content-Disposition":'attachment; filename="Decades-Tracker-4.6.7-Setup.exe"',"Cache-Control":"no-store",
+        "Content-Disposition":f'attachment; filename="{filename}"',"Cache-Control":"no-store",
     })
 
 
@@ -5253,6 +5275,7 @@ def clock_ping(authorization: str | None = Header(None)):
             raise HTTPException(401, "Invalid clock token")
         save = session.get(ChronicleSave, link.save_id)
         edition = game_modes.for_save(save)["id"]
+        require_clock_sync_supported(edition)
         return {
             "ok": True, "clock_sync_version": clock_bundle.bundle_details(edition)["version"],
             "save_id": save.id, "save_name": save.name,

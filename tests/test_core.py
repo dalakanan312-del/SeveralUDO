@@ -37,7 +37,7 @@ from app.storyline import build as build_storyline
 from app.save_scanner import SIM_PORTRAIT_RESOURCE, _embedded_sim_portraits, _parse_save_slot, _parse_sim, compare_scan, import_portraits, protobuf_fields
 from app.tray_scanner import decode_sgi, discover_portraits as discover_tray_portraits, import_portraits as import_tray_portraits
 from app.session_policy import BROWSER_MODE, PERSISTENT_MODE, REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware
-from desktop_launcher import RelaySupervisor, clock_sync_folder, relay_heartbeat_fresh
+from desktop_launcher import RelaySupervisor, clock_sync_folder, clock_sync_folders, relay_heartbeat_fresh
 from starlette.middleware.sessions import SessionMiddleware
 
 
@@ -413,21 +413,36 @@ class CoreSmokeTests(unittest.TestCase):
 
     def test_desktop_launcher_finds_and_monitors_clock_relay(self):
         with tempfile.TemporaryDirectory() as temporary:
-            folder=Path(temporary)/"SeveralUDOClockSync";folder.mkdir()
-            (folder/"SeveralUDOClockRelay.ps1").write_text("# test relay",encoding="utf-8")
-            health=folder/"relay_health.json"
-            health.write_text(json.dumps({"checked_at":datetime.now(timezone.utc).isoformat()}),encoding="utf-8")
-            with mock.patch.dict(os.environ,{"SEVERALUDO_CLOCK_SYNC_DIR":str(folder)}):
-                self.assertEqual(clock_sync_folder(),folder)
-                self.assertTrue(relay_heartbeat_fresh(folder))
-                supervisor=RelaySupervisor()
-                with mock.patch.object(supervisor,"_launch") as launch:
-                    supervisor.ensure_running();launch.assert_not_called()
-                health.write_text(json.dumps({"checked_at":"2000-01-01T00:00:00+00:00"}),encoding="utf-8")
-                self.assertFalse(relay_heartbeat_fresh(folder))
-                with mock.patch.object(supervisor,"_launch") as launch:
-                    supervisor.ensure_running();launch.assert_called_once_with(folder)
-
+            root = Path(temporary)
+            sims4 = root / "SeveralUDOClockSync"; sims4.mkdir()
+            sims3 = root / "SeveralUDOSims3ClockSync"; sims3.mkdir()
+            for folder in (sims4, sims3):
+                (folder / "SeveralUDOClockRelay.ps1").write_text("# test relay", encoding="utf-8")
+                (folder / "relay_health.json").write_text(
+                    json.dumps({"checked_at": datetime.now(timezone.utc).isoformat()}), encoding="utf-8",
+                )
+            with mock.patch.dict(os.environ, {
+                "SEVERALUDO_CLOCK_SYNC_DIR": str(sims4),
+                "SEVERALUDO_SIMS3_CLOCK_SYNC_DIR": str(sims3),
+                "USERPROFILE": str(root), "OneDrive": "", "OneDriveConsumer": "",
+            }), mock.patch('desktop_launcher.Path.home', return_value=root):
+                self.assertEqual(clock_sync_folder(), sims4)
+                self.assertEqual(clock_sync_folders(), [sims4])
+                self.assertTrue(relay_heartbeat_fresh(sims3))
+                supervisor = RelaySupervisor()
+                with mock.patch.object(supervisor, "_launch") as launch:
+                    supervisor.ensure_running(); launch.assert_not_called()
+                (sims3 / "relay_health.json").write_text(
+                    json.dumps({"checked_at": "2000-01-01T00:00:00+00:00"}), encoding="utf-8",
+                )
+                self.assertFalse(relay_heartbeat_fresh(sims3))
+                with mock.patch.object(supervisor, "_launch") as launch:
+                    supervisor.ensure_running(); launch.assert_not_called()
+                (sims4 / "relay_health.json").write_text(json.dumps({"checked_at":"2000-01-01T00:00:00+00:00"}),encoding="utf-8")
+                with mock.patch.object(supervisor, "_launch") as launch:
+                    supervisor.ensure_running(); launch.assert_called_once_with(sims4)
+                (sims4 / "config.json").write_text(json.dumps({"game_edition":"sims3"}),encoding="utf-8")
+                self.assertEqual(clock_sync_folders(), [])
     def test_bundled_medieval_name_library_is_complete_and_source_grounded(self):
         summary = names.medieval_summary()
         pool = names.medieval_libraries()
@@ -1687,6 +1702,8 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertNotIn("clock_bridge/SeveralUDOClockRelay.ps1", docker_ignores)
         self.assertNotIn("clock_bridge/Start SeveralUDO Clock Relay.bat", docker_ignores)
         with TestClient(app) as client:
+            client.post('/saves',data={'name':'Sims 4 clock regression '+uuid.uuid4().hex,
+                                      'start_year':'1300','days_per_year':'4','game_mode':'sims4'})
             with SessionLocal() as session:
                 save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
                 save_id, before = save.id, save.global_day

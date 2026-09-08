@@ -1,61 +1,33 @@
 {% extends "base.html" %}
-{% block title %}Sims 3 Game Clock · Decades Tracker{% endblock %}
+{% block title %}Sims 3 Save Data · Decades Tracker{% endblock %}
 {% block body %}
 <header class="hero compact">
-  <p class="eyebrow">THE SIMS 3 · GAME CLOCK</p>
-  <h1>Sims 3 Clock Sync</h1>
-  <p>Let your Sims 3 calendar advance this chronicle’s Global Day automatically.</p>
+  <p class="eyebrow">THE SIMS 3 · DESKTOP SAVE-DATA SUPPLEMENT</p>
+  <h1>Sims 3 Clock Sync — withdrawn</h1>
+  <p>Sims 3 tracking remains available, but there is no working Sims 3 Clock Sync mod to download.</p>
 </header>
-{% if clock_notice %}<div class="notice">{{clock_notice}}</div>{% endif %}
-
-<section class="metrics">
-  <article><strong>{{'Active' if clock_link and clock_link.enabled else 'Not linked'}}</strong><span>private receiver</span></article>
-  <article><strong>{{clock_link.last_game_day if clock_link and clock_link.last_game_day is not none else 'Waiting'}}</strong><span>last Sims 3 game day</span></article>
-  <article><strong>{{save.global_day}}</strong><span>tracker Global Day</span></article>
+<section class="panel" id="sims3-clock-status">
+  <p class="eyebrow">A NOTE FROM THE CREATOR</p>
+  <h2>Why Sims 3 Clock Sync was removed</h2>
+  <p>I couldn't figure out how to get Clock Sync working reliably for The Sims 3, so I've removed the Sims 3 Clock Sync download and setup options.</p>
+  <p>The <strong>desktop version reads completed Sims 3 save data as a supplement</strong>. It is not live Clock Sync and cannot detect everything that happens in game. Your existing Sims 3 tracker saves and records are still available.</p>
 </section>
-{% if clock_last_advance %}<div class="notice"><strong>Last automatic advance:</strong> Sims 3 game day {{clock_last_advance.game_day}} moved the tracker from GD {{clock_last_advance.from_global_day}} to GD {{clock_last_advance.global_day}}{% if clock_last_advance.at %} · {{clock_last_advance.at}}{% endif %}.</div>{% endif %}
-{% if clock_link and clock_link.last_game_day is not none %}<div class="notice"><strong>Last report:</strong> game day {{clock_link.last_game_day}} · {{'%02d'|format(clock_link.last_game_hour or 0)}}:{{'%02d'|format(clock_link.last_game_minute or 0)}} · {{clock_link.last_seen_at}}</div>{% endif %}
-
-{% if clock_protocol %}{% set protocol=clock_protocol.data %}
 <section class="panel">
-  <div class="section-heading"><div><p class="eyebrow">SAFE PAIRING</p><h2>Connected Sims 3 save</h2></div><span class="status alive">{{protocol.get('game_edition','sims3')|replace('sims','Sims ')|title}}</span></div>
-  <div class="metrics"><article><strong>{{protocol.get('save_slot_name') or protocol.get('save_identity') or 'Waiting for first report'}}</strong><span>paired game save</span></article><article><strong>{{protocol.get('last_report_sequence') or 0}}</strong><span>last report</span></article><article><strong>{{protocol.get('last_report_kind','—')|title}}</strong><span>report type</span></article></div>
-  <details><summary>Pair a different Sims 3 save</summary><p>Use only after intentionally changing the game save. It clears the previous game-save name, not your tracker history or private link.</p><form action="/api/clock/trust-next-save" method="post" onsubmit="return confirm('Pair the next reported Sims 3 save with this tracker chronicle?')"><button>Pair the next Sims 3 save</button></form></details>
+  <h2>What the desktop save reader can do</h2>
+  <p>Read saved human Sims, households, available family links, traits, learned skills, positive pregnancy signals, and the active world's saved day and time. Newly discovered Sims appear in Automation Inbox for review.</p>
+  <p>With automatic saved-clock advancement enabled, future saved midnights advance Global Day. The first reading keeps your current challenge day. Nothing updates until you save in Sims 3; a browser alone cannot read the files on your computer.</p>
+  <p><strong>Still manual:</strong> unsupported or missing information, exact birth/death times, illnesses, portraits, and delivery details. Review imported details and add or correct anything the save reader cannot confirm.</p>
+  {% if not local_mode %}<p><a class="button primary" href="/downloads/windows-installer">Download the desktop tracker</a> <a class="button" href="/p/sync">Desktop / online data sync</a></p><p><small>Use the desktop Clock page to select your game save. Desktop-to-online tracker-data sync is separate from game Clock Sync and needs its own connection; downloading the app does not automatically connect your online save.</small></p>{% endif %}
 </section>
+{% if local_mode %}
+  {% if clock_notice %}<div class="notice">{{clock_notice}}</div>{% endif %}
+  {% include 'sims3_save_reader.html' %}
+  {% if clock_last_advance %}<div class="notice"><strong>Last saved-clock advance:</strong> tracker GD {{clock_last_advance.from_global_day}} → {{clock_last_advance.global_day}}.</div>{% endif %}
 {% endif %}
-
 <section class="panel">
-  <p class="eyebrow">PRIVATE · READY TO INSTALL</p>
-  <h2>Download this save’s Sims 3 kit</h2>
-  <p>The private kit is connected to <strong>{{save.name}}</strong>. It includes the automatic Sims 3 clock package, relay, updater, self-test, and detailed instructions.</p>
-  <form action="/downloads/clock-sync/configured" method="post" onsubmit="return confirm('Create a fresh private Sims 3 Clock Sync link? An older private configuration for this tracker save will stop working.')"><button class="primary">Create link and download private Sims 3 kit</button></form>
-  <p><small>Keep its config.json private. It belongs only to this chronicle.</small></p>
-</section>
-
-<section class="panel">
-  <p class="eyebrow">AUTOMATIC SIMS 3 CLOCK</p>
-  <h2>Automatic clock alignment, without touching your save</h2>
-  <p>The included Sims 3 <code>.package</code> reads the active save’s in-game day and time after the world loads, then refreshes it while the game clock runs. It writes a local snapshot only; the separately started relay safely delivers that snapshot through this save’s private link.</p>
-  <ol>
-    <li>Download and extract the private kit.</li>
-    <li>Run <strong>Install or Update SeveralUDO Sims 3 Clock Sync.bat</strong> while Sims 3 is closed.</li>
-    <li>Run the included self-test, then start the relay.</li>
-    <li>Open your Sims 3 save. The first automatic report is prepared shortly after the world finishes loading.</li>
-    <li>Keep the relay running while you play; it sends updated clock times automatically.</li>
-  </ol>
-  <div class="notice"><strong>Current scope:</strong> the automatic package reads the Sims 3 day and clock time only. It advances the tracker clock and protects save pairing; it does not claim to read Sims, pregnancy, health, portraits, or other Sims 4-only telemetry.</div>
-</section>
-
-<section class="panel">
-  <p class="eyebrow">REUSABLE · NO PRIVATE TOKEN</p>
-  <h2>Download the complete Sims 3 kit</h2>
-  <p>Use this for an update or to prepare a computer before creating its private link.</p>
-  <p><a class="button primary" href="/downloads/clock-sync?game_mode=sims3">Download Sims 3 Clock Sync {{clock_sync_version}} complete kit</a></p>
-  <details><summary>Download individual files</summary><div class="action-bar"><a class="button primary" href="/downloads/clock-sync/script?game_mode=sims3">Automatic Sims 3 package</a><a class="button" href="/downloads/clock-sync/relay?game_mode=sims3">Relay</a><a class="button" href="/downloads/clock-sync/starter?game_mode=sims3">Relay starter</a><a class="button" href="/downloads/clock-sync/self-test?game_mode=sims3">Self-test</a><a class="button" href="/downloads/clock-sync/updater-starter?game_mode=sims3">Installer / updater</a><a class="button" href="/downloads/clock-sync/config-template?game_mode=sims3">Config template</a><a class="button" href="/downloads/clock-sync/instructions?game_mode=sims3">Installation guide</a><a class="button" href="/downloads/clock-sync/source?game_mode=sims3">Package source</a></div></details>
-</section>
-
-<section class="grid">
-  <article class="panel"><h2>What the kit changes</h2><p>Nothing inside your <code>.sims3</code> save. It installs one clock-reading package and creates temporary JSON snapshots inside its own SeveralUDOClockSync folder.</p></article>
-  <article class="panel"><h2>What stays separate</h2><p>Sims 4 Clock Sync remains its own <code>.ts4script</code> kit. A Sims 3 private link rejects a Sims 4 report, and vice versa, before any tracker data changes.</p></article>
+  <h2>No Sims 3 relay or package required</h2>
+  <p>You do not need to run the old Sims 3 batch files or relay. The tracker no longer starts that relay or accepts its reports.</p>
+  <p>If you previously installed the experimental SeveralUDO Sims 3 Clock Sync package, close Sims 3 before removing only that package from Mods/Packages. Do not remove other mods or your saves. The desktop reader never changes your game files.</p>
+  <p><strong>Sims 4 Clock Sync is unchanged</strong> and remains available when using a Sims 4 tracker save.</p>
 </section>
 {% endblock %}
