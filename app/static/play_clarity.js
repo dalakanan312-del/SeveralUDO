@@ -7,7 +7,7 @@
   const scrollKey=batchKey();if(scrollKey)try{const old=JSON.parse(sessionStorage.getItem(scrollKey)||'null');if(old&&old.day===document.body.dataset.currentGlobalDay)requestAnimationFrame(()=>scrollTo({top:old.y,behavior:'instant'}));}catch{}
   const headers=()=>({'X-Decades-Fragment':'1','X-UI-Save':ctx()?.dataset.save||'','X-Dynasty-Epoch':ctx()?.dataset.epoch||''});
   const report=message=>{let n=document.querySelector('#ui-status');if(!n){n=document.createElement('p');n.id='ui-status';n.setAttribute('role','status');document.querySelector('main')?.prepend(n);}n.textContent=message;};
-  async function json(url,options){const r=await fetch(url,{cache:'no-store',...options});let data;try{data=await r.json();}catch{throw Error('The tracker could not return a preview. No changes were confirmed.');}if(!r.ok)throw Error(data.detail||'The save changed. Review a new preview.');return data;}
+  async function json(url,options){const r=await fetch(url,{cache:'no-store',...options});let data;try{data=await r.json();}catch{throw Error('The tracker could not return a preview. No changes were confirmed.');}if(!r.ok){const error=Error(data.detail||'The save changed. Review a new preview.');error.status=r.status;throw error;}return data;}
   function dialog(title){const d=document.createElement('dialog');d.className='u-confirm-dialog';d.setAttribute('aria-label',title);const h=document.createElement('h2');h.textContent=title;d.append(h);document.body.append(d);const opener=document.activeElement;d.addEventListener('close',()=>{d.remove();if(opener?.isConnected)opener.focus();});return d;}
   function paragraph(d,text){const p=document.createElement('p');p.textContent=text;d.append(p);}
   function showPreview(p,form){
@@ -18,11 +18,23 @@
     const ul=document.createElement('ul');for(const effect of p.effects){const li=document.createElement('li');li.textContent=effect;ul.append(li);}d.append(ul);
     const confirm=document.createElement('button');confirm.type='button';confirm.className='primary';confirm.textContent='Confirm these changes';
     const cancel=document.createElement('button');cancel.type='button';cancel.textContent='Keep unchanged';cancel.addEventListener('click',()=>d.close());d.append(confirm,cancel);
+    const errorMessage=document.createElement('p');errorMessage.setAttribute('role','alert');errorMessage.hidden=true;d.append(errorMessage);
+    const refresh=document.createElement('button');refresh.type='button';refresh.textContent='Review updated preview';refresh.hidden=true;d.append(refresh);
+    function showError(error){errorMessage.hidden=false;errorMessage.textContent='Nothing confirmed. '+error.message;}
+    refresh.addEventListener('click',async()=>{refresh.disabled=true;cancel.disabled=true;
+      try{
+        if(p.kind!=='roll'){location.assign(p.return_to||'/p/rules');return;}
+        const result=await json('/api/previews/'+encodeURIComponent(p.token)+'/refresh',{method:'POST',headers:headers()});
+        d.close();showPreview(result.preview,form);
+      }catch(error){showError(error);refresh.disabled=false;cancel.disabled=false;}
+    });
     confirm.addEventListener('click',async()=>{confirm.disabled=true;cancel.disabled=true;let committed=false;
       try{const result=await json('/api/previews/'+encodeURIComponent(p.token)+'/confirm',{method:'POST',headers:headers()});committed=true;d.close();
         if(result.kind==='roll')document.dispatchEvent(new CustomEvent('decades:roll-confirmed',{detail:{...result,form,scrollY:window.scrollY}}));
         else location.assign(result.return_to||'/p/rules');
-      }catch(error){paragraph(d,(committed?'Changes saved; refresh the display. ':'Nothing confirmed. ')+error.message);confirm.disabled=false;cancel.disabled=false;}
+      }catch(error){showError(error);if(committed)errorMessage.textContent='Changes saved; refresh the display. '+error.message;
+        if(error.status===409){confirm.hidden=true;refresh.hidden=false;}else confirm.disabled=false;
+        cancel.disabled=false;}
     });d.showModal();cancel.focus();
   }
   window.addEventListener('submit',async e=>{

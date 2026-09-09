@@ -15,6 +15,7 @@ from .models import Change, ChronicleSave, Portrait, Record
 from . import advanced, calendar_utils, core_rulesets, decade_portraits, occult_rules, sync
 from .event_catalog_data import EVENT_LIBRARY_GZIP_BASE64
 from .early_event_catalog_data import EARLY_EVENT_LIBRARY_GZIP_BASE64
+from .preview_random import roll_rng
 
 
 DEFAULTS_SCHEMA_VERSION = "4.6.4-calendar-aware-age-displays"
@@ -3307,7 +3308,7 @@ def backfill_generated_marriage_dates(session: Session, save: ChronicleSave) -> 
             continue
         first_day = max(save.global_day, int(roll.global_day or save.global_day)) + 1
         last_day = first_day + max(1, int(save.days_per_year)) - 1
-        suggested = random.SystemRandom().randint(first_day, last_day)
+        suggested = roll_rng(session).randint(first_day, last_day)
         base = roll.version
         roll.data = {
             **data,
@@ -4061,7 +4062,7 @@ def _followup_target(session: Session, save: ChronicleSave, origin: Record, stra
         living = [sim for sim in living if (sim.id in close) == (strategy == "werewolf_close_relation")]
     if not living:
         return None
-    return random.SystemRandom().choice(preferred(living))
+    return roll_rng(session).choice(preferred(living))
 
 
 def _followup_rule(session: Session, save: ChronicleSave, key: str, year: int,
@@ -5790,7 +5791,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         if ("may marry" in outcome_text or "may remarry" in outcome_text) and roll.data.get("suggested_marriage_global_day") in (None, ""):
             first_day = max(save.global_day, int(roll.global_day or save.global_day)) + 1
             last_day = first_day + max(1, int(save.days_per_year)) - 1
-            suggested = random.SystemRandom().randint(first_day, last_day)
+            suggested = roll_rng(session).randint(first_day, last_day)
             marriage_updates.update({
                 "suggested_marriage_global_day": suggested,
                 "suggested_marriage_date_range": calendar_utils.date_range_label(suggested, save.start_year, save.days_per_year),
@@ -5824,7 +5825,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             age_year_end = age_year_start + max(1, save.days_per_year) - 1
             proposed = (
                 save.global_day if save.global_day > age_year_end
-                else random.SystemRandom().randint(max(save.global_day, age_year_start), age_year_end)
+                else roll_rng(session).randint(max(save.global_day, age_year_start), age_year_end)
             )
             try: existing_day = int((sim.data or {}).get("death_global_day"))
             except (TypeError, ValueError): existing_day = None
@@ -5851,7 +5852,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         sim = session.get(Record, sim_id) if sim_id else None
         if sim and not sim.deleted and not bool((sim.data or {}).get("death_confirmed")):
             window_start, window_end = _death_window(session, save, roll, sim)
-            failed_roll_death_day = random.SystemRandom().randint(window_start, window_end)
+            failed_roll_death_day = roll_rng(session).randint(window_start, window_end)
             try:
                 existing_death_day = int((sim.data or {}).get("death_global_day"))
             except (TypeError, ValueError):
@@ -5865,7 +5866,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             if isinstance(causes, str):
                 causes = [value.strip() for value in re.split(r"[;\n]+", causes) if value.strip()]
             causes = causes or DEFAULT_DEATH_CAUSES[group]
-            cause = event_cause or (random.SystemRandom().choice(causes) if (save.settings or {}).get("automatic_death_causes", True) else "Player choice")
+            cause = event_cause or (roll_rng(session).choice(causes) if (save.settings or {}).get("automatic_death_causes", True) else "Player choice")
             # Only rewrite the schedule when the failed-roll date is earlier.
             # If the Sim was already due to die sooner, that earlier date wins.
             if existing_death_day is None or failed_roll_death_day < existing_death_day:
