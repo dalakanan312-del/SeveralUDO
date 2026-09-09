@@ -71,6 +71,8 @@ def _drama_scene_sentence(item: Record) -> str:
     """
     data = item.data or {}
     title = str(data.get("card_title") or item.label or "A household decision").strip()
+    if data.get('source') == 'Drama Randomizer':
+        return f"The household played out “{title}”: {str(data.get('body') or '').strip()}"
     counterpart = str(data.get("counterpart_name") or "").strip()
     opening = str(data.get("opening") or "").strip()
     branch_label = str(data.get("branch_label") or "").strip()

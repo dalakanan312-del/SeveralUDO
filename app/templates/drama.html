@@ -11,6 +11,7 @@
 </header>
 
 {% if drama_notice %}<div class="notice drama-notice" role="status">{{drama_notice}}</div>{% endif %}
+{% if drama_discovery %}<section class="panel"><p class="eyebrow">RECORDED DISCOVERY · PLAYER-ENTERED FACTS</p><h2>{{drama_discovery.label}}</h2><p>{{drama_discovery.witness}} is recorded as knowing this secret.</p><p class="play-notes">{{drama_discovery.notes}}</p><p>The choices below are a fictional scene built around this discovery. They do not automatically change who knows.</p><a href="/p/family-projects#secret">Manage knowledge →</a></section>{% endif %}
 
 <section class="panel drama-draw-panel">
   <div class="section-heading"><div><p class="eyebrow">SET THE STAGE</p><h2>Draw a new situation</h2><p>Active add-ons and the current historical era decide which themed decks are available.</p></div></div>

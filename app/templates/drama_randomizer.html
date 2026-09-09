@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Drama Randomizer · Decades Tracker{% endblock %}
+{% block body %}
+<header class="section-heading"><div><p class="eyebrow">64 IN-GAME PROMPTS · D64</p><h1>Drama Randomizer</h1><p>Roll a prompt, play it out in The Sims, then record what happened.</p></div><a class="button" href="/p/drama">Play the decision-tree game →</a></header>
+{% if randomizer_notice %}<div class="notice" role="status">{{randomizer_notice}}</div>{% endif %}
+{% if save %}
+<section class="panel drama-randomizer-controls" aria-label="Choose who to play">
+  <form action="/drama-randomizer/draw" method="post" class="form-grid">
+    <input type="hidden" name="save_id" value="{{save.id}}">
+    <label>Focus Sim (optional)<select name="sim_id"><option value="">Choose during play</option>{% for sim in all_sims %}<option value="{{sim.id}}" {% if randomizer_state and randomizer_state.sim_id==sim.id %}selected{% endif %}>{{sim.label}}</option>{% endfor %}</select></label>
+    <label>Household (optional)<select name="household_id"><option value="">Use the focus Sim’s household, if known</option>{% for household in all_households %}<option value="{{household.id}}" {% if randomizer_state and randomizer_state.household_id==household.id %}selected{% endif %}>{{household.label}}</option>{% endfor %}</select></label>
+    <button class="primary">{{'Reroll d64' if randomizer_state else 'Roll d64'}}</button>
+  </form>
+  <p class="muted">Every result has an equal 1-in-64 chance. Reroll if a prompt does not fit your cast, rules or available packs. Rerolling replaces the current unrecorded prompt.</p>
+</section>
+{% if randomizer_state %}
+<article class="panel drama-randomizer-result" aria-labelledby="randomizer-result-title">
+  <div class="drama-randomizer-number"><span>D64</span><strong>{{randomizer_state.number}}</strong><span>OF 64</span></div>
+  <div class="drama-randomizer-content"><p class="eyebrow">{{'RECORDED IN GAME' if randomizer_record else 'YOUR IN-GAME PROMPT'}} · DRAWN GD {{randomizer_state.drawn_global_day}}</p>
+    <h2 id="randomizer-result-title"><span aria-hidden="true">{{randomizer_state.prompt.emoji}}</span> {{randomizer_state.prompt.title}}</h2>
+    {% if randomizer_state.sim_name or randomizer_state.household_name %}<p><strong>{{randomizer_state.sim_name}}</strong>{% if randomizer_state.household_name %}{% if randomizer_state.sim_name %} · {% endif %}{{randomizer_state.household_name}}{% endif %}</p>{% endif %}
+    <p>{{randomizer_state.prompt.action}}</p>
+    {% if randomizer_record %}<div class="notice"><strong>Played on {{historical_period(save,randomizer_record.global_day)}}</strong><p>{{randomizer_record.data.get('outcome_notes','')}}</p><a href="/p/storyline">Read in Storyline →</a></div>
+    {% else %}
+    <p class="muted">This is an action for you to carry out in game, not a predicted event. Nothing is added to your chronicle until you confirm it below.</p>
+    <form action="/drama-randomizer/record" method="post" class="drama-randomizer-record">
+      <input type="hidden" name="save_id" value="{{save.id}}"><input type="hidden" name="draw_id" value="{{randomizer_state.draw_id}}">
+      <label>Day it happened<input type="number" name="global_day" value="{{save.global_day}}" min="{{infinite_meta.get('split_global_day',0) or 0}}" max="{{save.global_day}}" required></label>
+      <label>What actually happened?<textarea name="notes" maxlength="4000" rows="4" required placeholder="Name the Sims involved and describe the actual outcome, including any losses, moves or new relationships."></textarea></label>
+      <button class="primary">I played this — record the outcome</button>
+    </form>
+    <p class="muted">Recording adds your exact outcome to Storyline. It does not kill Sims, create pregnancies, change relationships or move money in either the game or the tracker. Review those changes through the usual tracker controls or Automation Inbox.</p>
+    {% endif %}
+    <form action="/drama-randomizer/discard" method="post"><input type="hidden" name="save_id" value="{{save.id}}"><input type="hidden" name="draw_id" value="{{randomizer_state.draw_id}}"><button>{{'Clear this card' if randomizer_record else 'Skip without recording'}}</button></form>
+  </div>
+</article>
+{% else %}<section class="empty"><h2>What happens next?</h2><p>Roll a d64 above to draw from your 64 gameplay prompts. You can draw without choosing a Sim first.</p></section>{% endif %}
+<details class="panel drama-randomizer-catalog"><summary>Browse all 64 prompts</summary><ol>{% for prompt in randomizer_prompts %}<li><span aria-hidden="true">{{prompt.emoji}}</span> {{prompt.title}}</li>{% endfor %}</ol></details>
+<section class="panel" aria-label="Played drama outcomes"><h2>Recently played</h2><p>Your confirmed outcomes also appear in Storyline and Timeline.</p>{% for scene in randomizer_recent %}<details class="drama-randomizer-history"><summary><strong>#{{scene.data.get('prompt_number')}} · {{scene.data.get('card_title')}}</strong><span>{{historical_period(save,scene.global_day)}}</span></summary><p>{{scene.data.get('body','')}}</p></details>{% else %}<p class="muted">No randomizer outcomes recorded yet.</p>{% endfor %}</section>
+{% else %}<section class="empty"><p>Open a save to use the drama randomizer.</p><a href="/p/saves">Choose a save</a></section>{% endif %}
+{% endblock %}

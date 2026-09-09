@@ -1,0 +1,12 @@
+{% from '_roll_card.html' import roll_card with context %}
+{% from '_date_badge.html' import date_badge %}
+<section class="panel u-birth" id="birth-{{birth.id}}-{{group.id}}">
+<header><p class="eyebrow">ONE DELIVERY · GD {{birth.day}}</p><h3>{{birth.title}} — birth</h3>{% if birth.mother %}<p>Mother: <a href="/sims/{{birth.mother.id}}">{{birth.mother.label}}</a></p>{% endif %}<a href="/pregnancies/{{birth.id}}">Review delivery, babies and birth details →</a></header>
+{% for check in birth.checks %}<section class="u-baby"><h4>Baby {{check.index}} · {% if check.child %}<a href="/sims/{{check.child.id}}">{{check.child.label}}</a>{% else %}Name not recorded yet{% endif %}</h4>
+{% if check.child %}<dl class="u-facts"><div><dt>Birthplace</dt><dd>{{check.child.data.get('birthplace') or 'Needs review'}}</dd></div><div><dt>Legitimacy</dt><dd>{{check.child.data.get('legitimacy') or 'Needs review'}}</dd></div><div><dt>Occult inheritance</dt><dd>{{check.child.data.get('species_occult') or 'Not recorded'}}</dd></div><div><dt>Birth date evidence</dt><dd>{{date_badge(check.child.data)}}</dd></div></dl><a href="/sims/{{check.child.id}}#edit-sim">Edit birthplace / legitimacy</a>{% endif %}
+{% for item in check.rolls %}{{roll_card(item,birth.by_id.get(item.data.get('sim_id')),board_window!='future')}}{% else %}<p class="muted">No linked checks are scheduled yet. Review the delivery and enabled rules.</p>{% endfor %}
+</section>{% endfor %}
+{% if birth.checks|length>1 %}<p class="muted">Each baby has a separate maternal check. These are legitimate checks, not duplicate obligations.</p>{% endif %}
+{% if birth.unassigned %}<h4>Checks with an unverified baby link</h4><p>Review the delivery before assigning these to a baby.</p>{% for item in birth.unassigned %}{{roll_card(item,birth.by_id.get(item.data.get('sim_id')),false)}}{% endfor %}{% endif %}
+{% for candidate in birth.pending_candidates %}<a class="button" href="{{ui_record_href(candidate)}}">Review {{candidate.label}}</a>{% endfor %}
+</section>

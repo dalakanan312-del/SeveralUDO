@@ -29,6 +29,32 @@ class User(Base):
     last_login_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class UiPreference(Base):
+    __tablename__ = "ui_preferences"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    values: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ClockReceipt(Base):
+    __tablename__ = "clock_receipts"
+    save_id: Mapped[str] = mapped_column(ForeignKey("saves.id", ondelete="CASCADE"), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ActionPreview(Base):
+    __tablename__ = "action_previews"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    save_id: Mapped[str] = mapped_column(ForeignKey("saves.id", ondelete="CASCADE"), index=True)
+    operation: Mapped[str] = mapped_column(String(20))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)

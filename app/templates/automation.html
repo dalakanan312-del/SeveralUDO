@@ -8,9 +8,11 @@
 <section><h2>Waiting for review</h2>
 {% for item in records %}{% set p=item.data.get('payload',item.data) %}{% set action=item.data.get('action','game_change') %}{% set age_est=birth_estimates.get(item.id,{}) if action=='new_sim' else {} %}{% set birth_suggestion=birth_circumstance_suggestions.get(item.id,{}) if action=='new_baby' else {} %}{% set location_suggestion=historical_location_suggestions.get(item.id,{}) %}{% set detected_hour=p.get('detected_game_hour',item.data.get('hour','')) %}{% set detected_minute=p.get('detected_game_minute',item.data.get('minute','')) %}{% set detected_second=p.get('detected_game_second',0) %}
 <article class="panel automation-review" id="candidate-{{item.id}}">
+  <a href="/records/{{item.id}}/why">Why was this detected? →</a>
   <p class="eyebrow">{{action.replace('_',' ')}} · detected GD {{item.global_day}}</p><h3>{{item.label}}</h3>
+  {% include "_automation_comparison.html" %}
   <p>{% if p.get('household_name') %}{{p.get('household_name')}} · {% endif %}{% if p.get('career') %}{{p.get('career')}} · {% endif %}{% if action=='save_portrait' %}Scheduled at this save’s ten-year milestone. Save each current household to My Library in The Sims 4 before scanning.{% else %}Detected by Clock Sync. {% if action in ['illness_detected','illness_recovered','unknown_illness'] %}The health ledger will change only after you accept the reviewed details. Dismiss permanently suppresses this detection.{% else %}Nothing below is saved until you accept it.{% endif %}{% endif %}</p>
-  <form action="/automation/{{item.id}}/accept" method="post" class="form-grid automation-review-form" data-detected-global-day="{{p.get('detected_tracker_global_day',item.global_day)}}">
+  <form action="/automation/{{item.id}}/accept" method="post" class="form-grid automation-review-form" data-ui-action="automation" data-version="{{item.version}}" data-detected-global-day="{{p.get('detected_tracker_global_day',item.global_day)}}">
   {% if action == 'save_portrait' %}
     <div class="wide notice"><strong>Save portrait for {{p.get('portrait_year')}}</strong><br><span>1. Open each active household in The Sims 4. 2. Use Save Household to My Library. 3. Return here and scan. The tracker reads the Tray folder without changing it, imports the newest exact-name Sim photos, and assembles one archival household portrait.</span></div>
     <input type="hidden" name="portrait_year" value="{{p.get('portrait_year')}}">
@@ -116,7 +118,7 @@
   {% else %}<div class="wide notice">This detector supplied no editable fields. Accepting will preserve its original details.</div>{% endif %}
     <div class="row wide"><button class="primary">{{'Scan Tray and save portraits' if action=='save_portrait' else 'Accept reviewed details'}}</button></div>
   </form>
-  <form action="/automation/{{item.id}}/dismiss" method="post" class="row"><button>Dismiss and remember</button></form>
+  <form action="/automation/{{item.id}}/dismiss" method="post" data-ui-action="automation" data-version="{{item.version}}" class="row"><button>Dismiss and remember</button></form>
   <details><summary>Technical details from the game</summary><pre>{{p|tojson(indent=2)}}</pre></details>
 </article>
 {% else %}<div class="empty"><h2>Everything is reconciled</h2><p>No game changes need your approval.</p></div>{% endfor %}</section>

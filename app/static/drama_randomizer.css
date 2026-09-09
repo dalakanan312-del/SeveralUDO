@@ -1,0 +1,20 @@
+.page-drama-randomizer .button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;white-space:normal;text-align:center}
+.drama-randomizer-controls form{align-items:end}
+.drama-randomizer-result{display:grid;grid-template-columns:92px minmax(0,1fr);gap:1.5rem;border-color:var(--gold)}
+.drama-randomizer-number{align-self:start;display:grid;gap:.15rem;text-align:center;padding:.8rem;border:1px solid var(--gold);border-radius:12px;color:var(--gold);background:var(--panel-soft)}
+.drama-randomizer-number span{font-size:.875rem;font-weight:700}
+.drama-randomizer-number strong{font-size:2.8rem;line-height:1.2;font-family:var(--theme-heading-font)}
+.drama-randomizer-content{min-width:0;overflow-wrap:anywhere}
+.drama-randomizer-content h2{font-size:1.65rem;margin:.35rem 0 .8rem}
+.drama-randomizer-content p{font-size:1rem;line-height:1.6}
+.drama-randomizer-record{display:grid;gap:1rem;margin:1.2rem 0}
+.drama-randomizer-record label{display:grid;gap:.4rem;font-size:1rem}
+.drama-randomizer-record button{justify-self:start;white-space:normal}
+.drama-randomizer-catalog summary,.drama-randomizer-history summary{cursor:pointer;min-height:44px;align-content:center;font-size:1rem}
+.drama-randomizer-catalog ol{columns:2;column-gap:3rem;padding-left:1.8rem}
+.drama-randomizer-catalog li{break-inside:avoid;padding:.45rem .3rem;font-size:1rem;line-height:1.5;overflow-wrap:anywhere}
+.drama-randomizer-history{border-top:1px solid var(--line);padding:.65rem 0}
+.drama-randomizer-history summary{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.drama-randomizer-history summary span{color:var(--muted)}
+.drama-randomizer-history p{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:600px){.drama-randomizer-result{grid-template-columns:minmax(0,1fr);gap:1rem}.drama-randomizer-number{display:flex;align-items:center;justify-content:center;gap:.8rem;justify-self:start}.drama-randomizer-number strong{font-size:2rem}.drama-randomizer-catalog ol{columns:1}.drama-randomizer-record button{width:100%}.page-drama-randomizer .section-heading{align-items:stretch;flex-direction:column}}

@@ -33,6 +33,15 @@ def _ending(ending_id: str, label: str, title: str, text: str,
 
 
 COMMON_CARDS = (
+    _card('secret-discovery', 'A secret becomes known', 'Secrets',
+        '{sim} has learned something about {counterpart}. At {household}, knowledge now carries a choice: whom to protect, whom to warn, and who else should hear the truth.', (
+        _branch('protect','Keep the knowledge private','The discoverer limits the circle of knowledge while deciding what responsibility comes with it.',(
+            _ending('promise','Promise to protect the confidence','A guarded confidence','The discoverer agrees to keep the truth within the existing circle. The household must decide how long that promise can hold.','secret','trust'),
+            _ending('confront','Speak privately to the person involved','A private reckoning','The discoverer takes the recorded secret directly to the person it concerns. They seek an explanation before deciding whether anyone else must know.','secret','confrontation'))),
+        _branch('warn','Tell the people affected','The discoverer decides that someone affected by the secret deserves to hear it, despite the cost of widening the circle.',(
+            _ending('family','Tell selected family members','The circle widens','The discoverer tells selected family members. Record exactly which Sims learned the secret in Family Projects after playing this conversation.','secret','family'),
+            _ending('public','Make the discovery public','A public revelation','The household chooses public disclosure. Play the consequences, then update the secret’s knowledge list to match who actually learned it.','secret','reputation'))),
+    )),
     _card(
         "sealed-letter", "The sealed letter", "Secrets",
         "A sealed letter reaches {sim} at {household}, carrying a request that cannot be answered in public.",

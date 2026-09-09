@@ -16,11 +16,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
-from . import domain
+from . import domain, drama_randomizer, play_support_ui, usability, usability_ui
 from . import infinite_decades, infinite_decades_ui, birth_dates
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -31,6 +31,7 @@ from .workflow import related_tasks, page_sections
 
 
 FEATURES = {
+    **play_support_ui.PAGES,
     "today": ("Today", "Today’s rolls, births, events, illnesses and scheduled deaths"),
     "automation": ("Automation Inbox", "Review births, deaths, moves and relationships detected in game"),
     "sims": ("Sims", "People, life stages, portraits and family details"),
@@ -70,6 +71,7 @@ FEATURES = {
     "dice-audit": ("Dice Audit", "Verifiable history and distribution reports"),
     "storyline": ("Storyline", "A living narrative generated from the changing save"),
     "drama": ("Drama Deck", "Optional card-based decisions for grounded household drama"),
+    "drama-randomizer": ("Drama Randomizer", "64 actionable in-game prompts and the outcomes you played"),
     "saves": ("Saves & Backups", "Create, rename, duplicate, export and restore chronicles"),
     "account": ("Account & Sharing", "Google sign-in, shared workspaces and notifications"),
     "appearance": ("Appearance", "Colors, type, spacing and motion for this save"),
@@ -79,57 +81,7 @@ FEATURES = {
 # Navigation follows the player's workflow instead of the underlying record
 # types.  Keep this as the single source of truth for the sidebar and overview
 # so every feature remains discoverable without presenting one very long list.
-NAVIGATION_GROUPS = (
-    {
-        "id": "play",
-        "label": "Play Session",
-        "description": "Today, game updates and dice",
-        "icon": "▶",
-        "pages": ("today", "automation", "clock", "rolls", "save-a-sims"),
-    },
-    {
-        "id": "family",
-        "label": "Sims & Families",
-        "description": "People, relationships and life records",
-        "icon": "♟",
-        "pages": ("sims", "households", "relationships", "pregnancies", "illnesses", "university", "family-tree", "life-records"),
-    },
-    {
-        "id": "planning",
-        "label": "Plan Ahead",
-        "description": "Rotations, heirs, homes and events",
-        "icon": "⌛",
-        "pages": ("planner", "infinite-decades", "challenge", "world", "historical-life", "events"),
-    },
-    {
-        "id": "history",
-        "label": "Story & Progress",
-        "description": "History, drama and statistics",
-        "icon": "✒",
-        "pages": ("timeline", "storyline", "drama", "notes", "statistics", "legacy-lab"),
-    },
-    {
-        "id": "challenge",
-        "label": "Rules & Add-ons",
-        "description": "Configure how the challenge works",
-        "icon": "⚖",
-        "pages": ("rules", "roll-tables", "occult-rules", "avatar", "harry-potter", "game-of-thrones"),
-    },
-    {
-        "id": "reference",
-        "label": "Guides & Tools",
-        "description": "How to play and historical references",
-        "icon": "▤",
-        "pages": ("tutorial", "guides", "historical-guidance", "names", "plants"),
-    },
-    {
-        "id": "setup",
-        "label": "Settings & Help",
-        "description": "Backups, appearance and maintenance",
-        "icon": "⚙",
-        "pages": ("saves", "sync", "appearance", "account", "health", "dice-audit", "support"),
-    },
-)
+NAVIGATION_GROUPS = usability.NAVIGATION_GROUPS
 
 
 def navigation_group_for(page: str | None):
@@ -159,7 +111,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.16")
+app = FastAPI(title="Decades Tracker", version="4.6.20")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -803,6 +755,7 @@ def context(request: Request, session, **extra):
         if active:
             request.session["save_id"] = active.id
             infinite_decades.guard_request(request, active)
+            play_support_ui.guard_scene(request,active)
             if not infinite_decades.frozen(active) and not settings.skip_startup_migrations and str((active.settings or {}).get("defaults_schema_version") or "") != domain.DEFAULTS_SCHEMA_VERSION:
                 domain.seed_defaults(session, active)
             if not infinite_decades.frozen(active) and str((active.settings or {}).get("event_catalog_version") or "") != domain.EVENT_CATALOG_VERSION:
@@ -810,7 +763,12 @@ def context(request: Request, session, **extra):
     last_roll = request.session.pop("last_roll", None)
     current_page = extra.get("page")
     visual_theme = themes.resolve((active.settings or {}).get("visual_theme") if active else None)
+    ui_preferences = usability.preferences(session,user)
+    from . import play_clarity
+    ui_clock = usability.clock_status(active,session.scalar(select(ClockLink).where(ClockLink.save_id==active.id)),ui_preferences) if active else None
     return {"request": request, "user": user, "saves": saves, "save": active,
+            "ui_preferences":ui_preferences,"ui_clock":ui_clock,"ui_query":usability.query(request,ui_preferences,active,current_page),
+            "branch_banner":play_clarity.branch_banner(session,active) if active else None,
             "save_settings": dict(active.settings or {}) if active else {},
             "infinite_meta": infinite_decades.state(active), "infinite_frozen": infinite_decades.frozen(active),
             "infinite_enabled": infinite_decades.enabled(active),
@@ -818,7 +776,7 @@ def context(request: Request, session, **extra):
             "game_edition": game_modes.for_save(active) if active else game_modes.GAME_MODES[game_modes.SIMS4],
             "game_modes": game_modes.GAME_MODES,
             "visual_theme": visual_theme,
-            "features": FEATURES, "navigation_groups": NAVIGATION_GROUPS,
+            "features": FEATURES, "navigation_groups": usability.visible_navigation(active),
             "related_tasks": related_tasks, "page_sections": page_sections,
             "navigation_group": navigation_group_for(current_page),
             "local_mode": settings.local_mode, "google_enabled": settings.google_enabled, "ads_config": settings.ads_config, "last_roll": last_roll,
@@ -1356,6 +1314,8 @@ def live_status(request: Request):
             "ok": True,
             "save_id": save.id,
             "global_day": int(save.global_day),
+            "ui_clock": ctx['ui_clock'],
+            "historical_label":historical_period(save,save.global_day),
             "clock": {
                 "enabled": bool(link and link.enabled) or bool(advance.get('sims3_saved_clock_enabled')),
                 "source": "save" if advance.get('sims3_saved_clock_enabled') else "relay",
@@ -1555,6 +1515,15 @@ def feature_page(request: Request, page: str):
         ctx = context(request, session, page=page, title=FEATURES[page][0], subtitle=FEATURES[page][1])
         if not ctx["user"]: return RedirectResponse("/", status_code=303)
         save = ctx["save"]
+        raw_params=usability.QueryParams(request.url.query)
+        if page=='today' and raw_params.get('view')!='tools' and any(key in raw_params for key in ('task','due','roll_kind','preview','roll_page')):
+            return RedirectResponse('/p/today?'+urlencode({**dict(raw_params),'view':'tools'}),status_code=303)
+        request._query_params = ctx['ui_query']
+        life_filter=request.query_params.get('living','living')
+        if life_filter not in {'all','living','dead'}:life_filter='living'
+        ctx['ui_living']=life_filter
+        if page in play_support_ui.PAGES:
+            return play_support_ui.render(request,session,ctx,templates)
         if page == "family-tree" and not save:
             return RedirectResponse("/p/saves", status_code=303)
         if infinite_decades.state(save) and page == "family-tree":
@@ -1611,30 +1580,43 @@ def feature_page(request: Request, page: str):
             added_portrait_prompt=decade_portraits.schedule_prompt(session,save)
             if added_portrait_prompt:
                 save.revision += added_portrait_prompt
+        if save and page == 'today' and request.query_params.get('view') != 'tools':
+            usability_ui.schedule(__import__(__name__,fromlist=['app']),session,save)
+            return usability_ui.render(request,session,ctx,templates)
         if save and page != "automation":
             ctx["automation_pending"] = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False),Record.data["status"].as_string()=="pending")) or 0
         kind = KIND_BY_PAGE.get(page)
         records = []
         support_rows_cache = None
         if save and kind:
-            list_page=max(1,int_or_none(request.query_params.get("list_page")) or 1);list_size=48;list_q=request.query_params.get("q","").strip();list_status=request.query_params.get("record_status","all")
+            list_page=max(1,int_or_none(request.query_params.get("list_page")) or 1);list_size=48;list_q=request.query_params.get("q","").strip();list_status=request.query_params.get("record_status","living" if page=='sims' else "all")
+            list_living=request.query_params.get('living','all' if page=='rolls' and list_status=='completed' else 'living')
+            if list_living not in {'all','living','dead'}:list_living='living'
+            ctx['list_living']=list_living
             if page=="sims":
-                # The create/edit controls need every active Sim and household
-                # anyway. Reuse that one result for the list and archive tray.
-                support_rows_cache=list(session.scalars(select(Record).where(
-                    Record.save_id==save.id,Record.kind.in_({"sim","household"}),
-                )))
-                listed=[item for item in support_rows_cache if item.kind=="sim" and not item.deleted]
-                if list_q: listed=[item for item in listed if list_q.casefold() in item.label.casefold()]
-                if list_status == "living": listed=[item for item in listed if _living_sim(item, save)]
-                elif list_status == "dead": listed=[item for item in listed if sim_is_deceased(item, save)]
-                listed = sims_by_birthdate(listed, save)
-                record_count=len(listed);list_pages=max(1,(record_count+list_size-1)//list_size);list_page=min(list_page,list_pages)
-                records=listed[(list_page-1)*list_size:list_page*list_size]
+                conditions=[Record.save_id==save.id,Record.kind=='sim',Record.deleted.is_(False)]
+                if list_q:conditions.append(Record.label.ilike(f'%{list_q}%'))
+                if list_status=='living':conditions.append(usability.living_sql(save))
+                elif list_status=='dead':conditions.append(or_(Record.data['death_global_day'].as_integer()<=save.global_day,Record.data['death_confirmed'].as_boolean().is_(True),Record.data['game_was_dead'].as_boolean().is_(True)))
+                birth_order=func.coalesce(Record.data['birth_global_day'].as_integer(),(Record.data['birth_year'].as_integer()-save.start_year)*save.days_per_year+1)
+                sort=request.query_params.get('sort','birth')
+                ordering=(func.lower(Record.label),Record.id) if sort=='name' else ((birth_order.desc() if sort=='birth-newest' else birth_order.asc()).nullslast(),func.lower(Record.label),Record.id)
+                record_count=session.scalar(select(func.count()).select_from(Record).where(*conditions)) or 0
+                list_pages=max(1,(record_count+list_size-1)//list_size);list_page=min(list_page,list_pages)
+                records=list(session.scalars(select(Record).where(*conditions).order_by(*ordering).offset((list_page-1)*list_size).limit(list_size)))
             else:
                 conditions=[Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(False)]
                 if list_q: conditions.append(Record.label.ilike(f"%{list_q}%"))
-                if page=="automation": conditions.append(Record.data["status"].as_string()=="pending")
+                if page=="automation":
+                    conditions.append(Record.data["status"].as_string()=="pending")
+                    quality=request.query_params.get('review_quality','all')
+                    ctx['review_filter']=quality
+                    if quality=='confirmed':conditions.append(usability.confirmed_sql())
+                    elif quality=='suggestion':conditions.append(usability.confirmed_sql().is_not(True))
+                if page in {'pregnancies','illnesses','rolls','relationships'} and list_living!='all':
+                    if page=='relationships':
+                        conditions.append(or_(usability.related_living_sql(save,'partner1_id',list_living),usability.related_living_sql(save,'partner2_id',list_living)))
+                    else:conditions.append(usability.related_living_sql(save,'mother_id' if page=='pregnancies' else 'sim_id',list_living))
                 if page=="rolls" and list_status in {"pending","completed"}: conditions.append(Record.data["completed"].as_boolean().is_(list_status=="completed"))
                 if page=="rolls":
                     hidden_event_ids=hidden_event_ids_for(session,save.id)
@@ -1668,6 +1650,7 @@ def feature_page(request: Request, page: str):
             "harry-potter":{"sim","household","addon_rule"},
             "game-of-thrones":{"sim","household","addon_rule"},
             "drama":{"sim","household","relationship","game_history","drama_scene"},
+            "drama-randomizer":{"sim","household"},
         }.get(page)
         if save and view_kinds:
             view_records = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind.in_(view_kinds),Record.deleted.is_(False))))
@@ -1694,7 +1677,9 @@ def feature_page(request: Request, page: str):
                 Record.save_id == save.id, Record.kind == "illness_signature", Record.deleted.is_(False),
             ).order_by(Record.label)))
         if page == "university" and save:
-            ctx["university"] = university.dashboard(view_records, save)
+            eligible={row.id for row in view_records if row.kind=='sim' and (life_filter=='all' or (_living_sim(row,save) if life_filter=='living' else sim_is_deceased(row,save)))}
+            education_rows=[row for row in view_records if (row.kind!='sim' or row.id in eligible) and (not row.data.get('sim_id') or row.data.get('sim_id') in eligible)]
+            ctx["university"] = university.dashboard(education_rows, save)
             ctx["university_performance_band"] = university.performance_band
             ctx["university_notice"] = request.session.pop("university_notice", None)
         if page == "households" and save:
@@ -1707,6 +1692,11 @@ def feature_page(request: Request, page: str):
             # detailed ledger without a second lookup or client-side state.
             for index, entry in enumerate(timeline_entries):
                 entry["anchor"] = f"timeline-entry-{index}"
+            timeline_by_id={row.id:row for row in view_records}
+            for entry in timeline_entries:
+                if entry['kind'] in {'birth','death','relationship'}:
+                    source=timeline_by_id.get(entry.get('record_id'))
+                    if source:entry['date_certainty']=usability.date_certainty(source.data,'marriage' if entry['kind']=='relationship' else entry['kind'])
             ctx.update(timeline_entries=timeline_entries,
                        timeline_kinds=sorted({item.kind for item in view_records if item.global_day is not None}), selected_timeline_kinds=requested_kinds,
                        timeline_start=start_year, timeline_end=end_year, timeline_query=request.query_params.get("q", ""),timeline_overview=insights.timeline_overview(view_records,save),
@@ -2176,6 +2166,23 @@ def feature_page(request: Request, page: str):
             ctx["story"] = story_data
             ctx["all_sims"] = sorted(story_data.get("all_sims") or [],key=lambda item:item.label.casefold())
             ctx["storyline_notice"] = request.session.pop("storyline_notice", None)
+        if page == "drama-randomizer" and save:
+            try:
+                drawn = drama_randomizer.resolve(save, request.session.get('drama_randomizer'))
+            except ValueError:
+                drawn = None
+            ctx.update(
+                randomizer_state=drawn, randomizer_prompts=drama_randomizer.PROMPTS,
+                randomizer_notice=request.session.pop('randomizer_notice', None),
+                randomizer_record=session.get(Record, drama_randomizer.record_id(drawn)) if drawn else None,
+                all_sims=sorted_sims((r for r in view_records if r.kind=='sim' and _living_sim(r,save)),save),
+                all_households=sorted((r for r in view_records if r.kind=='household'),key=lambda r:r.label.casefold()),
+                randomizer_recent=list(session.scalars(select(Record).where(
+                    Record.save_id==save.id, Record.kind=='drama_scene', Record.deleted.is_(False),
+                    Record.data['source'].as_string()=='Drama Randomizer',
+                ).order_by(Record.global_day.desc(),Record.created_at.desc()).limit(12))),
+            )
+            records=[]
         if page == "drama" and save:
             drama_rows = view_records or []
             drama_sims = sorted_sims((item for item in drama_rows if item.kind == "sim" and _living_sim(item, save)), save)
@@ -2188,6 +2195,7 @@ def feature_page(request: Request, page: str):
                 drama_objectives=drama.OBJECTIVES,
                 drama_state=drama_state,
                 drama_notice=request.session.pop("drama_notice", None),
+                drama_discovery=play_support_ui.discovery(request,session,save),
                 all_sims=drama_sims,
                 all_households=drama_households,
                 drama_recent=sorted((item for item in drama_rows if item.kind == "drama_scene"), key=lambda item: (item.global_day or 0, item.updated_at), reverse=True)[:12],
@@ -2298,9 +2306,7 @@ def feature_page(request: Request, page: str):
                        selected_match_roll=selected_match_roll,match_candidates=match_candidates,
                        kinship_depth=kinship_depth,generated_marriage_rolls=generated_marriage_rolls)
         if save and page in {"sims", "relationships", "households", "pregnancies", "university", "illnesses", "automation", "rolls"}:
-            support_rows=support_rows_cache if support_rows_cache is not None else list(session.scalars(select(Record).where(
-                Record.save_id==save.id,Record.kind.in_({"sim","household"}),Record.deleted.is_(False),
-            )))
+            support_rows=usability.people_picker(session,save)+list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=='household',Record.deleted.is_(False))))
             ctx["all_sims"] = sorted_sims((item for item in support_rows if item.kind=="sim" and not item.deleted), save)
             ctx["all_households"] = sorted((item for item in support_rows if item.kind=="household" and not item.deleted),key=lambda item:item.label.casefold())
             ctx["deceased_sim_ids"] = {item.id for item in ctx["all_sims"] if sim_status(item,save)=="Deceased"}
@@ -2315,6 +2321,13 @@ def feature_page(request: Request, page: str):
             if page=="sims":
                 ctx["name_cultures"]=names.library_names(session,save.id,include_recorded=bool(ctx["all_sims"]))
         ctx.update(records=records, kind=kind, portrait_status=portraits.provider_status())
+        if page in {'university','planner','avatar','harry-potter','game-of-thrones','occult-rules'} and life_filter!='all':
+            ctx['all_sims']=[row for row in ctx.get('all_sims',[]) if (_living_sim(row,save) if life_filter=='living' else sim_is_deceased(row,save))]
+            if page=='planner':ctx['family_plan_analysis']=[row for row in ctx.get('family_plan_analysis',[]) if not row.get('sim') or (_living_sim(row['sim'],save) if life_filter=='living' else sim_is_deceased(row['sim'],save))]
+        if page=='automation':
+            target_ids={str(value) for item in records for key,value in (item.data.get('payload') or {}).items() if key.endswith('_id') and isinstance(value,(str,int))}
+            target_ids.update(str(item.data.get('sim_id') or '') for item in records)
+            ctx['review_by_id']={row.id:row for row in session.scalars(select(Record).where(Record.save_id==save.id,Record.id.in_(target_ids)))}
         dedicated = {
             "today":"today.html", "sims":"sims.html", "relationships":"relationships.html", "households":"households.html",
             "pregnancies":"pregnancies.html", "university":"university.html", "illnesses":"illnesses.html", "automation":"automation.html", "storyline":"storyline.html",
@@ -2322,7 +2335,7 @@ def feature_page(request: Request, page: str):
             "plants":"plants.html", "events":"events.html", "notes":"notes.html", "rules":"rules.html", "roll-tables":"roll_tables.html", "occult-rules":"occult_rules.html", "historical-guidance":"historical_guidance.html", "planner":"planner.html", "avatar":"avatar.html", "harry-potter":"harry_potter.html", "game-of-thrones":"game_of_thrones.html",
             "challenge":"challenge.html", "tutorial":"tutorial.html", "guides":"guides.html", "names":"names.html", "saves":"saves.html", "support":"support.html",
             "world":"world.html", "legacy-lab":"legacy_lab.html", "historical-life":"historical_life.html", "life-records":"life-records.html",
-            "clock":"clock.html", "sync":"sync.html", "account":"account.html", "appearance":"appearance.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html", "save-a-sims":"save_a_sims.html", "drama":"drama.html",
+            "clock":"clock.html", "sync":"sync.html", "account":"account.html", "appearance":"appearance.html", "dice-audit":"dice_audit.html", "rolls":"rolls.html", "save-a-sims":"save_a_sims.html", "drama":"drama.html", "drama-randomizer":"drama_randomizer.html",
         }
         return templates.TemplateResponse(request, "clock_sims3.html" if page == "clock" and ctx.get("clock_game_mode", {}).get("id") == game_modes.SIMS3 else dedicated.get(page, "feature.html"), ctx)
 
@@ -2376,8 +2389,80 @@ def _drama_people(session, save: ChronicleSave) -> tuple[list[Record], list[Reco
     return [item for item in rows if item.kind == "sim" and _living_sim(item, save)], [item for item in rows if item.kind == "household"]
 
 
+def _randomizer_save(request, session, save_id):
+    save = context(request, session).get('save')
+    if not save or save.id != save_id:
+        raise HTTPException(409, 'The active save changed. Refresh before drawing or recording drama.')
+    if infinite_decades.frozen(save):
+        raise HTTPException(409, 'Paused or completed dynasty history cannot be changed.')
+    return save
+
+
+@app.post('/drama-randomizer/draw')
+def draw_gameplay_drama(request: Request, save_id: str = Form(...), sim_id: str = Form(''), household_id: str = Form('')):
+    with db() as session:
+        save = _randomizer_save(request, session, save_id)
+        sims, households = _drama_people(session, save)
+        sim = next((r for r in sims if r.id==sim_id), None)
+        if sim_id and not sim: raise HTTPException(400, 'Choose a living Sim from this save.')
+        explicit_household = bool(household_id)
+        if not household_id and sim: household_id = str((sim.data or {}).get('current_household_id') or '')
+        household = next((r for r in households if r.id==household_id), None)
+        if explicit_household and not household: raise HTTPException(400, 'Choose a household from this save.')
+        request.session['drama_randomizer'] = drama_randomizer.draw(save, sim, household)
+        request.session.pop('randomizer_notice', None)
+    return RedirectResponse('/p/drama-randomizer', 303)
+
+
+def _randomizer_draw(request, save, draw_id):
+    try:
+        state = drama_randomizer.resolve(save, request.session.get('drama_randomizer'))
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    if state['draw_id'] != draw_id:
+        raise HTTPException(409, 'A newer prompt was drawn. Refresh to use the current card.')
+    return state
+
+
+@app.post('/drama-randomizer/record')
+def record_gameplay_drama(request: Request, save_id: str = Form(...), draw_id: str = Form(...), global_day: int = Form(...), notes: str = Form(...)):
+    with db() as session:
+        save = _randomizer_save(request, session, save_id)
+        state = _randomizer_draw(request, save, draw_id)
+        notes = notes.strip()
+        if not notes or len(notes)>4000: raise HTTPException(400, 'Describe the actual outcome in 1–4,000 characters.')
+        first_day = max(0, int(infinite_decades.state(save).get('split_global_day') or 0))
+        if global_day<first_day or global_day>save.global_day:
+            raise HTTPException(400, f'Choose a day from GD {first_day} through today, GD {save.global_day}.')
+        identity = drama_randomizer.record_id(state)
+        if not session.get(Record, identity):
+            record = Record(id=identity, save_id=save.id, kind='drama_scene', label=state['prompt']['title'],
+                            global_day=global_day, data=drama_randomizer.outcome_data(state, notes))
+            try:
+                with session.begin_nested():
+                    session.add(record); session.flush(); domain.journal(session,record,'upsert',0)
+                save.revision+=1
+            except IntegrityError:
+                # A simultaneous second confirmation may have inserted this draw.
+                existing = session.get(Record, identity)
+                if not existing or existing.save_id!=save.id or existing.kind!='drama_scene': raise
+        request.session['randomizer_notice'] = 'Outcome recorded in Storyline. Other tracker records and your game are unchanged.'
+    return RedirectResponse('/p/drama-randomizer', 303)
+
+
+@app.post('/drama-randomizer/discard')
+def discard_gameplay_drama(request: Request, save_id: str = Form(...), draw_id: str = Form(...)):
+    with db() as session:
+        save = _randomizer_save(request, session, save_id)
+        _randomizer_draw(request, save, draw_id)
+        request.session.pop('drama_randomizer', None)
+        request.session['randomizer_notice'] = 'Card cleared. Any previously recorded outcome is still in Storyline.'
+    return RedirectResponse('/p/drama-randomizer', 303)
+
+
 @app.post("/drama/draw")
 def draw_drama_card(request: Request, deck_id: str = Form("auto"), sim_id: str = Form(""), household_id: str = Form(""), counterpart_sim_id: str = Form(""), objective: str = Form("repair")):
+    request.session.pop('drama_discovery',None)
     with db() as session:
         ctx = context(request, session); save = ctx.get("save")
         if not save: raise HTTPException(400, "Open a save first.")
@@ -2471,16 +2556,23 @@ def record_drama_scene(request: Request):
         if not resolved or not resolved.get("ending"):
             raise HTTPException(400, "Finish both decisions before recording the scene.")
         data = drama.scene_data(resolved)
+        discovery=play_support_ui.discovery(request,session,save)
+        if discovery:
+            data['discovery_record_id']=discovery['record_id']
+            data['opening']='Recorded discovery: '+discovery['label']+'. '+discovery['notes']+' '+data['opening']
+            data['body']='Recorded discovery: '+discovery['label']+'. '+discovery['notes']+' '+data['body']
         label = f"{data['sim_name']} — {resolved['ending']['title']}" if data.get("sim_name") else resolved["ending"]["title"]
         record = Record(save_id=save.id, kind="drama_scene", label=label, global_day=save.global_day, data=data)
         session.add(record); session.flush(); domain.journal(session, record, "upsert", 0); save.revision += 1
         request.session.pop("drama_state", None)
+        request.session.pop('drama_discovery',None)
         request.session["drama_notice"] = f"Recorded “{label}” in the chronicle. It did not change any Sim, relationship, or rule."
     return RedirectResponse("/p/drama", status_code=303)
 
 
 @app.post("/drama/discard")
 def discard_drama_scene(request: Request):
+    request.session.pop('drama_discovery',None)
     request.session.pop("drama_state", None)
     request.session["drama_notice"] = "The unfinished scene was set aside; no record was created."
     return RedirectResponse("/p/drama", status_code=303)
@@ -2583,6 +2675,8 @@ def sim_profile(request: Request, sim_id: str):
         delete_impact=domain.sim_delete_impact(session,sim) if request.query_params.get("delete")=="1" else None
         name_history={"surname_at_birth":domain.surname_at_birth(sim),"married_surname":domain.married_surname(sim)}
         ctx = context(request, session, sim=sim, name_history=name_history, hogwarts_profile_theme=hogwarts_profile_theme(save,sim), all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, partner_relationship_rows=partner_relationship_rows, other_relationship_rows=other_relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,university_profile=university_profile,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,catchup_roll_count=catchup_roll_count,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
+        from .play_clarity import life_schedule
+        ctx['life_schedule']=life_schedule(session,save,sim)
         return templates.TemplateResponse(request, "sim_profile.html", ctx)
 
 
@@ -3105,12 +3199,14 @@ def dismiss_automation(request: Request, candidate_id: str):
         item=session.get(Record,candidate_id)
         if not item or item.kind!="game_candidate" or str((item.data or {}).get("status") or "pending")!="pending": raise HTTPException(404)
         save=owned_save(request,session,item.save_id);action=str((item.data or {}).get("action") or "")
+        usability_ui.guard_action(request,save,item)
         _dismiss_automation_candidate(session,save,item)
         request.session["automation_notice"]=(
             "Dismissed and remembered. No illness record was added."
             if action in {"illness_detected","unknown_illness"}
-            else "Dismissed. The tracker left your records unchanged."
+            else "Dismissed and remembered. The tracker left your records unchanged."
         )
+        if request.headers.get('X-Decades-Fragment'): return JSONResponse({'ok':True,'kind':'automation','id':item.id,'save_id':save.id,'status':'dismissed','message':'Dismissed and remembered. No proposed change was applied.'})
     return RedirectResponse("/p/automation",status_code=303)
 
 
@@ -3227,7 +3323,11 @@ async def accept_automation(request: Request, candidate_id: str):
         item=session.get(Record,candidate_id)
         if not item or item.kind!="game_candidate" or item.data.get("status")!="pending": raise HTTPException(404)
         save=owned_save(request,session,item.save_id);action=item.data.get("action");payload=item.data.get("payload") or item.data;sim=session.get(Record,item.data.get("sim_id")) if item.data.get("sim_id") else None;resolved_record=sim
+        usability_ui.guard_action(request,save,item)
         accept_change_floor=session.scalar(select(func.max(Change.sequence))) or 0
+        session.info['play_accepted_detection']={'save_id':save.id,'detection_id':item.id,
+            'report':(item.data.get('why_evidence') or {}).get('report'),
+            'reviewed_at_utc':datetime.now(timezone.utc).isoformat()}
         def value(name, default=""):
             return form.get(name) if name in form else payload.get(name, default)
         def checked(name, default=True):
@@ -3566,6 +3666,7 @@ async def accept_automation(request: Request, candidate_id: str):
         base=item.version;item.data={**item.data,"status":"accepted","accepted_global_day":save.global_day,
                                     "reviewed_details":reviewed,"resolved_record_id":resolved_record.id if resolved_record else None,
                                     "undo_targets":undo_targets};item.version+=1;domain.journal(session,item,"upsert",base);save.revision+=2
+        if request.headers.get('X-Decades-Fragment'): return JSONResponse({'ok':True,'kind':'automation','id':item.id,'save_id':save.id,'status':'accepted','message':'Accepted reviewed changes.'})
     return RedirectResponse("/p/automation",status_code=303)
 
 
@@ -3945,55 +4046,22 @@ def use_game_university_performance(request: Request, term_id: str):
 
 @app.post("/settings")
 async def update_settings(request: Request):
+    from . import action_previews
     form=await request.form()
     with db() as session:
-        ctx=context(request,session);save=ctx["save"]
-        if not save: raise HTTPException(400)
-        prior_days_per_year = max(1, int(save.days_per_year))
-        save.name=str(form.get("name") or save.name).strip();save.start_year=max(-9999,min(9999,int_or_none(form.get("start_year")) or save.start_year))
-        save.days_per_year=max(1,min(365,int_or_none(form.get("days_per_year")) or save.days_per_year));save.pregnancy_days=max(1,min(100,int_or_none(form.get("pregnancy_days")) or save.pregnancy_days))
-        settings_data=dict(save.settings or {})
-        for key in ("challenge_location","default_species","succession_system","succession_root_id","sim_menu_order"):
-            if key in form: settings_data[key]=str(form.get(key) or "").strip()
-        for key in ("roll_tracking_start_day","try_for_baby_daily_limit","delivery_day_limit","elder_min_age_days","elder_max_age_days","marriage_min_age_days","inheritance_rule_cutoff_year","free_save_a_sims","full_moon_anchor_global_day","full_moon_interval_days","kinship_detection_generations"):
-            if key in form and int_or_none(form.get(key)) is not None: settings_data[key]=int_or_none(form.get(key))
-        settings_scope=str(form.get("settings_scope") or ("succession" if str(form.get("return_to") or "").startswith("/p/challenge") else "rules"))
-        if settings_scope=="succession":
-            settings_data["succession_require_legitimate"]="succession_require_legitimate" in form
-        elif settings_scope=="rules" and "sim_menu_order" not in form:
-            for key in ("maternal_rolls_enabled","automatic_death_causes","automatic_birth_circumstances"):
-                settings_data[key]=key in form
-        save.settings=settings_data
-        calendar_changes = domain.rescale_age_timing(session, save, prior_days_per_year, save.days_per_year)
-        save.revision += 1 + sum(calendar_changes.values())
-        domain.schedule_rolls(session,save)
-        if prior_days_per_year != save.days_per_year:
-            request.session["rules_notice"] = (
-                f"Calendar updated from {prior_days_per_year} to {save.days_per_year} days per year. "
-                f"Rescaled {calendar_changes['rules']} age-linked rule entries, "
-                f"{calendar_changes['rolls']} future age-based rolls, and "
-                f"{calendar_changes['settings']} age settings. Completed history was left unchanged."
-            )
-    return RedirectResponse(str(form.get("return_to") or "/p/rules"),status_code=303)
+        ctx=context(request,session);save=ctx['save']
+        if not save:raise HTTPException(400)
+        return action_previews.response(__import__(__name__,fromlist=['app']),request,session,save,form,'settings')
 
 
 @app.post("/api/rule-packs")
 async def update_rule_packs(request: Request):
-    form=await request.form();allowed={pack["id"] for pack in advanced.RULE_PACKS};raw_selected=list(form.getlist("rule_pack"));selected=[value for value in raw_selected if value in allowed]
-    legacy_core=core_rulesets.MORBID if "morbidgamer" in raw_selected else core_rulesets.SEVERALUDO if "severaludo" in raw_selected else ""
-    chosen_core=str(form.get("core_ruleset") or legacy_core or core_rulesets.SEVERALUDO)
-    if chosen_core not in core_rulesets.CORE_IDS: chosen_core=core_rulesets.SEVERALUDO
+    from . import action_previews
+    form=await request.form()
     with db() as session:
-        ctx=context(request,session);save=ctx.get("save")
-        if not save: raise HTTPException(400,"Open a save first.")
-        values=dict(save.settings or {});values["selected_rule_packs"]=(raw_selected if legacy_core else selected);values["core_ruleset_id"]=chosen_core;values["rule_pack_selection_version"]=3;save.settings=values
-        save.revision+=1+core_rulesets.sync_rules(session,save)+avatar_rules.sync_pack(session,save,selected)+harry_potter_rules.sync_pack(session,save,selected)+harry_potter_rules.sync_canon_events(session,save,selected)+game_of_thrones_rules.sync_pack(session,save,selected)
-        save.revision+=domain.retire_inactive_core_rolls(session,save)
-        domain.schedule_rolls(session,save)
-        if avatar_rules.PACK_ID in selected: request.session["avatar_notice"]="Avatar Decades is installed. Recommended modules are on; optional and canon-only modules remain off until you enable them."
-        if harry_potter_rules.PACK_ID in selected: request.session["hp_notice"]="Harry Potter Decades is installed. Recommended modules and canon events are on; optional modules, expanded history, and recurring event tables remain off until you enable them."
-        if game_of_thrones_rules.PACK_ID in selected: request.session["got_notice"]="Game of Thrones Decades is installed. Recommended modules are on; optional, supernatural, and timeline tables remain off until you enable them."
-    return RedirectResponse("/",status_code=303)
+        ctx=context(request,session);save=ctx['save']
+        if not save:raise HTTPException(400)
+        return action_previews.response(__import__(__name__,fromlist=['app']),request,session,save,form,'packs')
 
 
 @app.post("/api/avatar/modules/{code}")
@@ -4764,55 +4832,24 @@ def spend_save_a_sim(request: Request, sim_id: str = Form(...), reason: str = Fo
 
 @app.post("/api/rolls/{roll_id}/complete")
 def complete_roll(request: Request, roll_id: str, actual: int = Form(...), outcome: str = Form("")):
+    from . import action_previews
     with db() as session:
-        roll = session.get(Record, roll_id)
-        if not roll: raise HTTPException(404)
-        save = owned_save(request, session, roll.save_id)
-        related=[roll];sim=session.get(Record,roll.data.get("sim_id")) if roll.data.get("sim_id") else None
-        if sim:
-            related.append(sim)
-            related.extend(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="illness",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))
-            related.extend(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))
-            if bool((roll.data or {}).get("pregnancy_count_roll")):
-                related.extend(session.scalars(select(Record).where(
-                    Record.save_id==save.id,Record.kind=="family_plan",Record.deleted.is_(False),
-                    Record.data["source_pregnancy_roll_id"].as_string()==roll.id,
-                )))
-        set_today_undo(request,f"Completed {roll.label}",related);result=domain.complete_roll(session,save,roll,actual,outcome)
-        delete_ids=[]
-        if result.get("death_created"): delete_ids.append(result["death"]["id"])
-        if result.get("family_plan_created") and result.get("family_plan"): delete_ids.append(result["family_plan"]["id"])
-        if delete_ids: request.session["today_undo"]["delete_ids"]=delete_ids
-        request.session["last_roll"] = {
-            "number": actual, "die": roll.data.get("die") or "die", "roll": roll.label,
-            "outcome": result["outcome"], "failed": result["outcome"] == "Failed",
-        }
-    return RedirectResponse(request.headers.get("referer") or "/p/today", status_code=303)
+        roll=session.get(Record,roll_id)
+        if not roll or roll.kind!='roll' or roll.deleted:raise HTTPException(404)
+        if roll.data.get('completed'):raise HTTPException(409,'That roll is already complete.')
+        save=owned_save(request,session,roll.save_id);usability_ui.guard_action(request,save,roll)
+        return action_previews.response(__import__(__name__,fromlist=['app']),request,session,save,{'actual':actual,'outcome':outcome,'return_to':request.headers.get('referer','/p/today').removeprefix(str(request.base_url).rstrip('/'))},'roll',roll)
 
 
 @app.post("/api/rolls/{roll_id}/roll")
 def roll_and_complete(request: Request, roll_id: str):
-    """Roll the record's configured die, audit it, and save its outcome."""
+    from . import action_previews
     with db() as session:
-        roll = session.get(Record, roll_id)
-        if not roll or roll.kind != "roll" or roll.deleted: raise HTTPException(404)
-        save = owned_save(request, session, roll.save_id)
-        if bool((roll.data or {}).get("completed")): raise HTTPException(409, "That roll is already complete.")
-        notation, die_label = dice.notation_for_roll(roll.data.get("die"), roll.data.get("bad_results"))
-        related=[roll];sim=session.get(Record,roll.data.get("sim_id")) if roll.data.get("sim_id") else None
-        if sim:
-            related.append(sim)
-            related.extend(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="illness",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))
-            related.extend(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["sim_id"].as_string()==sim.id)))
-        audit = dice.audited_roll(session, notation, save.id, "roll", roll.id)
-        set_today_undo(request,f"Completed {roll.label}",related);result=domain.complete_roll(session, save, roll, audit.total)
-        if result.get("death_created"): request.session["today_undo"]["delete_ids"]=[result["death"]["id"]]
-        request.session["last_roll"] = {
-            "number": audit.total, "die": die_label, "roll": roll.label,
-            "outcome": roll.data.get("outcome", "Completed"),
-            "failed": roll.data.get("outcome") == "Failed",
-        }
-    return RedirectResponse(request.headers.get("referer") or "/p/today", status_code=303)
+        roll=session.get(Record,roll_id)
+        if not roll or roll.kind!='roll' or roll.deleted:raise HTTPException(404)
+        if roll.data.get('completed'):raise HTTPException(409,'That roll is already complete.')
+        save=owned_save(request,session,roll.save_id);usability_ui.guard_action(request,save,roll)
+        return action_previews.response(__import__(__name__,fromlist=['app']),request,session,save,{'return_to':request.headers.get('referer','/p/today').removeprefix(str(request.base_url).rstrip('/'))},'roll',roll,True)
 
 
 @app.post("/api/rolls/{roll_id}/reopen")
@@ -5432,3 +5469,9 @@ def health():
         payload["status"] = "database-unavailable"
         return JSONResponse(payload, status_code=503)
     return payload
+
+
+play_support_ui.register(app,db,context,templates)
+usability_ui.register(__import__(__name__,fromlist=['app']))
+from . import action_previews
+action_previews.register(__import__(__name__,fromlist=['app']))

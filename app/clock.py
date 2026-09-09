@@ -1092,6 +1092,11 @@ def _reconcile_population_manifest(session: Session, save: ChronicleSave, report
     return changed
 
 
+from .why import with_report
+from .play_clarity import receipt_summary
+
+@with_report
+@receipt_summary
 def receive(session: Session, link: ClockLink, report: dict) -> dict:
     save = session.get(ChronicleSave, link.save_id)
     from . import infinite_decades
@@ -1145,6 +1150,10 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     if settings_data.get("clock_game_day_high_watermark") != new_high_watermark:
         settings_data["clock_game_day_high_watermark"] = new_high_watermark
         save.settings = settings_data
+    pause_value=report.get('game_paused')
+    observation={'game_paused':pause_value if isinstance(pause_value,bool) else None}
+    if (save.settings or {}).get('clock_ui_observation')!=observation:
+        save.settings={**(save.settings or {}),'clock_ui_observation':observation}
     if not automation_enabled(save):
         # Keep the private link healthy while paused, but make the current game
         # time the next safe anchor so resuming cannot create a catch-up burst.
@@ -1197,6 +1206,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     link.last_seen_at = datetime.now(timezone.utc)
     candidates = []; illnesses_created = illnesses_ended = portrait_updates = 0; journal_entries = []
     roll_inputs_changed = False
+    profile_updates = 0
     members = list(report.get("household_members", report.get("household_sims", [])) or [])
 
     # Sims 3 reports town-wide conditions once per snapshot. Apply the shared
@@ -1327,6 +1337,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             if _store_game_portrait(session, save, existing, enriched):
                 portrait_updates += 1
             changes = automation.reconcile_sim(session, save, existing, enriched)
+            if enriched.get('_history_entries'):profile_updates += 1
             roll_inputs_changed = roll_inputs_changed or bool(enriched.get("_roll_inputs_changed"))
             for item in changes:
                 notifications.candidate_event(session, save, item)
@@ -1396,6 +1407,8 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         "status": "ok", "ok": True, "tracker_global_day": save.global_day,
         "game_time": {"day": game_day, "hour": hour, "minute": minute, "second": second},
         "new_candidates": len(candidates),
+        "candidate_types": [item.data.get('action', 'update') for item in candidates],
+        "profile_updates": profile_updates,
         "illnesses_created": illnesses_created, "illnesses_ended": illnesses_ended,
         "event_results_created": event_results, "rolls_created": rolls_created,
         "households_created": households_created, "households_updated": households_updated,

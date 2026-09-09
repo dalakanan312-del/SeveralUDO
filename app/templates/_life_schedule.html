@@ -1,0 +1,4 @@
+<section class="panel" id="life-stage-schedule"><h2>Life-stage schedule</h2><p class="muted">Calculated from this Sim's recorded birth day and the enabled aging tables. Completed results retain their original dates.</p>
+<div class="u-table-wrap"><table><thead><tr><th>Stage</th><th>Expected Global Day</th><th>Roll status</th></tr></thead><tbody>
+{% for stage in life_schedule %}<tr class="{{'u-current-stage' if stage.current else ''}} {{'u-next-stage' if stage.next else ''}}"><th>{{stage.stage}}{% if stage.current %} · Current{% endif %}{% if stage.next %} · Next birthday{% endif %}</th><td>GD {{stage.day}} <small>(birth + {{stage.offset}} days)</small></td><td>{{stage.status}}</td></tr>{% else %}<tr><td colspan="3">Record a birth day and enable aging tables to calculate this schedule.</td></tr>{% endfor %}
+</tbody></table></div></section>

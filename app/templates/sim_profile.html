@@ -6,10 +6,12 @@
   <span><small>{{relationship}}</small><strong>{{person.label}}</strong><em>{{person.data.get('sim_number') or 'Open profile'}}</em></span>
 </a>
 {% endmacro %}
+{% from "_date_badge.html" import date_badge %}
 {% block body %}
 {% set deceased=sim_status(sim,save)=='Deceased' %}
 <div class="sim-profile-shell {% if hogwarts_profile_theme %}hogwarts-profile {{hogwarts_profile_theme.css_class}}{% endif %}"{% if hogwarts_profile_theme %} data-hogwarts-house="{{hogwarts_profile_theme.label|lower}}"{% endif %}>
 <a class="profile-back" href="/p/sims">← All Sims</a>
+<a class="profile-back" href="/records/{{sim.id}}/why">Why / recorded game evidence</a>
 
 <header class="sim-dossier-hero {{'is-deceased' if deceased else 'is-living'}}">
   <div class="dossier-portrait {{'deceased-portrait' if deceased else ''}}">
@@ -28,8 +30,8 @@
       {% if hogwarts_profile_theme %}<span class="hogwarts-house-chip">{{hogwarts_profile_theme.symbol}} {{hogwarts_profile_theme.label}} · Hogwarts</span>{% endif %}
     </div>
     <div class="vital-line">
-      <div><small>Born</small><strong>{{sim_birth_display(save,sim)}}{% if sim.data.get('birth_time') %} · {{sim.data.get('birth_time')}}{% endif %}</strong><span>{% if sim.data.get('birth_year_only') %}Estimated Global Day {{sim.data.get('birth_global_day','unknown')}} for scheduling{% else %}Global Day {{sim.data.get('birth_global_day','unknown')}}{% endif %}</span></div>
-      {% if sim.data.get('death_global_day') is not none %}<div class="death-vital"><small>{{'Scheduled death' if sim.data.get('death_global_day') > save.global_day else 'Died'}}</small><strong>{{sim_death_display(save,sim)}}{% if sim.data.get('death_time') %} · {{sim.data.get('death_time')}}{% endif %}</strong><span>Global Day {{sim.data.get('death_global_day')}}{% if sim.data.get('cause_of_death') %} · {{sim.data.get('cause_of_death')}}{% endif %}</span></div>{% endif %}
+      <div><small>Born</small><strong>{{sim_birth_display(save,sim)}}{% if sim.data.get('birth_time') %} · {{sim.data.get('birth_time')}}{% endif %}</strong>{{date_badge(sim.data,"birth")}}<span>{% if sim.data.get('birth_year_only') %}Estimated Global Day {{sim.data.get('birth_global_day','unknown')}} for scheduling{% else %}Global Day {{sim.data.get('birth_global_day','unknown')}}{% endif %}</span></div>
+      {% if sim.data.get('death_global_day') is not none %}<div class="death-vital"><small>{{'Scheduled death' if sim.data.get('death_global_day') > save.global_day else 'Died'}}</small><strong>{{sim_death_display(save,sim)}}{% if sim.data.get('death_time') %} · {{sim.data.get('death_time')}}{% endif %}</strong>{{date_badge(sim.data,"death")}}<span>Global Day {{sim.data.get('death_global_day')}}{% if sim.data.get('cause_of_death') %} · {{sim.data.get('cause_of_death')}}{% endif %}</span></div>{% endif %}
     </div>
     <div class="profile-actions">
       {% if sim.data.get('birth_time_randomized') %}<p class="muted">Birth time was randomized within the recorded Global Day because the exact time was unknown. You can replace it under Edit profile.</p>{% endif %}
@@ -40,6 +42,7 @@
     </div>
   </div>
 </header>
+{% include "_profile_essentials.html" %}
 {% if sim_notice %}<div class="notice">{{sim_notice}}</div>{% endif %}
 
 <nav class="profile-jump" aria-label="Profile sections">
@@ -55,7 +58,8 @@
 
 <div class="sim-profile-columns" id="overview">
   <div class="sim-profile-main">
-    <section class="profile-section life-overview">
+    <section class="profile-section" id="education"><h2>Education & performance</h2><p>{{sim.data.get("game_education") or "No game education reported."}}</p><p>{{sim.data.get("game_career") or "No career reported."}}</p><a href="/p/university">Open university ledger →</a></section>
+    {% include "_life_schedule.html" %}<section class="profile-section life-overview">
       <div class="section-heading"><div><p class="eyebrow">LIFE AT A GLANCE</p><h2>{{sim.data.get('first_name') or sim.label}}’s place in the chronicle</h2></div><span class="record-stamp">GD {{save.global_day}}</span></div>
       {% if profile_summary.stage_progress is not none and not deceased %}<div class="life-stage-track"><div><strong>{{profile_summary.life_stage}}</strong>{% if profile_summary.next_stage %}<span>{{profile_summary.next_stage.label}} on GD {{profile_summary.next_stage.global_day}}</span>{% endif %}</div><div class="progress-meter large" style="--progress:{{profile_summary.stage_progress}}%"><span></span></div><small>{{profile_summary.stage_progress}}% through this life stage</small></div>{% endif %}
       <dl class="fact-grid">
@@ -122,7 +126,7 @@
         <div><h3>Degrees & preferences <span>{{game_labels(sim.data.get('game_degrees'),sim.data.get('game_degree_details'),kind='degree')|length + game_labels(sim.data.get('game_preferences'),kind='preference')|length}}</span></h3><div class="tag-cloud">{% for value in game_labels(sim.data.get('game_degrees'),sim.data.get('game_degree_details'),kind='degree') %}<span>{{value}}</span>{% endfor %}{% for value in game_labels(sim.data.get('game_preferences'),kind='preference') %}<span>{{value}}</span>{% endfor %}{% if not sim.data.get('game_degrees') and not sim.data.get('game_preferences') %}<em>None detected yet.</em>{% endif %}</div></div>
         <div><h3>Symptoms <span>{{detected_labels(sim.data.get('game_symptoms'))|length}}</span></h3><div class="tag-cloud">{% for value in detected_labels(sim.data.get('game_symptoms')) %}<span>{{value}}</span>{% else %}<em>No active symptoms reported.</em>{% endfor %}</div></div>
         <div><h3>Responsible Pregnancy <span>{{sim.data.get('game_responsible_pregnancy_states',[])|length}}</span></h3><div class="tag-cloud">{% for state in sim.data.get('game_responsible_pregnancy_states',[]) %}<span title="{{state.get('category','Responsible Pregnancy')}} · {{state.get('severity','unrated')|title}}">{{state.get('name')}}</span>{% else %}<em>{% if sim.data.get('game_responsible_pregnancy_detected') %}No tracked state is active.{% else %}Optional mod not reported.{% endif %}</em>{% endfor %}</div></div>
-        <div><h3>Occult progression</h3>{% set occult_progress=sim.data.get('game_occult_progress',{}) %}<div class="tag-cloud">{% if occult_progress.get('rank') %}<span>{{occult_progress.get('rank')}}</span>{% endif %}{% for value in occult_progress.get('perks',[]) %}<span>{{value}}</span>{% endfor %}{% for value in occult_progress.get('weaknesses',[]) %}<span>{{value}}</span>{% endfor %}{% if not occult_progress %}<em>No progression exposed.</em>{% endif %}</div></div>
+        <div id="occult" class="profile-section"><h2>Occult information</h2><p>{{sim.data.get("species_occult") or "Human / none recorded"}}</p><h3>Occult progression</h3>{% set occult_progress=sim.data.get('game_occult_progress',{}) %}<div class="tag-cloud">{% if occult_progress.get('rank') %}<span>{{occult_progress.get('rank')}}</span>{% endif %}{% for value in occult_progress.get('perks',[]) %}<span>{{value}}</span>{% endfor %}{% for value in occult_progress.get('weaknesses',[]) %}<span>{{value}}</span>{% endfor %}{% if not occult_progress %}<em>No progression exposed.</em>{% endif %}</div></div>
       </div>
       {% if sim.data.get('game_careers') %}<details><summary>Detailed career record</summary>{% for career in sim.data.get('game_careers') %}<div class="list-row"><span><strong>{{career.get('title') or career.get('name')}}</strong><small>{{career.get('name')}}{% if career.get('branch') %} · {{career.get('branch')}}{% endif %}</small></span><span>Level {{career.get('level','—')}}{% if career.get('performance') is not none %} · {{career.get('performance')}} performance{% endif %}</span></div>{% endfor %}</details>{% endif %}
       {% if sim.data.get('game_relationships') %}<details><summary>Game relationship detail ({{sim.data.get('game_relationships')|length}})</summary>{% for relationship in sim.data.get('game_relationships') %}<div class="list-row"><span><strong>{{relationship.get('name') or relationship.get('other_game_sim_id')}}</strong><small>{{relationship.get('category','Relationship')}}{% if relationship.get('relationship_bits') %} · {{relationship.get('relationship_bits')|join(', ')}}{% endif %}{% if relationship.get('relationship_sentiments') %} · Sentiments: {% for sentiment in relationship.get('relationship_sentiments',[]) %}{{sentiment.get('name')}}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</small></span><span>{% if relationship.get('friendship_score') is not none %}Friendship {{relationship.get('friendship_score')}}{% endif %}{% if relationship.get('romance_score') is not none %} · Romance {{relationship.get('romance_score')}}{% endif %}{% if relationship.get('relationship_satisfaction') is not none %}<br>Satisfaction {{relationship.get('relationship_satisfaction')}}<small> · {{relationship.get('relationship_satisfaction_source','reported by the game')}}</small>{% endif %}</span></div>{% endfor %}</details>{% endif %}
@@ -132,7 +136,7 @@
     <section class="profile-section" id="chronicle">
       <div class="section-heading"><div><p class="eyebrow">PERSONAL CHRONICLE</p><h2>{{sim.data.get('first_name') or sim.label}}’s recorded life</h2></div><span>{{life_history|length}} entries</span></div>
       {% if life_history %}<div class="profile-chronicle">{% for entry in life_history %}<article><time>GD {{entry.global_day}}{% if entry.data.get('detected_game_time') %} · {{entry.data.detected_game_time}}{% endif %}</time><div><small>{{(entry.data.get('category') or entry.kind.replace('_',' '))|title}}</small><h3>{{entry.label}}</h3></div></article>{% endfor %}</div>{% else %}<div class="empty"><strong>No life records yet.</strong><p>Clock Sync and tracker actions will build this Sim’s chronicle over time.</p></div>{% endif %}
-      {% if related_rolls %}<details class="roll-ledger"><summary>Roll history ({{related_rolls|length}} recent)</summary>{% for roll in related_rolls %}<a class="compact-record" href="/p/rolls?q={{roll.label|urlencode}}"><span class="record-dot {{'closed' if roll.data.get('completed') else 'active'}}"></span><span><strong>{{roll.data.get('roll_type') or roll.label}}</strong><small>GD {{roll.global_day}} · {{roll.data.get('die') or 'Die not set'}}</small></span><em>{% if roll.data.get('completed') %}{{roll.data.get('actual_roll','—')}} · {{roll.data.get('outcome','Completed')}}{% else %}Pending{% endif %}</em></a>{% endfor %}</details>{% endif %}
+      {% from "_roll_card.html" import roll_card with context %}{% if related_rolls %}<details class="roll-ledger"><summary>Roll history ({{related_rolls|length}} recent)</summary>{% for roll in related_rolls %}{{roll_card(roll,sim,false)}}{% endfor %}</details>{% endif %}
     </section>
   </div>
 

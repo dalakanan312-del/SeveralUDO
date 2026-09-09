@@ -34,6 +34,18 @@ class MobileLayoutTests(unittest.TestCase):
         self.assertIn("@media(max-width:520px)", css)
         self.assertIn("overflow-x:auto", css)
 
+    def test_infinite_branch_button_wraps_inside_one_full_width_touch_target(self):
+        css = (ROOT / "app" / "static" / "workflow.css").read_text(encoding="utf-8")
+        rule = css.split('.app-sidebar .infinite-sidebar-link{', 1)[1].split('}', 1)[0]
+        for declaration in ('display:flex', 'box-sizing:border-box', 'width:100%',
+                            'min-width:0', 'min-height:44px', 'white-space:normal',
+                            'overflow-wrap:anywhere', 'text-align:center'):
+            self.assertIn(declaration, rule)
+        self.assertIn('.infinite-sidebar-link:focus-visible', css)
+        mobile = css.split('@media(max-width:800px){', 1)[1]
+        self.assertIn('.app-sidebar .infinite-sidebar-card{display:none}', mobile)
+        self.assertIn('.app-sidebar.mobile-menu-open .infinite-sidebar-card{display:grid', mobile)
+
     def test_mobile_menu_is_keyboard_and_resize_aware(self):
         script = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("setMobileMenu", script)

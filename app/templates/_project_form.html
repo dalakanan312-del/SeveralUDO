@@ -1,0 +1,27 @@
+{% macro project_form(feature,row=None) %}{% set d=row.data if row else {} %}
+<form action="/play-support/project/{{feature}}" method="post" class="form-grid play-project-form">
+<input type="hidden" name="save_id" value="{{save.id}}"><input type="hidden" name="form_id" value="{{form_ids[row.id if row else feature]}}">{% if row %}<input type="hidden" name="record_id" value="{{row.id}}"><input type="hidden" name="version" value="{{row.version}}">{% endif %}
+<label>Name<input name="label" value="{{row.label if row else ''}}" maxlength="200" required placeholder="{% if feature=='ambition' %}Restore the family fortune{% elif feature=='secret' %}Hidden parentage{% elif feature=='recovery' %}Rebuild after the famine{% else %}Ten generations{% endif %}"></label>
+<label>Household<select name="household_id" {% if feature in ['ambition','recovery'] %}required{% endif %}><option value="">Whole dynasty / no household</option>{% for h in play_homes %}<option value="{{h.id}}" {% if d.get('household_id')==h.id %}selected{% endif %}>{{h.label}}</option>{% endfor %}</select></label>
+{% if feature in ['ambition','achievement'] %}
+<label>Measure progress by<select name="metric">{% for key,label in play_metrics.items() %}<option value="{{key}}" {% if d.get('metric','manual')==key %}selected{% endif %}>{{label}}</option>{% endfor %}</select></label>
+<label>Target<input name="target" type="number" min="1" max="1000000000000" value="{{d.get('target',10)}}" required></label>
+<label>Founding Sim<select name="founder_id"><option value="">Not needed for this measure</option>{% for s in play_sims %}<option value="{{s.id}}" {% if d.get('founder_id')==s.id %}selected{% endif %}>{{s.label}}</option>{% endfor %}</select><small>Required for descendants, occult descendants and generations. Descendants can move households without losing progress.</small></label>
+<label>Event or heirloom evidence<select name="evidence_id"><option value="">Not needed for this measure</option>{% for e in play_events if e.kind in ['event','heirloom'] %}<option value="{{e.id}}" {% if d.get('evidence_id')==e.id %}selected{% endif %}>{{e.label}} · {{e.kind}}</option>{% endfor %}</select><small>For event survival or heirloom age. Unknown dates or balances are not treated as zero.</small></label>
+<label>Player-confirmed progress<input type="number" name="progress" min="0" value="{{d.get('progress',0)}}"><small>Used only for the player-confirmed measure, such as securing a title or rebuilding an extinct line.</small></label>
+{% elif feature=='secret' %}
+<label>Type<select name="category">{% for value in ['Scandal','Hidden parentage','Forbidden relationship','Concealed occult identity','Other'] %}<option {% if d.get('category')==value %}selected{% endif %}>{{value}}</option>{% endfor %}</select></label>
+<label>Sim the secret concerns<select name="sim_id"><option value="">Household / unspecified</option>{% for s in play_sims %}<option value="{{s.id}}" {% if d.get('sim_id')==s.id %}selected{% endif %}>{{s.label}}</option>{% endfor %}</select></label>
+<fieldset class="wide play-knowledge"><legend>Exactly who knows?</legend><div>{% for s in play_sims %}<label class="check"><input type="checkbox" name="knower_ids" value="{{s.id}}" {% if s.id in d.get('knower_ids',[]) %}checked{% endif %}>{{s.label}}</label>{% endfor %}</div><small>No Sim is assumed to know automatically. Adding or removing a name records a dated knowledge change.</small></fieldset>
+{% elif feature=='recovery' %}
+<label>Originating event<select name="event_id" required><option value="">Choose an event or campaign</option>{% for e in play_events if e.kind in ['event','campaign'] %}<option value="{{e.id}}" {% if d.get('event_id')==e.id %}selected{% endif %}>{{e.label}}</option>{% endfor %}</select></label>
+<label>Review / recovery due day<input name="due_global_day" type="number" value="{{d.get('due_global_day',save.global_day+7)}}" required></label>
+<fieldset class="wide"><legend>Optional consequences</legend>{% for effect in play_consequences %}<label class="check"><input type="checkbox" name="consequences" value="{{effect}}" {% if effect in d.get('consequences',[]) %}checked{% endif %}>{{effect}}</label>{% endfor %}</fieldset>
+<label>Planned / outstanding debt<input name="debt" type="number" min="0" value="{{d.get('debt',0)}}"><small>A planning amount, not an automatic deduction.</small></label>
+<label class="wide">Steps already completed<textarea name="completed_steps" rows="2">{{d.get('completed_steps','')}}</textarea></label>
+{% endif %}
+<label>Status<select name="status">{% for status in ['Active','Paused','Completed'] %}<option {% if d.get('status','Active')==status %}selected{% endif %}>{{status}}</option>{% endfor %}</select></label>
+<label class="check"><input type="checkbox" name="enabled" {% if d.get('enabled',True) %}checked{% endif %}>Show in progress checks and suggestions</label>
+<label class="wide">{% if feature=='secret' %}The actual secret and its context{% else %}Objective, conditions and next steps{% endif %}<textarea name="notes" maxlength="4000" rows="3">{{d.get('notes','')}}</textarea></label>
+<button class="primary" {% if infinite_frozen %}disabled{% endif %}>{{'Save changes' if row else 'Add '+feature}}</button></form>
+{% endmacro %}

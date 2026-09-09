@@ -1,0 +1,5 @@
+{% extends 'base.html' %}{% block body %}<section class="panel u-preview"><h1>Review before confirming</h1><h2>{{preview.label}}</h2>
+{% if preview.actual is not none %}<p>Result: <strong>{{preview.actual}} · {{preview.outcome}}</strong></p>{% else %}<p>This will move <strong>{{preview.counts.moved}}</strong> pending rolls, add <strong>{{preview.counts.added}}</strong> obligations, and retire <strong>{{preview.counts.retired}}</strong>.</p>{% endif %}
+{% if preview.completed_unchanged %}<p>Completed results stay unchanged.</p>{% endif %}<p>No proposed changes have been applied. A native die throw is retained so reopening the preview does not reroll it.</p>
+<ul>{% for effect in preview.effects %}<li>{{effect}}</li>{% else %}<li>No pending obligations change.</li>{% endfor %}</ul>
+<form action="/api/previews/{{preview.token}}/confirm" method="post"><button class="primary">Confirm these changes</button><a href="/p/today">Keep unchanged</a></form></section>{% endblock %}

@@ -966,9 +966,11 @@ def event_is_ignored(record: Record) -> bool:
 
 
 def journal(session: Session, record: Record, operation: str, base_version: int) -> None:
+    from .why import capture
     if record.kind == "sim" and operation == "upsert" and not record.deleted:
         from .birth_dates import apply_to_record
         apply_to_record(record, session.get(ChronicleSave, record.save_id))
+    capture(session,record,operation,base_version)
     session.add(Change(
         save_id=record.save_id, device_id="automation", record_id=record.id,
         kind=record.kind, operation=operation, base_version=base_version,
@@ -976,7 +978,7 @@ def journal(session: Session, record: Record, operation: str, base_version: int)
     ))
 
 
-def roll_obligation_identity(record: Record) -> tuple[str, str, int] | None:
+def roll_obligation_identity(record: Record) -> tuple | None:
     """Return the conservative identity used to find duplicate roll obligations.
 
     A repairable duplicate must point to the same Sim, have the same named roll
@@ -996,6 +998,13 @@ def roll_obligation_identity(record: Record) -> tuple[str, str, int] | None:
         return None
     if not sim_id or not roll_type or due_day < 1:
         return None
+    if 'maternal' in roll_type or data.get('maternal_baby_index') is not None:
+        pregnancy = data.get('pregnancy_id') or data.get('source_id')
+        if not pregnancy:
+            return None  # Legacy checks without a delivery identity require manual review.
+        try: baby = max(1, int(data.get('maternal_baby_index') or 1))
+        except (TypeError, ValueError): return None
+        return sim_id, roll_type, due_day, str(pregnancy), str(data.get('maternal_baby_id') or data.get('baby_id') or baby)
     return sim_id, roll_type, due_day
 
 
@@ -1012,7 +1021,7 @@ def _obligation_keeper(record: Record) -> tuple[int, int, str, str]:
 
 def duplicate_obligation_groups(records: list[Record]) -> list[dict]:
     """Describe active duplicate obligations and which pending rows are repairable."""
-    identities: dict[tuple[str, str, int], list[Record]] = defaultdict(list)
+    identities: dict[tuple, list[Record]] = defaultdict(list)
     for record in records:
         identity = roll_obligation_identity(record)
         if identity is not None:
@@ -1035,6 +1044,8 @@ def duplicate_obligation_groups(records: list[Record]) -> list[dict]:
             "completed": completed,
             "keeper": completed[0] if completed else keeper,
             "redundant": redundant,
+            "reason": ("Same mother, pregnancy, baby index, roll type and due Global Day. Different baby indexes are separate, legitimate checks."
+                       if len(identity) == 5 else "Same Sim, roll type and due Global Day."),
         })
     return sorted(groups, key=lambda group: (group["identity"][2], group["label"].casefold()))
 
@@ -1047,6 +1058,7 @@ def duplicate_obligation_summary(records: list[Record]) -> dict:
         "protected_completed": sum(max(0, len(group["completed"]) - 1) for group in groups),
         "preview": [{
             "label": group["label"],
+            "reason": group["reason"],
             "global_day": group["identity"][2],
             "copies": len(group["matches"]),
             "repairable": len(group["redundant"]),
@@ -2476,7 +2488,7 @@ def refresh_pending_rolls(session: Session, save: ChronicleSave) -> dict[str, in
     """
     counts = {
         "event": repair_pending_event_rolls(session, save),
-        "aging": repair_default_aging_tables(session, save),
+        "aging": repair_default_aging_tables(session, save) + retire_invalid_lifecycle_rolls(session, save),
         "maternal": restore_delivery_maternal_rolls(session, save),
         "occult": 0,
         "planner": 0,
@@ -4907,6 +4919,51 @@ def rescale_age_timing(session: Session, save: ChronicleSave, old_days_per_year:
     return result
 
 
+def lifecycle_rule_age(save: ChronicleSave, rule: Record) -> int | None:
+    """Resolve an aging milestone without turning delivery/manual tables into birth rolls."""
+    label = rule.label.strip().casefold()
+    if label.startswith("maternal"):
+        return None
+    configured = (rule.data or {}).get("age_days")
+    if configured in (None, ""):
+        standard = AGING_STAGE_OFFSETS.get(label)
+        return lifecycle_age_days(save, standard) if standard is not None else None
+    try:
+        age = int(configured)
+    except (TypeError, ValueError):
+        return None
+    return age if age >= 0 else None
+
+
+def retire_invalid_lifecycle_rolls(session: Session, save: ChronicleSave,
+                                  rules: list[Record] | None = None) -> int:
+    """Archive only unfinished auto-aging entries made from non-aging tables."""
+    rules = rules if rules is not None else list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False),
+    )))
+    invalid = {rule.id for rule in rules if lifecycle_rule_age(save, rule) is None}
+    if not invalid:
+        return 0
+    changed = 0
+    for roll in session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
+    )):
+        data = dict(roll.data or {})
+        parts = str(data.get("source") or "").split(":")
+        if (data.get("completed") or data.get("infinite_frozen") or len(parts) != 3
+                or parts[0] != "aging" or parts[1] != data.get("sim_id")
+                or parts[2] not in invalid):
+            continue
+        base = roll.version
+        roll.deleted = True
+        roll.data = {**data, "retired_reason": "Non-aging rule incorrectly scheduled as a birth/aging milestone",
+                     "retired_global_day": save.global_day}
+        roll.version += 1
+        journal(session, roll, "delete", base)
+        changed += 1
+    return changed
+
+
 def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Record,
                                   rules: list[Record]) -> int:
     """Create only one Sim's aging obligations, without unrelated automation."""
@@ -4922,9 +4979,7 @@ def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Re
     for rule in rules:
         if not rule.data.get("active", True):
             continue
-        configured_age = rule.data.get("age_days")
-        if configured_age in (None, ""):
-            configured_age = lifecycle_age_days(save, AGING_STAGE_OFFSETS.get(rule.label.strip().casefold(), 0))
+        configured_age = lifecycle_rule_age(save, rule)
         if configured_age is None:
             continue
         if int(configured_age) == 0 and sim.data.get("newborn_rolls_required") is False:
@@ -4950,9 +5005,9 @@ def _schedule_sim_lifecycle_rolls(session: Session, save: ChronicleSave, sim: Re
         if exists:
             continue
         later_ages = sorted(
-            int(item.data.get("age_days")) for item in rules
-            if item.id != rule.id and item.data.get("age_days") not in (None, "")
-            and int(item.data.get("age_days")) > int(configured_age)
+            age for item in rules
+            if item.id != rule.id and (age := lifecycle_rule_age(save, item)) is not None
+            and age > int(configured_age)
             and str(item.data.get("core_ruleset_id") or "") == str(rule.data.get("core_ruleset_id") or "")
             and int(item.data.get("start_year", -9999)) <= due_year <= int(item.data.get("end_year", 9999))
         )
@@ -5447,6 +5502,7 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     save.revision += retire_prechallenge_rolls(session, save)
     save.revision += retire_dead_sim_rolls(session, save, sims)
     save.revision += retire_occult_exempt_aging_rolls(session, save, sims)
+    save.revision += retire_invalid_lifecycle_rolls(session, save, rules)
     created = 0
     for sim in sims:
         created += _schedule_sim_lifecycle_rolls(session, save, sim, rules)
