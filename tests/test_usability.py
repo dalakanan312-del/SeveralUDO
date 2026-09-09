@@ -112,6 +112,27 @@ class UsabilityTests(unittest.TestCase):
         state=ui.clock_status(self.f.save,link,now=now);self.assertEqual(state['state'],'waiting');self.assertIn('silence alone',state['detail'])
         prefs={'paused_clocks':{self.f.save.id:[29,7,50]}};self.assertEqual(ui.clock_status(self.f.save,link,prefs,now)['state'],'paused')
         link.last_game_minute=51;self.assertEqual(ui.clock_status(self.f.save,link,prefs,now)['state'],'waiting')
+    def test_today_weekday_without_game_report_is_labelled_tracker(self):
+        response=self.client.get('/p/today');self.assertEqual(response.status_code,200)
+        self.assertIn('data-live-weekday>Monday · tracker weekday</strong>',response.text)
+        self.assertIn('data-clock-game>No report yet</dd>',response.text)
+    def test_weekday_is_visible_on_initial_render_and_all_clock_panels(self):
+        self.f.save.days_per_year=12
+        link=ClockLink(save_id=self.f.save.id,enabled=True,token_hash='weekday-test',last_game_day=31,last_game_hour=21,last_game_minute=3,last_seen_at=datetime.now(timezone.utc))
+        self.f.session.add(link);self.f.session.commit()
+        for url in ['/p/today','/p/today?view=tools','/p/sims','/p/clock']:
+            with self.subTest(url=url):
+                response=self.client.get(url);self.assertEqual(response.status_code,200)
+                self.assertIn('data-clock-game>Wednesday · Day 31 · 21:03</dd>',response.text)
+                if url=='/p/today':self.assertIn('data-live-weekday>Wednesday · last reported in game</strong>',response.text)
+    def test_game_day_zero_and_saved_game_clock_keep_weekday(self):
+        self.f.save.settings={**self.f.save.settings,'game_mode':'sims3','sims3_saved_clock_enabled':True}
+        link=ClockLink(save_id=self.f.save.id,enabled=False,token_hash='weekday-test',last_game_day=0,last_game_hour=0,last_game_minute=0,last_seen_at=datetime.now(timezone.utc)-timedelta(days=1))
+        self.f.session.add(link);self.f.session.commit()
+        response=self.client.get('/p/today');self.assertEqual(response.status_code,200)
+        self.assertIn('data-clock-game>Sunday · Day 0 · 00:00</dd>',response.text)
+        self.assertIn('data-live-weekday>Sunday · last reported in game</strong>',response.text)
+        self.assertIn('Saved-game clock',response.text)
     def test_paused_marker_and_status_endpoint(self):
         link=ClockLink(save_id=self.f.save.id,enabled=True,token_hash='test',last_game_day=29,last_game_hour=7,last_game_minute=50,last_seen_at=datetime.now(timezone.utc));self.f.session.add(link);self.f.session.commit()
         self.assertEqual(self.client.post('/api/ui/preferences',json={'save_id':self.f.save.id,'paused':True}).status_code,200)
