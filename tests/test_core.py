@@ -1617,10 +1617,10 @@ class CoreSmokeTests(unittest.TestCase):
         grouped_pages=[page for group in NAVIGATION_GROUPS for page in group["pages"]]
         self.assertEqual(set(grouped_pages),set(FEATURES))
         self.assertEqual(len(grouped_pages),len(set(grouped_pages)))
-        self.assertEqual(navigation_group_for("pregnancies")["id"],"family")
+        self.assertEqual(navigation_group_for("pregnancies")["id"],"people")
         self.assertEqual(navigation_group_for("storyline")["id"],"history")
-        self.assertEqual(navigation_group_for("roll-tables")["id"],"challenge")
-        self.assertEqual(navigation_group_for("saves")["id"],"setup")
+        self.assertEqual(navigation_group_for("roll-tables")["id"],"settings")
+        self.assertEqual(navigation_group_for("saves")["id"],"settings")
         with TestClient(app) as client:
             home=client.get("/")
             self.assertEqual(home.status_code,200)
@@ -1800,7 +1800,12 @@ class CoreSmokeTests(unittest.TestCase):
             with SessionLocal() as session:
                 synced=session.get(Record,record_id)
                 self.assertEqual(synced.label,"Ada Desktop")
-                self.assertEqual(synced.data,{"birth_global_day":2,"notes":"desktop copy"})
+                self.assertEqual(synced.data['birth_global_day'],2)
+                self.assertEqual(synced.data['notes'],'desktop copy')
+                # Missing birth times have been filled since 4.6.15; sync keeps
+                # desktop values while honestly labelling that existing fallback.
+                self.assertTrue(synced.data['birth_time_randomized'])
+                self.assertEqual(synced.data['birth_date_precision'],'randomized-within-challenge-day')
             self.assertEqual(client.post(f"/api/sync/devices/{device['device_id']}/revoke",follow_redirects=False).status_code,303)
             rejected=client.get("/api/sync/pull",headers={"Authorization":f"Bearer {device['token']}"})
             self.assertEqual(rejected.status_code,401)

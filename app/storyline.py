@@ -210,6 +210,7 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
         sentences.append(f"Clock Sync and personal records added {history_text}, capturing changes that might otherwise have gone unremarked.")
     if authored:
         sentences.append(f"The people of the save also left their own words in {_natural_list([item.label for item in authored])}.")
+        sentences.extend(str(item.data.get('body')) for item in authored if item.data.get('feature')=='heritage_journal' and item.data.get('body'))
     if drama_scenes:
         sentences.extend(_drama_scene_sentence(item) for item in drama_scenes)
 

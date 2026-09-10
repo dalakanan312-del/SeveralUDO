@@ -486,8 +486,8 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
             pregnancy_years[year] += 1
 
     completed_rolls: list[Record] = []
-    passed = failed_count = 0
-    roll_types = defaultdict(lambda: {"total": 0, "completed": 0, "passed": 0, "failed": 0})
+    passed = failed_count = administrative = 0
+    roll_types = defaultdict(lambda: {"total": 0, "completed": 0, "passed": 0, "failed": 0, "administrative":0})
     roll_dice = Counter(); roll_sources = Counter(); roll_years = Counter()
     pending_due = pending_future = event_rolls = 0
     missing_roll_die = missing_roll_results = 0
@@ -512,6 +512,10 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
             continue
         completed_rolls.append(roll)
         roll_types[roll_type]["completed"] += 1
+        if data.get('catch_up_resolution'):
+            administrative+=1
+            roll_types[roll_type]['administrative']+=1
+            continue # Historical administration is not a successful dice throw.
         actual = integer(data.get("actual"))
         outcome = str(data.get("outcome") or "").casefold()
         did_fail = "fail" in outcome or "death" in outcome or (
@@ -534,7 +538,8 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
     for label, values in sorted(roll_types.items(), key=lambda pair: (pair[1]["total"], pair[0]), reverse=True)[:15]:
         values = dict(values)
         values["completion_rate"] = round(values["completed"] * 100 / values["total"], 1) if values["total"] else 0.0
-        values["failure_rate"] = round(values["failed"] * 100 / values["completed"], 1) if values["completed"] else 0.0
+        result_count=values['completed']-values['administrative']
+        values["failure_rate"] = round(values["failed"] * 100 / result_count, 1) if result_count else 0.0
         top_roll_types.append((label, values))
 
     event_states = Counter(); event_categories = Counter(); event_locations = Counter(); event_roll_required = 0
@@ -628,7 +633,8 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
             "total": len(rolls), "completed": len(completed_rolls), "pending": len(rolls) - len(completed_rolls),
             "pending_due": pending_due, "pending_future": pending_future, "passed": passed, "failed": failed_count,
             "completion_rate": round(len(completed_rolls) * 100 / len(rolls), 1) if rolls else 0.0,
-            "failure_rate": round(failed_count * 100 / len(completed_rolls), 1) if completed_rolls else 0.0,
+            "administrative":administrative,
+            "failure_rate": round(failed_count * 100 / (len(completed_rolls)-administrative), 1) if len(completed_rolls)>administrative else 0.0,
             "event_rolls": event_rolls, "types": top_roll_types, "dice": roll_dice.most_common(),
             "sources": roll_sources.most_common(),
         },

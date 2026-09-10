@@ -24,7 +24,7 @@ _started = False
 def public_settings(values: dict | None) -> dict:
     blocked = ("token", "secret", "password", "database_url", "api_key", "connection", "webhook")
     return {key: value for key, value in dict(values or {}).items()
-            if not any(part in str(key).casefold() for part in blocked)}
+            if key not in sync.LOCAL_SETTINGS_KEYS and not any(part in str(key).casefold() for part in blocked)}
 
 
 def build_package(session: Session, save: ChronicleSave) -> bytes:

@@ -26,6 +26,7 @@
 <link rel="stylesheet" href="/static/workflow.css?v={{static_version}}-sidebar2">
 <link rel="stylesheet" href="/static/usability.css?v={{static_version}}">
 <link rel="stylesheet" href="/static/play_clarity.css?v={{static_version}}">
+<link rel="stylesheet" href="/static/heritage.css?v={{static_version}}">
   <script src="/static/htmx.min.js?v={{static_version}}" defer></script>
 {% if ads_config.verification_available %}<meta name="google-adsense-account" content="{{ads_config.verification_client}}">{% endif %}
 {% if user and ads_config.consent_available %}<script id="decades-ad-config" type="application/json">{{ads_config|tojson}}</script>{% endif %}
@@ -77,4 +78,5 @@
 <script src="/static/workflow.js?v={{static_version}}"></script>
 <script src="/static/play_clarity.js?v={{static_version}}"></script>
 <script src="/static/usability.js?v={{static_version}}"></script>
+<script src="/static/crash_recovery.js?v={{static_version}}"></script>
 </body></html>

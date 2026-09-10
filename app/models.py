@@ -55,6 +55,20 @@ class ActionPreview(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class ClockCheckpoint(Base):
+    """Local journal boundary, not a game save and never synced between databases."""
+    __tablename__ = "clock_checkpoints"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    save_id: Mapped[str] = mapped_column(ForeignKey("saves.id", ondelete="CASCADE"), index=True)
+    epoch: Mapped[str] = mapped_column(String(160), default="")
+    game_minute: Mapped[int] = mapped_column(Integer)
+    global_day: Mapped[int] = mapped_column(Integer)
+    change_sequence: Mapped[int] = mapped_column(Integer)
+    configuration: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (Index("ix_clock_checkpoint_lookup", "save_id", "epoch", "game_minute"),)
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)

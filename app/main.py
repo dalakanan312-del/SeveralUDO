@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
-from . import domain, drama_randomizer, play_support_ui, usability, usability_ui
+from . import domain, drama_randomizer, play_support_ui, usability, usability_ui, heritage, heritage_ui, crash_recovery_ui
 from . import infinite_decades, infinite_decades_ui, birth_dates
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
@@ -31,6 +31,8 @@ from .workflow import related_tasks, page_sections
 
 
 FEATURES = {
+    **heritage_ui.PAGES,
+    **crash_recovery_ui.PAGES,
     **play_support_ui.PAGES,
     "today": ("Today", "Today’s rolls, births, events, illnesses and scheduled deaths"),
     "automation": ("Automation Inbox", "Review births, deaths, moves and relationships detected in game"),
@@ -111,7 +113,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.22")
+app = FastAPI(title="Decades Tracker", version="4.6.23")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -756,6 +758,7 @@ def context(request: Request, session, **extra):
             request.session["save_id"] = active.id
             infinite_decades.guard_request(request, active)
             play_support_ui.guard_scene(request,active)
+            heritage_ui.guard_scene(request,active)
             if not infinite_decades.frozen(active) and not settings.skip_startup_migrations and str((active.settings or {}).get("defaults_schema_version") or "") != domain.DEFAULTS_SCHEMA_VERSION:
                 domain.seed_defaults(session, active)
             if not infinite_decades.frozen(active) and str((active.settings or {}).get("event_catalog_version") or "") != domain.EVENT_CATALOG_VERSION:
@@ -1524,6 +1527,10 @@ def feature_page(request: Request, page: str):
         ctx['ui_living']=life_filter
         if page in play_support_ui.PAGES:
             return play_support_ui.render(request,session,ctx,templates)
+        if page in heritage_ui.PAGES:
+            return heritage_ui.render(request,session,ctx,templates)
+        if page in crash_recovery_ui.PAGES:
+            return crash_recovery_ui.render(request,session,ctx,templates)
         if page == "family-tree" and not save:
             return RedirectResponse("/p/saves", status_code=303)
         if infinite_decades.state(save) and page == "family-tree":
@@ -2196,6 +2203,7 @@ def feature_page(request: Request, page: str):
                 drama_state=drama_state,
                 drama_notice=request.session.pop("drama_notice", None),
                 drama_discovery=play_support_ui.discovery(request,session,save),
+                heritage_scene=heritage_ui.scene_context(request,session,save),
                 all_sims=drama_sims,
                 all_households=drama_households,
                 drama_recent=sorted((item for item in drama_rows if item.kind == "drama_scene"), key=lambda item: (item.global_day or 0, item.updated_at), reverse=True)[:12],
@@ -2556,6 +2564,11 @@ def record_drama_scene(request: Request):
         if not resolved or not resolved.get("ending"):
             raise HTTPException(400, "Finish both decisions before recording the scene.")
         data = drama.scene_data(resolved)
+        promise=heritage_ui.scene_context(request,session,save)
+        if promise:
+            intro='Recorded commitment: '+promise['label']+'. '+promise['promise']+' Breach: '+promise['breach']+' '
+            data.update(commitment_record_id=promise['id'],private=promise['private'],opening=intro+data['opening'],body=intro+data['body'])
+            request.session.pop('heritage_scene',None)
         discovery=play_support_ui.discovery(request,session,save)
         if discovery:
             data['discovery_record_id']=discovery['record_id']
@@ -5472,6 +5485,8 @@ def health():
 
 
 play_support_ui.register(app,db,context,templates)
+heritage_ui.register(__import__(__name__,fromlist=['app']))
+crash_recovery_ui.register(__import__(__name__,fromlist=['app']))
 usability_ui.register(__import__(__name__,fromlist=['app']))
 from . import action_previews
 action_previews.register(__import__(__name__,fromlist=['app']))

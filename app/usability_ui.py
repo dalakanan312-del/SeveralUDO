@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select,func,and_,or_
-from . import usability as ui,domain,play_clarity as clarity
+from . import usability as ui,domain,play_clarity as clarity,heritage
 from .models import Record,ClockLink,UiPreference,ChronicleSave,Membership
 
 SECTIONS={'decisions':'Needs your decision','happening':'Happening today','completed':'Completed'}
@@ -29,7 +29,7 @@ def board(session,save,params,section=None):
     roll=and_(k=='roll',d['completed'].as_boolean().is_not(True),or_(ui.related_living_sql(save),post_death),when(Record.global_day))
     hidden=select(Record.id).where(Record.save_id==save.id,Record.kind=='event',or_(Record.deleted.is_(True),Record.data['ignored'].as_boolean().is_(True),Record.data['hidden'].as_boolean().is_(True))).correlate(None)
     roll=and_(roll,or_(d['event_id'].as_string().is_(None),d['event_id'].as_string().notin_(hidden)))
-    decision=or_(roll,
+    decision=or_(roll,and_(heritage.due_tasks_sql(save),when(day)),
         and_(k=='game_candidate',d['status'].as_string()=='pending',when(Record.global_day)),
         and_(k=='pregnancy',func.lower(func.coalesce(d['status'].as_string(),'active')).in_(['active','pregnant','expecting']),ui.related_living_sql(save,'mother_id'),when(day)),
         and_(k=='sim',d['death_confirmed'].as_boolean().is_not(True),when(d['death_global_day'].as_integer())),
@@ -42,13 +42,13 @@ def board(session,save,params,section=None):
         and_(k=='sim',ui.living_sql(save),when(d['birth_global_day'].as_integer())),
         and_(k=='sim',d['death_confirmed'].as_boolean().is_(True),when(d['death_global_day'].as_integer())),
         and_(k=='relationship',when(func.coalesce(d['marriage_global_day'].as_integer(),d['start_global_day'].as_integer(),Record.global_day))))
-    complete=or_(and_(k=='roll',d['completed'].as_boolean().is_(True),when(d['completed_global_day'].as_integer())),
+    complete=or_(and_(k=='task',d['feature'].as_string().in_([heritage.PREFIX+x for x in ('routine_task','thread','commitment')]),d['completed'].as_boolean().is_(True),when(d['completed_global_day'].as_integer())),and_(k=='roll',d['completed'].as_boolean().is_(True),when(d['completed_global_day'].as_integer())),
         and_(k=='game_candidate',d['status'].as_string().in_(['accepted','dismissed']),when(func.coalesce(d['accepted_global_day'].as_integer(),d['dismissed_global_day'].as_integer()))),
         and_(k=='pregnancy',func.lower(d['status'].as_string()).in_(['delivered','complete','completed']),when(func.coalesce(d['actual_delivery_global_day'].as_integer(),d['delivery_global_day'].as_integer(),d['end_global_day'].as_integer()))))
     predicates={'decisions':decision,'happening':happening,'completed':complete};groups=[]
     for key in ([section] if section else SECTIONS):
         page=max(1,min(100000,ui.integer(params.get(key+'_page'),1)))
-        kinds={'decisions':('roll','game_candidate','pregnancy','sim','university_term'),'happening':('event','illness','sim','relationship'),'completed':('roll','game_candidate','pregnancy')}
+        kinds={'decisions':('roll','game_candidate','pregnancy','sim','university_term','task'),'happening':('event','illness','sim','relationship'),'completed':('roll','game_candidate','pregnancy','task')}
         criteria=[Record.save_id==save.id,Record.kind.in_(kinds[key]),Record.deleted.is_(False),predicates[key]]
         household=str(params.get('household') or '')
         if household and household!='all':criteria.append(clarity.household_predicate(save,household))
@@ -68,6 +68,8 @@ def board(session,save,params,section=None):
     return {'board_groups':groups,'board_window':window,'board_household':str(params.get('household') or ''),'board_households':households,'daily_history':history}
 
 def record_href(row):
+    if row.kind=='task' and heritage.feature(row) in {'routine_task','thread','commitment'}:
+        return '/p/'+('seasonal-routines' if heritage.feature(row)=='routine_task' else 'story-threads')+'#item-'+row.id
     if row.kind=='sim':return '/sims/'+row.id
     if row.kind=='pregnancy':return '/pregnancies/'+row.id
     if row.kind=='relationship':return '/relationships/'+row.id
@@ -79,6 +81,7 @@ def render(request,session,ctx,templates):
     return templates.TemplateResponse(request,'today_workboard.html',ctx)
 
 def schedule(m,session,save):
+    heritage.schedule_routines(session,save)
     marker=(save.global_day,6)
     if domain.automation_enabled(save) and m._TODAY_SCHEDULE_CHECKED.get(save.id)!=marker:
         save.revision+=domain.retire_prechallenge_rolls(session,save)

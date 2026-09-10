@@ -1,6 +1,13 @@
 """Read-only wayfinding: existing pages, section anchors and related tasks."""
 
 RELATED_TASKS = {
+    'historical-addresses': (('Current households','/p/households'),('Titles & estates','/p/titles-estates'),('Record a move','/p/world#migration-new')),
+    'titles-estates': (('Historical address book','/p/historical-addresses'),('Inheritance & finances','/p/historical-life#estate'),('Succession rules','/p/challenge#succession')),
+    'naming-customs': (('Regional name library','/p/names'),('Add a Sim','/p/sims'),('Family connections','/p/family-tree')),
+    'seasonal-routines': (('Due household tasks','/p/today'),('Play Session Planner','/p/play-next'),('Story board & promises','/p/story-threads')),
+    'story-threads': (('Play a drama scene','/p/drama'),('Family projects','/p/family-projects'),('Recorded outcomes','/p/storyline')),
+    'catch-up': (('Play overdue obligations','/p/today?window=overdue'),('Backups','/p/saves'),('Calendar & rules','/p/rules')),
+    'family-chronicle': (('Family tree','/p/family-tree'),('Storyline','/p/storyline'),('Letters & journals','/p/writers-room')),
     'play-next': (('Family plans', '/p/planner'), ('Family projects', '/p/family-projects'), ('Review game changes','/p/automation')),
     'family-projects': (('Prioritize households','/p/play-next'), ('Play a drama scene','/p/drama'), ('View events','/p/events')),
     'branch-comparison': (('Manage branches','/p/infinite-decades'), ('Explore family tree','/p/family-tree')),
@@ -16,7 +23,8 @@ RELATED_TASKS = {
     'infinite-decades': (('Compare branches', '/p/branch-comparison'), ('Plan the next household', '/p/play-next')),
     'planner': (('What should I play next?', '/p/play-next'), ('Marriage rolls & dates', '/p/relationships#marriage-rolls'), ('Manage succession', '/p/challenge#succession'), ('Choose a dynasty branch', '/p/infinite-decades'), ('Play today', '/p/today')),
     'pregnancies': (('View family plans', '/p/planner#family-plans'), ('Roll due maternal checks', '/p/today?task=rolls'), ('Review detected deliveries', '/p/automation'), ('Choose a baby name', '/p/names')),
-    'households': (('Plan household rotations', '/p/planner#rotation'), ('Record a move', '/p/world#migration-new'), ('Manage estates & money', '/p/historical-life#estate'), ('View household Sims', '/p/sims')),
+    'households': (('Historical address book','/p/historical-addresses'),('Titles & estates','/p/titles-estates'),('Seasonal routines','/p/seasonal-routines'),('Plan household rotations', '/p/planner#rotation'), ('Record a move', '/p/world#migration-new'), ('Manage estates & money', '/p/historical-life#estate'), ('View household Sims', '/p/sims')),
+    'names': (('Naming customs','/p/naming-customs'),('Add a Sim','/p/sims')),
     'sims': (('Add family connections', '/p/relationships'), ('Explore the family tree', '/p/family-tree'), ('Check living ages', '/p/today'), ('Review detected Sims', '/p/automation')),
     'family-tree': (('Edit family connections', '/p/relationships'), ('View Sim profiles', '/p/sims'), ('Manage dynasty branches', '/p/infinite-decades')),
     'challenge': (('Marriage rolls & dates', '/p/relationships#marriage-rolls'), ('Configure historical events', '/p/events'), ('Military service history', '/p/historical-life#service'), ('Roll due tasks', '/p/today?task=rolls')),
@@ -27,7 +35,7 @@ RELATED_TASKS = {
     'life-records': (('Courtships & marriage dates', '/p/relationships#marriage-dates'), ('Family plans', '/p/planner#family-plans'), ('Heirlooms & memorials', '/p/historical-life#memory')),
     'historical-life': (('Generate letters & journals', '/p/writers-room'), ('Historical checks', '/p/historical-check'), ('Dowries, guardians & care', '/p/life-records'), ('Record migration', '/p/world#migration-new'), ('Succession & campaigns', '/p/challenge')),
     'timeline': (('Read yearly paragraphs', '/p/storyline'), ('Add personal notes', '/p/notes'), ('Explore family connections', '/p/family-tree')),
-    'storyline': (('See the visual timeline', '/p/timeline'), ('Play the drama deck', '/p/drama'), ('Add personal notes', '/p/notes'), ('View statistics', '/p/statistics')),
+    'storyline': (('Share a family chronicle','/p/family-chronicle'),('Story board & promises','/p/story-threads'),('See the visual timeline', '/p/timeline'), ('Play the drama deck', '/p/drama'), ('Add personal notes', '/p/notes'), ('View statistics', '/p/statistics')),
     'saves': (('Connect this save to the game', '/p/clock'), ('Sync desktop / online records', '/p/sync'), ('Set calendar & rules', '/p/rules')),
     'sync': (('Back up before switching', '/p/saves'), ('Connect the game instead', '/p/clock'), ('Manage account access', '/p/account')),
 }

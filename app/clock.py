@@ -1099,6 +1099,8 @@ from .play_clarity import receipt_summary
 @receipt_summary
 def receive(session: Session, link: ClockLink, report: dict) -> dict:
     save = session.get(ChronicleSave, link.save_id)
+    from . import crash_recovery
+    crash_recovery.lock(session, save)
     from . import infinite_decades
     infinite_decades.lock_current_branch(session, save)
     if not infinite_decades.import_allowed(save):
@@ -1124,6 +1126,13 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     hour = max(0, min(23, int(report.get("hour", report.get("game_hour", 0)))))
     minute = max(0, min(59, int(report.get("minute", report.get("game_minute", 0)))))
     second = max(0, min(59, int(report.get("second", report.get("game_second", 0)))))
+    recovery_hold = crash_recovery.gate(session, save, link, report, game_day, hour, minute)
+    if recovery_hold:
+        if protocol_result:
+            _commit_protocol_state(session, save, protocol_state, protocol_prior, protocol_result, report)
+            recovery_hold.update(report_sequence=protocol_result['sequence'], report_checksum=protocol_result['checksum'])
+        session.flush()
+        return recovery_hold
     settings_data = dict(save.settings or {})
     try:
         high_watermark = int(settings_data.get("clock_game_day_high_watermark"))
@@ -1187,6 +1196,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             response.update(report_sequence=protocol_result["sequence"],report_checksum=protocol_result["checksum"],
                             sequence_gap=protocol_result.get("sequence_gap"),
                             chain_mismatch=bool(protocol_result.get("chain_mismatch")))
+        crash_recovery.checkpoint(session, save, link)
         return response
     previous_tracker_day = int(save.global_day)
     day_advanced = target > save.global_day
@@ -1425,4 +1435,5 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
             sequence_gap=protocol_result.get("sequence_gap"),
             chain_mismatch=bool(protocol_result.get("chain_mismatch")),
         )
+    crash_recovery.checkpoint(session, save, link)
     return response

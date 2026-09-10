@@ -31,11 +31,12 @@ SYNC_KINDS = {
 }
 
 SECRET_MARKERS = ("password", "secret", "token", "api_key", "apikey", "database_url", "connection_string", "oauth")
+LOCAL_SETTINGS_KEYS = {'clock_recovery', 'clock_recovery_epoch'}
 
 
 def _public_settings(values: dict | None) -> dict:
     return {str(key): value for key, value in dict(values or {}).items()
-            if not any(marker in str(key).casefold() for marker in SECRET_MARKERS)}
+            if key not in LOCAL_SETTINGS_KEYS and not any(marker in str(key).casefold() for marker in SECRET_MARKERS)}
 
 
 def _device_name(device_id: str | None = None) -> str:
@@ -126,7 +127,7 @@ def materialize_special(session: Session, save: ChronicleSave, record: Record) -
                 value = max(1, value)
             setattr(save, field, value)
         private_values = {key: value for key, value in dict(save.settings or {}).items()
-                          if any(marker in str(key).casefold() for marker in SECRET_MARKERS)}
+                          if key in LOCAL_SETTINGS_KEYS or any(marker in str(key).casefold() for marker in SECRET_MARKERS)}
         save.settings = {**_public_settings(data.get("settings")), **private_values}
     elif record.kind == "portrait_blob":
         record_id, stage = str(data.get("record_id") or ""), str(data.get("stage") or "default")[:40]

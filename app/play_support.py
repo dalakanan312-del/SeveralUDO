@@ -71,6 +71,10 @@ def session_plan(rows, save, horizon=7):
                 add('Review: '+row.label,integer(row.global_day,day),55,'/p/automation#candidate-'+row.id)
             elif row.kind=='task' and data.get('feature')=='recovery' and not closed(data):
                 add('Recovery: '+row.label,integer(data.get('due_global_day'),day),40,'/p/family-projects#recovery')
+            elif row.kind=='task' and data.get('feature') in {'heritage_routine_task','heritage_thread','heritage_commitment'} and not closed(data):
+                if data.get('status') in {'Open','Active'}:
+                    target='seasonal-routines' if data['feature']=='heritage_routine_task' else 'story-threads'
+                    add(row.label,integer(data.get('due_global_day'),day),45 if data.get('priority')=='High' else 30,'/p/'+target+'#item-'+row.id)
         for sim in living:
             birth=integer(sim.data.get('birth_global_day'),sim.global_day)
             if birth is None: continue

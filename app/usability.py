@@ -82,6 +82,14 @@ def clock_status(save,link,prefs=None,now=None):
     if receipt_row:summary=receipt_row.summary or {}
     if summary.get('duplicate') and enabled and not paused:
         state='waiting';label='Repeated report received';detail='The relay is reachable but sent an already processed report. Last successful new game data is shown below.'
+    recovery=settings.get('clock_recovery') or {}
+    from .crash_recovery import held
+    recovering=held(save)
+    if recovering:
+        state='recovery';label='Game reloaded — changes held'
+        detail={'review':'The game clock moved backward. Open Crash Recovery to choose what to keep or undo.',
+                'catching_up':'Keeping history; waiting for the game to catch up before importing changes.',
+                'awaiting_full':'Recovery choice saved; waiting for a complete game report.'}[recovery['status']]
     labels={'new_baby':'birth detection','pregnancy_started':'pregnancy detection','relationship':'relationship update','relationship_changed':'relationship update','marriage':'marriage detection'}
     changes=[f"{n} {labels.get(k,k.replace('_',' '))}{'s' if n!=1 else ''}" for k,n in (summary.get('candidate_types') or {}).items() if n]
     for key,label_text in [('illnesses_created','illness records added'),('illnesses_ended','illnesses ended'),('households_created','households added'),('households_updated','households updated'),('parent_links_updated','parent links updated'),('population_updates','population updates'),('rolls_created','rolls scheduled'),('profile_updates','profiles with new game history'),('portraits_updated','portraits updated'),('household_members_linked','household assignments updated'),('generations_updated','generations updated')]:
@@ -91,9 +99,9 @@ def clock_status(save,link,prefs=None,now=None):
     receipt=(f"Received {int(receipt_age)} seconds ago" if receipt_age is not None and receipt_age<120 else f"Received {int(receipt_age//60)} minutes ago" if receipt_age is not None else 'No report received')
     receipt+=' · '+('game time changed' if summary.get('game_time_changed') else 'game time unchanged' if summary else 'game time comparison unavailable')+' · '+change_text
     if summary.get('duplicate'):receipt+=' · duplicate report ignored'
-    return {'receipt_summary':receipt,'state':state,'label':label,'detail':detail,'save_id':save.id,'save_name':save.name,'global_day':save.global_day,
+    return {'recovery_required':recovering,'receipt_summary':receipt,'state':state,'label':label,'detail':detail,'save_id':save.id,'save_name':save.name,'global_day':save.global_day,
             'game_day':link.last_game_day if link else None,'hour':link.last_game_hour if link else None,'minute':link.last_game_minute if link else None,
-            'last_success':seen.isoformat() if seen else None,'age_seconds':age,'can_mark_paused':bool(link and link.enabled and seen and not saved),'paused':paused}
+            'last_success':seen.isoformat() if seen else None,'age_seconds':age,'can_mark_paused':bool(link and link.enabled and seen and not saved and not recovering),'paused':paused}
 
 def confirmed_sql():
     p=Record.data['payload']
@@ -134,13 +142,13 @@ def review_changes(item,by_id):
 
 NAVIGATION_GROUPS=(
  {'id':'play','label':'Play','description':'Decide, play and review','icon':'▶',
-  'pages':('today','play-next','automation','clock','rolls','save-a-sims','planner','family-projects','events','challenge','drama-randomizer','drama','avatar','harry-potter','game-of-thrones')},
+  'pages':('today','play-next','automation','clock','crash-recovery','rolls','save-a-sims','planner','family-projects','seasonal-routines','story-threads','events','challenge','drama-randomizer','drama','avatar','harry-potter','game-of-thrones')},
  {'id':'people','label':'People','description':'Sims, families and daily life','icon':'♟',
-  'pages':('sims','households','relationships','pregnancies','illnesses','university','family-tree','life-records','world','names')},
+  'pages':('sims','households','historical-addresses','titles-estates','relationships','pregnancies','illnesses','university','family-tree','life-records','world','names','naming-customs')},
  {'id':'history','label':'History','description':'Remember and compare','icon':'✒',
-  'pages':('timeline','storyline','writers-room','notes','statistics','legacy-lab','infinite-decades','branch-comparison','historical-life')},
+  'pages':('timeline','storyline','writers-room','family-chronicle','notes','statistics','legacy-lab','infinite-decades','branch-comparison','historical-life')},
  {'id':'settings','label':'Settings','description':'Rules, preferences and maintenance','icon':'⚙',
-  'pages':('rules','roll-tables','occult-rules','historical-guidance','historical-check','plants','guides','tutorial','saves','sync','appearance','account','health','dice-audit','support')},
+  'pages':('rules','roll-tables','occult-rules','historical-guidance','historical-check','catch-up','plants','guides','tutorial','saves','sync','appearance','account','health','dice-audit','support')},
 )
 OPTIONAL_PAGES={'avatar':'avatar_decades','harry-potter':'harry_potter_decades','game-of-thrones':'game_of_thrones_decades'}
 

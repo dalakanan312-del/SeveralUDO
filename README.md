@@ -1,5 +1,27 @@
 # Decades Tracker 4
 
+## 4.6.23: household history and play support
+
+- **People → Historical Address Book:** properties and dated resident, tenant, guest and owner periods; related events distinguish explicit venue links from residence-based associations. Does not move Sims or rewrite their current household.
+- **People → Naming Customs:** source pools, namesakes, family surnames, editable patronymics, formal styles, era ranges and an explicit era override. Suggestions do not rename Sims.
+- **People → Titles & Estates:** holders, preserved tenure history, associated properties and unlimited ranked/disputed succession claims. Title transfers remain player decisions.
+- **Play → Seasonal Routines:** opt-in household instructions at four challenge-year quarters, scaling with year length. Due tasks appear on Today, respect the master automation switch, and generate once per year without pre-enablement backlogs.
+- **Play → Story Board & Promises:** unresolved stories, priorities, next steps, deadlines, named parties/witnesses and exact outcomes recorded in Storyline. Broken promises can open a contextual promise-themed Drama Deck scene.
+- **Settings → Historical Catch-up:** household-filtered, 50-item batches of pending past rolls/tasks; preview, historical completion or waiver, and protected undo. Does not fabricate dice results or execute death/follow-up logic. Administrative resolutions are separate from passing results in statistics.
+- **History → Share a Family Chronicle:** preview/download self-contained HTML with selected people, linked family connections, optional embedded portraits, yearly selected facts and statistics. Private facts and narrative text require explicit opt-ins; no automatic publishing or remote assets. Future entries and unselected relatives are excluded, and year-only births remain year-only.
+
+Those eight additions use already-supported synced note/task/story/scene types and require no game-mod change or new database table.
+
+### 4.6.23: crash / older-game-save recovery
+
+- **Play → Crash Recovery** holds game imports and the master automation scheduler when a newer report moves backward by a day or within the same day. Ordered duplicate and out-of-order reports are ignored before recovery detection; old unsequenced reporters show an uncertainty warning.
+- Keep all history and wait for the game to catch up, or keep history and map the restored game day to the current tracker Global Day. Both choices retain completed rolls. After skipped delta reports, a fresh full report is required before automation resumes.
+- Preview an all-record rollback to the nearest earlier observed checkpoint. It includes player edits and completed outcomes, restores available earlier record states, and soft-archives records created after the checkpoint. A full downloadable backup is required before any undo. Photos, dice audits, preferences and credentials are preserved. Missing earlier history, changed calendar/settings, frozen branch records, oversized plans, stale previews and failed backups prevent rollback instead of guessing or applying a partial recovery.
+- Recovery checkpoints start with reports received after this update. They are report observations, not actual game-save confirmations: there can be a gap between the checkpoint and the time the player saved. The page states that limitation before confirmation. Up to 2,048 ten-game-minute intervals are retained per save in a lightweight local `clock_checkpoints` table created at startup. It stores journal boundaries and a configuration digest, not duplicate Sim payloads. Checkpoints/recovery decisions are database-local and are not transported to another device through save sync or backup imports.
+- Review is save- and branch-scoped. Background held reports do not invalidate a rollback preview, but changed affected records, calendar settings, a further rewind, or an already-used/expired preview do. Replayed sessions start a new checkpoint epoch.
+
+No Clock Sync mod replacement is needed. Recovery points start after updating the tracker; they cannot reconstruct reports from before the update.
+
 `4.6.22` restores the named weekday on simplified Today and the shared game-connection panel. Live reports update the weekday and time without a page reload, including at midnight and across week boundaries. Today uses the last reported in-game weekday, not the challenge's Global Day or year length; without a report, the tracker-derived weekday is explicitly labelled. Saved-game and disconnected clocks retain their last reported weekday. No game-mod or save-data changes are needed.
 
 `4.6.21` fixes roll confirmation being blocked by unrelated background reports. Confirmation rechecks the real consequences using the same stored die result and reviewed random choices, while preserving newer clock metadata, unrelated Sim details, and the current save revision. Changes to the roll, source rules, eligibility, or consequences still require review. A **Review updated preview** button retains the original die result and replaces repeated errors with a single message. Rejected confirmations preserve the previous Undo action. No game-mod update is required.

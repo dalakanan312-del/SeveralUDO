@@ -11,6 +11,7 @@
 </header>
 
 {% if drama_notice %}<div class="notice drama-notice" role="status">{{drama_notice}}</div>{% endif %}
+{% if heritage_scene %}<section class="panel"><p class="eyebrow">RECORDED COMMITMENT · PLAYER-ENTERED FACTS</p><h2>{{heritage_scene.label}}</h2><p>{{heritage_scene.promise}}</p><p><strong>Recorded breach:</strong> {{heritage_scene.breach}}</p><p>The decisions below are a fictional scene responding to this record. Recording its ending does not change the promise’s status or in-game relationships.</p><a href="/p/story-threads#item-{{heritage_scene.id}}">Open the commitment</a></section>{% endif %}
 {% if drama_discovery %}<section class="panel"><p class="eyebrow">RECORDED DISCOVERY · PLAYER-ENTERED FACTS</p><h2>{{drama_discovery.label}}</h2><p>{{drama_discovery.witness}} is recorded as knowing this secret.</p><p class="play-notes">{{drama_discovery.notes}}</p><p>The choices below are a fictional scene built around this discovery. They do not automatically change who knows.</p><a href="/p/family-projects#secret">Manage knowledge →</a></section>{% endif %}
 
 <section class="panel drama-draw-panel">

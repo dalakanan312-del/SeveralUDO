@@ -99,6 +99,9 @@ def record_label(value: object, *, maximum: int = RECORD_LABEL_MAX_LENGTH) -> st
 def automation_enabled(save: ChronicleSave) -> bool:
     """Return the save-wide master automation state; existing saves default on."""
     from .infinite_decades import frozen
+    from .crash_recovery import held
+    if held(save):
+        return False
     if frozen(save):
         return False
     value = (save.settings or {}).get("automation_enabled", True)
@@ -4139,6 +4142,7 @@ def _create_automatic_followup(session: Session, save: ChronicleSave, origin: Re
 def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, roll: Record) -> int:
     """Create every required built-in or declared follow-up without duplicates."""
     data = roll.data or {}
+    if data.get('catch_up_resolution'):return 0
     if not bool(data.get("completed")):
         return 0
     parent_key = str(data.get("source_rule_key") or data.get("occult_rule_key") or "")
@@ -4551,6 +4555,7 @@ def schedule_campaign_rolls(session: Session, save: ChronicleSave, sims: list[Re
 def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Record, actual: int) -> int:
     """Schedule the configured event/war follow-up only when its trigger matches."""
     data = origin.data or {}; source_id = data.get("campaign_id") or data.get("event_id")
+    if data.get('catch_up_resolution'):return 0
     source_record = session.get(Record, source_id) if source_id else None
     if not source_record or source_record.deleted: return 0
     config = source_record.data or {}
