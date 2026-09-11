@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.10 reliable, queued life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.11 reliable, named life-history telemetry for The Sims 4."""
 
 import base64
 import hashlib
@@ -10,9 +10,10 @@ import threading
 import time
 
 from . import compat_201 as _compat
+from . import names as _names
 
 
-VERSION = "2.2.10"
+VERSION = "2.2.11"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -69,11 +70,11 @@ def _tuning_id(value):
     """Return a stable EA/creator tuning identifier without requiring a pack."""
     if value is None:
         return None
-    for owner in (value, getattr(value, "resource_key", None), getattr(value, "guid", None)):
+    for owner in (value, _names.safe_attr(value, "resource_key"), _names.safe_attr(value, "guid")):
         if owner is None:
             continue
         for name in ("guid64", "instance", "tuning_id", "id"):
-            raw = getattr(owner, name, None)
+            raw = _names.safe_attr(owner, name)
             try:
                 raw = raw() if callable(raw) else raw
             except Exception:
@@ -111,18 +112,23 @@ def _read(owner, names, mapping_keys=False):
     return ()
 
 
-def _humanize(value, prefixes=()):
-    if value is None:
+def _technical_name(value, prefixes=()):
+    if value is None or _names.localization_key(value) is not None:
         return ""
     candidates = []
-    for attr in ("display_name", "stat_name", "skill_name", "name", "__name__"):
-        text = _core._value_or_call(value, attr, None)
-        if text:
-            candidates.append(str(text))
-    candidates.append(_core._tuning_text(value))
+    owners = (value, type(value)) if _tuning_id(value) else (value,)
+    for owner in owners:
+        for attr in ("__name__", "name"):
+            text = _names.safe_attr(owner, attr)
+            if isinstance(text, str):
+                candidates.append(text)
+    try:
+        candidates.append(_core._tuning_text(value))
+    except Exception:
+        pass
     for raw in candidates:
-        text = str(raw or "").strip()
-        if not text or text.startswith("<") or " object at " in text:
+        text = _names.readable_text(raw)
+        if not text or text in ("type", "str", "int", "float", "SimpleNamespace", "LocalizedString", "_Wrapper"):
             continue
         text = text.rsplit(".", 1)[-1].strip("<>'\"")
         for prefix in prefixes:
@@ -135,6 +141,54 @@ def _humanize(value, prefixes=()):
         if text and not text.isdigit():
             return text
     return ""
+
+
+def _humanize(value, prefixes=()):
+    label, _key, _source = _names.resolve_display(value)
+    if label:
+        # Literal game text keeps its punctuation/capitalization. Technical
+        # name attributes still need the same cleaning as tuning class names.
+        if '_' not in label:
+            return label
+        return _technical_name(label, prefixes)
+    return _technical_name(value, prefixes)
+
+
+def _name_row(value, prefixes=(), kind="game value"):
+    label = _humanize(value, prefixes)
+    _resolved, key, source = _names.resolve_display(value)
+    tuning = _tuning_id(value)
+    if not label and not key and not tuning:
+        return None
+    row = {"name": label or "Unidentified " + kind, "tuning_id": tuning}
+    if key:
+        row["localization_key"] = key
+        row["name_source"] = source if _resolved else ('tuning-name' if label else 'unresolved')
+    return row
+
+
+def _trait_snapshot(sim_info):
+    tracker = _names.safe_attr(sim_info, "trait_tracker")
+    values = []
+    supported = False
+    seen = set()
+    for attr in ("equipped_traits", "traits", "get_traits"):
+        try:
+            collection = getattr(tracker, attr, None)
+            collection = collection() if callable(collection) else collection
+            if collection is None:
+                continue
+            collection = tuple(collection.values() if hasattr(collection, 'values') else collection)
+            supported = True
+            for value in collection:
+                identity = _tuning_id(value) or id(value)
+                if identity not in seen:
+                    seen.add(identity)
+                    values.append(value)
+        except Exception:
+            continue
+    rows = [_name_row(value, ("trait_",), "trait") for value in values]
+    return sorted((row for row in rows if row), key=lambda row: (row['name'].casefold(), str(row['tuning_id']))), supported
 
 
 def _skill_type(stat):
@@ -226,9 +280,10 @@ def _skill_snapshot(sim_info):
                         break
         if level is None or level < 1:
             continue
-        label = _humanize(tuning, ("skill_", "skill "))
-        if label and not any(item["name"] == label for item in result):
-            result.append({"name": label, "level": level, "tuning_id": _tuning_id(tuning)})
+        row = _name_row(tuning, ("skill_", "skill "), "skill")
+        if row:
+            row["level"] = level
+            result.append(row)
     result.sort(key=lambda item: item["name"].lower())
     return result, bool(trackers or candidates)
 
@@ -266,7 +321,8 @@ def _milestone_snapshot(sim_info):
         values = accepted
     labels = []
     for value in values:
-        label = _humanize(_milestone_tuning(value), ("milestone_", "developmental milestone "))
+        row = _name_row(_milestone_tuning(value), ("milestone_", "developmental milestone "), "milestone")
+        label = row["name"] if row else ""
         if label and label not in labels:
             labels.append(label)
     labels.sort(key=lambda value: value.lower())
@@ -285,11 +341,12 @@ def _milestone_details(sim_info):
     seen = set()
     for value in values:
         tuning = _milestone_tuning(value)
-        label = _humanize(tuning, ("milestone_", "developmental milestone "))
+        row = _name_row(tuning, ("milestone_", "developmental milestone "), "milestone")
+        label = row["name"] if row else ""
         key = _tuning_id(tuning) or label.casefold()
         if label and key not in seen:
             seen.add(key)
-            rows.append({"name": label, "tuning_id": _tuning_id(tuning)})
+            rows.append(row)
     return sorted(rows, key=lambda row: row["name"].casefold())
 
 
@@ -624,7 +681,10 @@ def _relationship_details(sim_info, existing):
                 bit_labels.append(label)
                 bit_details.append({"name": label, "tuning_id": _tuning_id(value)})
         row = by_id.get(other_id, {})
-        category = _relationship_category(bit_labels, row.get("category", "Relationship"))
+        # Classify from stable tuning evidence as well as display labels;
+        # changing a translation must not turn family into romantic interests.
+        bit_evidence = bit_labels + [_technical_name(value, ("relationshipBit_", "relationship_bit_")) for value in bits]
+        category = _relationship_category(bit_evidence, row.get("category", "Relationship"))
         relationship = _relationship_object(tracker, other_id, target)
         friendship = None
         romance = None
@@ -654,7 +714,7 @@ def _relationship_details(sim_info, existing):
             "relationship_sentiment_scan_supported": sentiment_supported,
             "relationship_satisfaction": satisfaction,
             "relationship_satisfaction_source": satisfaction_source,
-            "scandal_signals": _scandal_signals(bit_labels),
+            "scandal_signals": _scandal_signals(bit_evidence),
         })
     rows = sorted(by_id.values(), key=lambda row: (str(row.get("category") or ""), str(row.get("name") or "")))
     return {"relationships": rows, "relationship_scan_supported": True}, True
@@ -833,6 +893,7 @@ _PENDING_HEALTH_ALIASES = (
 def _health_marker_text(value):
     return " ".join((
         _humanize(value, ("buff_", "trait_")),
+        _technical_name(value, ("buff_", "trait_")),
         str(_core._tuning_text(value) or ""),
     )).casefold()
 
@@ -1133,14 +1194,15 @@ def _personal_development_details(sim_info):
     completed = _named_collection(aspiration_tracker, (
         "completed_aspirations", "get_completed_aspirations", "completed_milestones",
     ), ("aspiration_",))
-    traits = _named_collection(getattr(sim_info, "trait_tracker", None), (
+    trait_values = _read(getattr(sim_info, "trait_tracker", None), (
         "equipped_traits", "traits", "get_traits",
-    ), ("trait_",))
-    lifestyles = sorted(value for value in traits if "lifestyle" in value.casefold())
-    fears = sorted(value for value in traits if "fear" in value.casefold())
-    character_values = sorted(value for value in traits if any(marker in value.casefold() for marker in (
+    ))
+    traits = [(_humanize(value, ("trait_",)), _technical_name(value, ("trait_",)).casefold()) for value in trait_values]
+    lifestyles = sorted(set(label for label, technical in traits if label and "lifestyle" in technical))
+    fears = sorted(set(label for label, technical in traits if label and "fear" in technical))
+    character_values = sorted(set(label for label, technical in traits if label and any(marker in technical for marker in (
         "manners", "responsibility", "empathy", "conflict resolution", "emotional control",
-    )))
+    ))))
     preferences = _named_collection(sim_info, (
         "preferences", "likes", "dislikes", "get_preferences",
     ), ("preference_",))
@@ -1182,17 +1244,17 @@ def _named_details(owner, names, prefixes=()):
     rows = []
     seen = set()
     for value in _read(owner, names, mapping_keys=False):
-        label = _humanize(value, prefixes)
+        row = _name_row(value, prefixes)
+        label = row['name'] if row else ''
         key = _tuning_id(value) or label.casefold()
         if label and key not in seen:
             seen.add(key)
-            rows.append({"name": label, "tuning_id": _tuning_id(value)})
+            rows.append(row)
     return sorted(rows, key=lambda row: row["name"].casefold())
 
 
 def _stable_tuning_details(sim_info, result):
-    trait_rows = _named_details(getattr(sim_info, "trait_tracker", None),
-                                ("equipped_traits", "traits", "get_traits"), ("trait_",))
+    trait_rows = result.get("trait_details") or []
     degree_rows = _named_details(getattr(sim_info, "degree_tracker", None),
                                  ("get_all_degrees", "degrees", "completed_degrees"), ("degree_",))
     aspiration_rows = _named_details(getattr(sim_info, "aspiration_tracker", None),
@@ -1296,7 +1358,19 @@ def _environment_diagnostics(capabilities, errors):
 
 
 def _extended_snapshot(sim_info, household):
+    _names.advance_resources()
     result = _previous_extended_snapshot(sim_info, household)
+    trait_rows, traits_supported = _trait_snapshot(sim_info)
+    if traits_supported:
+        result["traits"] = [row['name'] for row in trait_rows]
+    else:
+        # Older game builds may expose traits only through the compatibility
+        # reader. Resolve each item by its own key, never by list position.
+        trait_rows = [row for row in (_name_row(value, ("trait_",), "trait")
+                      for value in (result.get('traits') or [])) if row]
+        result['traits'] = [row['name'] for row in trait_rows]
+    result['trait_details'] = trait_rows
+    result['traits_scan_supported'] = traits_supported
     skills, skills_supported = _skill_snapshot(sim_info)
     milestones, milestones_supported = _milestone_snapshot(sim_info)
     result.update({
@@ -1307,6 +1381,7 @@ def _extended_snapshot(sim_info, household):
         "telemetry_version": 6,
     })
     capabilities = {
+        "traits": traits_supported,
         "skills": skills_supported,
         "milestones": milestones_supported,
     }
@@ -1365,6 +1440,7 @@ def _extended_snapshot(sim_info, household):
     result.update(_stable_tuning_details(sim_info, result))
     capabilities["stable_tuning_ids"] = True
     result.update(_environment_diagnostics(capabilities, errors))
+    result['name_resolution'] = _names.diagnostics()
     return result
 
 

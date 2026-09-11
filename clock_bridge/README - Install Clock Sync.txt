@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.2.10
+SEVERALUDO CLOCK SYNC 2.2.11
 Complete Windows installation guide
 ===================================
 
@@ -13,6 +13,13 @@ THE INCLUDED TOOLS
 5. Test SeveralUDO Clock Sync.bat - checks the install, private config, queue, and tracker receiver without changing tracker time.
 6. config.json - your private connection to one tracker save. A reusable kit contains config-template.json instead.
 7. This guide and TROUBLESHOOTING.txt.
+
+READABLE TRAIT, SKILL AND MILESTONE NAMES (2.2.11)
+- Names are resolved before transmission, rather than sending the game's "hash: ..." debug text. Traits, skills, milestones, aspirations, careers, relationship sentiments and other named details use the shared reader.
+- The compact game-name dictionary is embedded inside SeveralUDOClockSync.ts4script; there is no extra dictionary file to install. Loaded English custom-mod string tables are read in small cached batches when the game exposes them. No optional mod is required.
+- If a string table is unavailable, Clock Sync uses the readable tuning name. If neither source has a name, it reports an unidentified item and retains the localization key and tuning ID separately; it does not invent an in-game name.
+- Restart The Sims 4 after updating the script. Fresh reports update profiles; an already queued old report is not rewritten. Additional custom names may resolve over subsequent polling batches.
+- This changes labels only. Stable Sim/tuning IDs, skill levels, completed milestones, health checks and the existing private save connection are preserved.
 
 VERIFY THE DOWNLOAD BEFORE INSTALLING
 - Open the SeveralUDOClockSync folder inside the ZIP. The relay and starter are inside that folder, not beside it.

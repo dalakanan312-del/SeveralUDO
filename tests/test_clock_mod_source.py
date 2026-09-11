@@ -40,6 +40,7 @@ class ClockModSourceTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.addCleanup(sys.modules.pop, package_name, None)
         self.addCleanup(sys.modules.pop, compat.__name__, None)
+        self.addCleanup(sys.modules.pop, package_name + ".names", None)
         return module
 
     def test_current_skill_and_milestone_apis_are_reported(self):
@@ -202,7 +203,7 @@ class ClockModSourceTests(unittest.TestCase):
         )
         result = module._extended_snapshot(sim, None)
         self.assertEqual(result["telemetry_version"], 6)
-        self.assertEqual(result["clock_sync_version"], "2.2.10")
+        self.assertEqual(result["clock_sync_version"], "2.2.11")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)
@@ -385,6 +386,10 @@ class ClockModSourceTests(unittest.TestCase):
             self.assertIn("severaludo_clock_sync/__init__.pyc", names)
             self.assertIn("severaludo_clock_sync/compat_201.pyc", names)
             self.assertIn("severaludo_clock_sync/core.pyc", names)
+            self.assertIn("severaludo_clock_sync/names.pyc", names)
+            self.assertIn("severaludo_clock_sync/game_names.json", names)
+            dictionary = json.loads(archive.read("severaludo_clock_sync/game_names.json"))
+            self.assertEqual(dictionary["names"]["66466717"], "Good")
             wrapper = archive.read("severaludo_clock_sync/__init__.pyc")
             compatibility = archive.read("severaludo_clock_sync/compat_201.pyc")
         self.assertIn(b"compat_201", wrapper)

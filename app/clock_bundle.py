@@ -10,7 +10,7 @@ from .config import ROOT
 from . import game_modes
 
 
-CLOCK_SYNC_VERSION = "2.2.10"
+CLOCK_SYNC_VERSION = "2.2.11"
 CLOCK_SYNC_FOLDER = "SeveralUDOClockSync"
 BRIDGE_ROOT = ROOT / "clock_bridge"
 SIMS3_CLOCK_SYNC_VERSION = "retired"

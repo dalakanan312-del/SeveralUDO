@@ -1757,7 +1757,7 @@ class CoreSmokeTests(unittest.TestCase):
             ping = client.get("/api/clock/ping", headers={"Authorization": f"Bearer {private_config['sync_token']}"})
             self.assertEqual(ping.status_code, 200)
             self.assertTrue(ping.json()["ok"])
-            self.assertEqual(ping.json()["clock_sync_version"], "2.2.10")
+            self.assertEqual(ping.json()["clock_sync_version"], "2.2.11")
             private_report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {private_config['sync_token']}"}, json={"game_day": 60, "hour": 12, "minute": 0, "household_members": []})
             self.assertEqual(private_report.status_code, 200)
             clock_link = client.post("/api/clock/links").json()
@@ -3576,6 +3576,35 @@ class CoreSmokeTests(unittest.TestCase):
                 reconcile_sim(session,save,sim,{"telemetry_version":2,"traits":[],"skills":[],"milestones":[]})
                 self.assertEqual(sim.data["game_traits"],[])
                 self.assertEqual(sim.data["game_skills"],[])
+                session.rollback()
+
+    def test_named_mod_snapshot_updates_profiles_without_receiver_dictionary(self):
+        from types import SimpleNamespace
+        from tests.test_clock_mod_source import ClockModSourceTests
+        from tests.test_clock_names import LocalizedString
+        mod = ClockModSourceTests.load_module(self)
+        mod._names._bundled = {777: "Custom Storyteller", 888: "Ancient Runes"}
+        trait = type('trait_CustomStoryteller', (), {'display_name': LocalizedString(777), 'guid64': 1777})
+        skill = type('Skill_AncientRunes', (), {'display_name': LocalizedString(888), 'guid64': 1888, 'is_skill': True})
+        source = SimpleNamespace(
+            trait_tracker=SimpleNamespace(equipped_traits=(trait,)),
+            all_skills=(skill,),
+            get_statistic=lambda _: SimpleNamespace(stat_type=skill, get_user_value=lambda: 6),
+        )
+        snapshot = json.loads(json.dumps(mod._extended_snapshot(source, None)))
+        with TestClient(app), mock.patch('app.game_metadata.trait_localizations', return_value={}):
+            with SessionLocal() as session:
+                save=session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
+                sim=Record(save_id=save.id,kind="sim",label="Named Clock Test",data={
+                    "game_sim_id":"named-clock", "game_traits":["hash: 777"], "game_skills":["hash: 888"],
+                })
+                session.add(sim);session.flush()
+                reconcile_sim(session,save,sim,snapshot)
+                self.assertEqual(sim.data['game_traits'], ['Custom Storyteller'])
+                self.assertEqual(sim.data['game_skills'], ['Ancient Runes (level 6)'])
+                self.assertEqual(sim.data['game_trait_details'][0]['tuning_id'], '1777')
+                self.assertEqual(sim.data['game_trait_details'][0]['localization_key'], 777)
+                self.assertEqual(sim.data['game_skill_details'][0]['localization_key'], 888)
                 session.rollback()
 
     def test_clock_telemetry_retains_complete_current_and_future_fields(self):

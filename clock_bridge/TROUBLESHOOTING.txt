@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.2.10 - TROUBLESHOOTING
+SEVERALUDO CLOCK SYNC 2.2.11 - TROUBLESHOOTING
 ================================================
 
 RECEIVER SAYS WAITING
@@ -32,7 +32,7 @@ THE MOD DOES NOT APPEAR AT GAME START
 - Delete localthumbcache.package after closing the game if The Sims 4 is still loading an old copy.
 
 SKILLS OR MILESTONES ARE MISSING
-- Confirm the Game Clock page offers Clock Sync 2.2.10 or newer.
+- Confirm the Game Clock page offers Clock Sync 2.2.11 or newer.
 - Close The Sims 4, replace SeveralUDOClockSync.ts4script, then restart the game.
 - Enter Live Mode with the affected played household and let one Sim minute pass.
 - Skills are included after level 1. Completed milestones require Growing Together; a missing pack is handled safely.
@@ -46,7 +46,13 @@ HEALTHCARE REDUX SAYS A SIM IS SICK BUT WILL NOT DIAGNOSE THEM
 - Clock Sync does not alter or repair Healthcare Redux disease state. Use the healthcare mod's own support or recovery instructions if its diagnosis appointment remains stuck.
 
 MODGUARD OR SECURITY SOFTWARE SHOWS A WARNING
-Clock Sync 2.2.10 does not make the HTTPS request from inside The Sims 4. The Script Mod writes checksummed JSON files to report_queue; SeveralUDOClockRelay.ps1 sends them. Its temporary local save also remains a JSON file so ModGuard can validate it. Only use files downloaded from your tracker. Do not approve a differently named executable or script.
+Clock Sync 2.2.11 does not make the HTTPS request from inside The Sims 4. The Script Mod writes checksummed JSON files to report_queue; SeveralUDOClockRelay.ps1 sends them. Its temporary local save also remains a JSON file so ModGuard can validate it. Only use files downloaded from your tracker. Do not approve a differently named executable or script.
+
+TRAITS, SKILLS OR MILESTONES STILL SHOW OLD HASH LABELS
+- Install the 2.2.11 script while the game is closed, then restart the game and load a household. Updating the relay alone cannot replace code already loaded by the game.
+- Wait for a NEW report from that household, not merely another delivery of an old queued report. Do not delete queued reports or change the private config to repair names.
+- The name dictionary is inside the .ts4script file. Custom text resolves gradually from loaded English string tables. Missing text uses a readable tuning name, or an explicit unidentified label with the IDs retained separately.
+- Missing optional packs/mods must not stop clock or pregnancy reports. The next new snapshot replaces current profile labels; historical reports remain as originally received.
 
 REPORT SUCCEEDS BUT THE TRACKER STILL SAYS WAITING
 - Refresh the Game Clock page.

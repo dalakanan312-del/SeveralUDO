@@ -14,12 +14,12 @@ $compilerCandidates = @(
 )
 $compiler = $compilerCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
 $output = Join-Path $bridgeRoot "SeveralUDOClockSync.ts4script"
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) "severaludo_clock_sync_228"
+$staging = Join-Path ([System.IO.Path]::GetTempPath()) "severaludo_clock_sync_2211"
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $resolvedStaging = [System.IO.Path]::GetFullPath($staging)
 
 if (-not $compiler) { throw "The Sims Python 3.7 compiler was not found. Set SEVERALUDO_TS4_PYTHON to a Python 3.7 executable or add tools\\python37\\python.exe." }
-if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Clock Sync 2.2.10 source was not found." }
+if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Clock Sync source was not found." }
 if (-not (Test-Path -LiteralPath $output -PathType Leaf)) { throw "The previous Clock Sync archive was not found." }
 if (-not $resolvedStaging.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe Clock Sync staging path." }
 
@@ -73,11 +73,19 @@ if ($LASTEXITCODE -ne 0) { throw "Clock Sync compatibility validation failed." }
 
 $compiled = Join-Path $module.FullName "__init__.pyc"
 & $compiler -c "import py_compile; py_compile.compile(r'$source', cfile=r'$compiled', doraise=True)"
-if ($LASTEXITCODE -ne 0) { throw "Clock Sync 2.2.10 compilation failed." }
+if ($LASTEXITCODE -ne 0) { throw "Clock Sync compilation failed." }
+
+$nameSource = Join-Path $bridgeRoot "mod_source\severaludo_clock_sync\names.py"
+$nameCompiled = Join-Path $module.FullName "names.pyc"
+& $compiler -c "import py_compile; py_compile.compile(r'$nameSource', cfile=r'$nameCompiled', doraise=True)"
+if ($LASTEXITCODE -ne 0) { throw "Clock Sync name resolver compilation failed." }
+# A compact public dictionary ships INSIDE the script archive, so the single
+# .ts4script download works without a separate dependency or personal files.
+Copy-Item -LiteralPath (Join-Path $repoRoot "app\game_localization_fallbacks.json") -Destination (Join-Path $module.FullName "game_names.json")
 
 $validateWrapper = "import marshal,sys; f=open(sys.argv[1],'rb'); f.read(16); c=marshal.load(f); assert 'compat_201' in c.co_names, 'wrapper does not import compatibility module'"
 & $compiler -c $validateWrapper $compiled
-if ($LASTEXITCODE -ne 0) { throw "Clock Sync 2.2.10 wrapper validation failed." }
+if ($LASTEXITCODE -ne 0) { throw "Clock Sync wrapper validation failed." }
 
 $temporaryZip = [System.IO.Path]::ChangeExtension($output, ".zip")
 if (Test-Path -LiteralPath $temporaryZip) { Remove-Item -LiteralPath $temporaryZip -Force }
