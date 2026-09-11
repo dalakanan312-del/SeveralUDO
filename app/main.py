@@ -115,7 +115,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.24")
+app = FastAPI(title="Decades Tracker", version="4.6.25")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -4649,17 +4649,31 @@ def save_today_focus(request: Request, save_id: str, current_heir_id: str = Form
 
 
 @app.post("/api/today/pregnancy-count-rolls")
-def add_pregnancy_count_roll(request: Request, sim_id: str = Form(...)):
+def add_pregnancy_count_roll(request: Request, sim_id: str = Form(...), view: str = Form(""),
+                             save_id: str = Form(""), household: str = Form("")):
     with db() as session:
         ctx=context(request,session);save=ctx["save"];sim=session.get(Record,sim_id)
         if not save or not sim or sim.save_id!=save.id:
             raise HTTPException(400,"Choose a Sim from the active save.")
+        if save_id and save_id!=save.id:
+            raise HTTPException(409,"The open save changed. Refresh Today before creating a pregnancy roll.")
         try:
+            if not session.scalar(select(Record.id).where(Record.id==sim.id,Record.save_id==save.id,usability.living_sql(save))):
+                raise ValueError("Pregnancy-count rolls are only available for living Sims already born.")
             roll,created=domain.create_pregnancy_count_roll(session,save,sim)
         except ValueError as exc:
+            if view=="workboard":
+                request.session["pregnancy_roll_notice"]=str(exc)
+                return RedirectResponse("/p/today?"+urlencode({"window":"today","household":household or "all"})+"#work-pregnancy-count",status_code=303)
             raise HTTPException(400,str(exc)) from exc
         if created:
             set_today_undo(request,f"Added pregnancy-count roll for {sim.label}",delete_ids=[roll.id])
+        if view=="workboard":
+            request.session["pregnancy_roll_notice"]=(
+                f"Pregnancy roll ready for {sim.label}. Use the die below; no result has been rolled yet." if created else
+                f"Showing {sim.label}'s existing pregnancy allowance. Its recorded result is unchanged." if roll.data.get("completed") else
+                f"Showing {sim.label}'s existing pregnancy roll. No duplicate was created.")
+            return RedirectResponse(usability_ui.pregnancy_destination(session,save,roll,household),status_code=303)
     return RedirectResponse("/p/today?task=rolls&roll_kind=pregnancy-count",status_code=303)
 
 

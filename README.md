@@ -1,5 +1,9 @@
 # Decades Tracker 4
 
+## 4.6.25: pregnancy rolls on simplified Today
+
+**＋ Roll for pregnancies** is directly available on simplified Today. Choose a living Sim from the current household selection, prepare their annual pregnancy-count roll, then use the native die and consequence confirmation. Existing pending or completed allowances are opened without duplication or rerolling, in the correct date window and ahead of long task lists. Missing era rules show a helpful message and link to Roll Tables. The detailed Today controls remain available.
+
 ## 4.6.24: historical portraits and clearer Tray photos
 
 - **History → Portrait Studio:** create a historical portrait from a Sim's Tray or imported photo; choose a life stage, suggested historical year, region and style. Suggested dates use recorded aging results or the save's scaled age schedule and can be overridden without changing the Sim's birth record.

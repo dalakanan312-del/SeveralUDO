@@ -4,12 +4,28 @@ from sqlalchemy.exc import IntegrityError
 from urllib.parse import urlencode
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select,func,and_,or_
+from sqlalchemy import select,func,and_,or_,case
 from . import usability as ui,domain,play_clarity as clarity,heritage
 from .models import Record,ClockLink,UiPreference,ChronicleSave,Membership
 
 SECTIONS={'decisions':'Needs your decision','happening':'Happening today','completed':'Completed'}
 LIMIT=24
+
+def pregnancy_people(session,save,household=''):
+    criteria=[Record.save_id==save.id,ui.living_sql(save)]
+    if household and household!='all':
+        criteria.append(clarity.household_predicate(save,household))
+    return list(session.execute(select(Record.id,Record.label).where(*criteria).order_by(func.lower(Record.label),Record.id)))
+
+def pregnancy_destination(session,save,roll,household=''):
+    # Find an existing allowance in its actual window, without reopening it.
+    completed=bool(roll.data.get('completed'))
+    day=ui.integer(roll.data.get('completed_global_day') if completed else roll.global_day,save.global_day)
+    window='overdue' if day<save.global_day else 'future' if day>save.global_day else 'today'
+    if household and household!='all' and not session.scalar(select(Record.id).where(
+            Record.id==roll.id,Record.save_id==save.id,clarity.household_predicate(save,household))):
+        household='all'
+    return '/p/today?'+urlencode({'window':window,'household':household or 'all','pregnancy_roll':roll.id})+'#work-'+('completed' if completed else 'decisions')
 
 def guard_action(request,save,row):
     if not request.headers.get('X-Decades-Fragment'):return
@@ -54,11 +70,15 @@ def board(session,save,params,section=None):
         if household and household!='all':criteria.append(clarity.household_predicate(save,household))
         count=session.scalar(select(func.count()).select_from(Record).where(*criteria)) or 0
         pages=max(1,(count+LIMIT-1)//LIMIT);page=min(page,pages)
-        rows=list(session.scalars(select(Record).where(*criteria).order_by(Record.global_day,Record.created_at,Record.id).offset((page-1)*LIMIT).limit(LIMIT)))
+        # Put the requested allowance on page one even in a very busy save.
+        # This changes ordering only; all save/living/window filters still apply.
+        focus=str(params.get('pregnancy_roll') or '')
+        ordering=([case((Record.id==focus,0),else_=1)] if focus else [])+[Record.global_day,Record.created_at,Record.id]
+        rows=list(session.scalars(select(Record).where(*criteria).order_by(*ordering).offset((page-1)*LIMIT).limit(LIMIT)))
         ids={str(r.data.get('sim_id') or r.data.get('mother_id') or '') for r in rows}
         by_id={r.id:r for r in session.scalars(select(Record).where(Record.save_id==save.id,Record.id.in_(ids)))} if ids else {}
         panels,consumed=clarity.birth_panels(session,save,rows,key,window)
-        def url(number):return '/p/today?'+urlencode({'window':window,'household':household, key+'_page':number})
+        def url(number):return '/p/today?'+urlencode({'window':window,'household':household, key+'_page':number,**({'pregnancy_roll':focus} if focus else {})})
         groups.append({'id':key,'label':SECTIONS[key] if window=='today' or key!='happening' else 'Starting '+window,'count':count,'rows':rows,'by_id':by_id,'page':page,'pages':pages,'previous':url(page-1),'next':url(page+1)})
         groups[-1].update(birth_panels=panels,rows=[r for r in rows if r.id not in consumed])
     households=list(session.execute(select(Record.id,Record.label).where(Record.save_id==save.id,Record.kind=='household',Record.deleted.is_(False)).order_by(Record.label)))
@@ -78,6 +98,8 @@ def record_href(row):
 
 def render(request,session,ctx,templates):
     ctx.update(board(session,ctx['save'],ctx['ui_query']))
+    ctx['pregnancy_roll_people']=pregnancy_people(session,ctx['save'],ctx['board_household'])
+    ctx['pregnancy_roll_notice']=request.session.pop('pregnancy_roll_notice',None)
     return templates.TemplateResponse(request,'today_workboard.html',ctx)
 
 def schedule(m,session,save):

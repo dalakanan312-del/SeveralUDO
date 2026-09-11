@@ -1,0 +1,15 @@
+<details class="panel" id="work-pregnancy-count" data-ui-detail="pregnancy-count-roll">
+  <summary>＋ Roll for pregnancies <small>Pregnancy allowance</small></summary>
+  <p>Choose how many pregnancies a Sim receives using the rule and die for {{historical_year(save,save.global_day)}}. This counts pregnancies, not individual babies.</p>
+  <form action="/api/today/pregnancy-count-rolls" method="post" class="form-grid" hx-boost="false">
+    <input type="hidden" name="view" value="workboard">
+    <input type="hidden" name="save_id" value="{{save.id}}">
+    <input type="hidden" name="household" value="{{board_household}}">
+    <label>Living Sim<select name="sim_id" required><option value="">Choose a Sim</option>{% for sim in pregnancy_roll_people %}<option value="{{sim.id}}">{{sim.label}}</option>{% endfor %}</select></label>
+    <div><small>One allowance per Sim per historical year. If a roll already exists, this opens it without rerolling or changing its result.</small></div>
+    <button class="primary" {% if not pregnancy_roll_people %}disabled{% endif %}>Create or find pregnancy roll</button>
+    <a href="/p/roll-tables#family-planning">Pregnancy roll rules →</a>
+  </form>
+  {% if not pregnancy_roll_people %}<p class="muted">No living Sims in this household selection. Choose another household or add a Sim first.</p>{% endif %}
+</details>
+{% if pregnancy_roll_notice %}<p class="notice" role="status">{{pregnancy_roll_notice}}</p>{% endif %}
