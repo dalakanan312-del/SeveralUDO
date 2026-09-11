@@ -1,5 +1,15 @@
 # Decades Tracker 4
 
+## 4.6.24: historical portraits and clearer Tray photos
+
+- **History → Portrait Studio:** create a historical portrait from a Sim's Tray or imported photo; choose a life stage, suggested historical year, region and style. Suggested dates use recorded aging results or the save's scaled age schedule and can be overridden without changing the Sim's birth record.
+- **Settings → AI Portrait Settings:** explicit enable switch, private encrypted provider key, model selection and a connection check that does not generate a paid image. OpenAI generation uses the player's own API credits; desktop Local AI requires a compatible ComfyUI bridge.
+- Profiles link to generation from each source photo and show a historical portrait gallery. Originals are preserved. Generated images are labelled AI reconstructions, with full-size viewing, downloads and recoverable archiving.
+- Tray imports now decode the embedded transparency mask and retain native resolution, eliminating the blurred edge background. Rescan existing Tray photos to replace previously imported blurred copies; manually chosen portraits remain protected. New decade snapshots use clean, flat backgrounds.
+- Paid generation is deliberate, runs in the background and does not automatically retry interrupted requests. No game-mod change is required.
+
+See [Portrait Studio guide](docs/portrait-studio.md) for setup and limitations.
+
 ## 4.6.23: household history and play support
 
 - **People → Historical Address Book:** properties and dated resident, tenant, guest and owner periods; related events distinguish explicit venue links from residence-based associations. Does not move Sims or rewrite their current household.

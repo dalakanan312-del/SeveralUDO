@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="page-header"><div><p class="eyebrow">SETTINGS · PORTRAIT STUDIO</p><h1>AI portrait settings</h1><p>Turn generation on, then create portraits when you choose. Nothing is generated automatically.</p></div><a class="button" href="/p/portrait-studio">Open portrait gallery</a></header>
+{% if studio_notice %}<p class="notice" role="status">{{studio_notice}}</p>{% endif %}
+<section class="panel ai-settings-panel" id="ai-settings">
+  <div class="section-heading"><h2>Image generation is {{'on' if studio_config.enabled else 'off'}}</h2><span class="status">{{'Ready' if studio_config.ready else 'Setup needed' if studio_config.enabled else 'Disabled'}}</span></div>
+  <form action="/portrait-studio/settings" method="post" class="form-grid">
+    <input type="hidden" name="csrf" value="{{studio_csrf}}">
+    <label class="wide ai-enable"><input type="checkbox" name="enabled" {% if studio_config.enabled %}checked{% endif %}> Enable AI portrait generation</label>
+    <p class="wide muted">This enables both individual and marriage portraits for your account{{' on this device' if local_mode else ''}}. Your original photos and existing gallery remain available when AI is off.</p>
+    <label>Image provider<select name="provider"><option value="openai" {% if studio_config.provider != 'comfyui' %}selected{% endif %}>OpenAI · your API key</option>{% if local_mode %}<option value="comfyui" {% if studio_config.provider=='comfyui' %}selected{% endif %}>Local AI · ComfyUI bridge</option>{% endif %}</select></label>
+    <label>OpenAI image model<input name="openai_image_model" value="{{studio_config.openai_image_model}}" required maxlength="100"><small>Keep your configured GPT Image model, or enter another image-edit model your account supports.</small></label>
+    <label>OpenAI API key<input name="openai_api_key" type="password" autocomplete="new-password" maxlength="1000" placeholder="{{'Key saved — leave blank to keep it' if studio_config.has_openai_key else 'Paste your API key'}}"><small>{{'An API key is saved.' if studio_config.has_openai_key else 'No API key is configured.'}} Newly entered keys are encrypted in private account settings, not included in shared save exports.</small></label>
+    <label class="checkbox"><input type="checkbox" name="clear_key"> Remove my saved API key</label>
+    {% if studio_config.key_error %}<p class="notice wide">{{studio_config.key_error}}</p>{% endif %}
+    {% if local_mode %}<label class="wide">Local ComfyUI address<input name="comfyui_url" value="{{studio_config.comfyui_url}}" placeholder="http://127.0.0.1:8188"><small>Requires a running local service with the Decades <code>/decades/generate</code> bridge that accepts reference images. Stock ComfyUI alone does not provide this endpoint.</small></label>{% endif %}
+    <div class="notice wide">OpenAI sends the selected reference image and portrait instructions to your OpenAI account and uses API credits. A ChatGPT subscription does not supply API credits. Local AI uses your configured local service. Saving these settings does not generate or buy anything.</div>
+    <button class="primary">Save AI settings</button>
+  </form>
+  <form action="/portrait-studio/test" method="post" class="portrait-setup-test"><input type="hidden" name="csrf" value="{{studio_csrf}}"><button>Check saved connection</button><small>Save changes first. This check does not generate an image.</small></form>
+</section>
+<section class="panel"><h2>How to make a historical portrait</h2><ol><li>Enable generation, choose a provider and save its setup.</li><li>Open a Sim’s profile, then choose <strong>Generate historical portrait</strong> beneath a Tray or uploaded photo.</li><li>Review the life stage, suggested year, region and style. Press <strong>Generate portrait</strong>.</li><li>Find the finished image in Portrait Studio and on that Sim’s profile. The reference photo is never replaced.</li></ol><p>AI aims for era-appropriate detail, but can make historical or identity mistakes. Review the finished portrait before treating it as part of your chronicle.</p><a href="https://developers.openai.com/api/docs/guides/image-generation" target="_blank" rel="noopener">OpenAI image-generation documentation</a></section>
+{% endblock %}

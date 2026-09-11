@@ -36,6 +36,15 @@ class UiPreference(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class PortraitProviderSetting(Base):
+    """Private per-user credentials, never placed in UI preferences or save exports."""
+    __tablename__ = "portrait_provider_settings"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    encrypted_key: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class ClockReceipt(Base):
     __tablename__ = "clock_receipts"
     save_id: Mapped[str] = mapped_column(ForeignKey("saves.id", ondelete="CASCADE"), primary_key=True)

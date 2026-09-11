@@ -6,11 +6,11 @@ import io
 import math
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import sync
+from . import portraits, sync
 from .models import ChronicleSave, Portrait, Record
 from .tray_scanner import _name_key, _sim_names, decode_sgi, discover_portraits, import_portraits
 
@@ -95,12 +95,14 @@ def _hex_color(value: object) -> str:
 def _portrait_tile(raw: bytes, size: tuple[int, int], background: str) -> Image.Image:
     """Place a centered Tray portrait on a flat matte, never a blurred fill."""
     width, height = size
-    source = Image.open(io.BytesIO(raw)).convert("RGB")
+    source = portraits.open_image(raw)
     fitted = ImageOps.fit(source, (width - 22, height - 22), method=Image.Resampling.LANCZOS, centering=(.5, .38))
     matte = Image.new("RGB", size, background)
     mask = Image.new("L", fitted.size, 0)
     draw = ImageDraw.Draw(mask)
     draw.rounded_rectangle((0, 0, fitted.width - 1, fitted.height - 1), radius=max(18, width // 7), fill=255)
+    if fitted.mode == "RGBA":
+        mask = ImageChops.multiply(mask, fitted.getchannel("A"))
     matte.paste(fitted, (11, 11), mask)
     return matte
 

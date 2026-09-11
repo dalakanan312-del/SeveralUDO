@@ -4,16 +4,19 @@ from __future__ import annotations
 
 Tray files are treated as read-only.  A householdbinary protobuf connects a
 Sim's name to the instance identifier in the corresponding SGI filename.  The
-SGI contains the game's encrypted JPEG portrait.
+SGI contains the game's encrypted JPEG portrait and optional PNG alpha mask.
 """
 
 import base64
+import io
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from PIL import Image
 from sqlalchemy import func, select
 
+from . import portraits
 from .save_scanner import SaveScanError, _text, _value, protobuf_fields
 
 
@@ -49,13 +52,21 @@ def _name_key(value: object) -> str:
 
 
 def decode_sgi(data: bytes) -> bytes:
-    """Return the JPEG payload from an SGI portrait without changing the file."""
+    """Decode an SGI without changing it; return PNG when it has transparency."""
     if len(data) <= _SGI_HEADER_BYTES or len(data) > MAX_TRAY_FILE_BYTES:
         raise SaveScanError("The Tray portrait has an unsupported size.")
     payload = data[_SGI_HEADER_BYTES:]
     image = bytes(value ^ _SGI_XOR_KEY[index % len(_SGI_XOR_KEY)] for index, value in enumerate(payload))
     if not image.startswith(b"\xff\xd8\xff"):
         raise SaveScanError("The Tray portrait is not a supported Sims 4 JPEG.")
+    try:
+        decoded = portraits.open_image(image)
+        if decoded.mode == "RGBA":
+            output = io.BytesIO()
+            decoded.save(output, format="PNG")
+            return output.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise SaveScanError("The Tray portrait or its transparency mask is invalid.") from exc
     return image
 
 

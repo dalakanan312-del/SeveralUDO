@@ -275,9 +275,17 @@ def _store_game_portrait(session: Session, save: ChronicleSave, sim: Record, sna
     encoded = snapshot.get("portrait_image_base64")
     if not encoded:
         return False
+    automatic_sources = {"clock-sync-game", "save-file-game", "tray-library-game"}
+    source = str(snapshot.get("portrait_source") or "clock-sync-game")
+    if source not in automatic_sources:
+        source = "clock-sync-game"
     try:
         raw = base64.b64decode(str(encoded), validate=True)
-        normalized, mime = portraits.normalize_image(raw, max_pixels=512)
+        # Library portraits already have useful native resolution (usually
+        # 640x640). Don't shrink or recompress them like small game thumbnails.
+        from_tray = source == "tray-library-game"
+        normalized, mime = portraits.normalize_image(raw, max_pixels=1600 if from_tray else 512,
+                                                     lossless=from_tray)
     except Exception:
         return False
     stage = _stage_key(snapshot.get("age_stage")) or "default"
@@ -292,14 +300,14 @@ def _store_game_portrait(session: Session, save: ChronicleSave, sim: Record, sna
                 stage_items[0] if stage_items else None)
     # Automatic detection may refresh its own thumbnails, but it must never
     # replace a portrait the player uploaded, generated, restored or synced.
-    automatic_sources = {"clock-sync-game", "save-file-game", "tray-library-game"}
     if item and item.source not in automatic_sources:
+        return False
+    # Keep the selected Library portrait when a smaller clock/save thumbnail
+    # arrives. A new Library scan can still refresh that same life-stage slot.
+    if item and item.source == "tray-library-game" and source != "tray-library-game":
         return False
     if item and item.image == normalized:
         return False
-    source = str(snapshot.get("portrait_source") or "clock-sync-game")
-    if source not in automatic_sources:
-        source = "clock-sync-game"
     if item:
         item.image = normalized
         item.mime_type = mime

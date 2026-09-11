@@ -21,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain, drama_randomizer, play_support_ui, usability, usability_ui, heritage, heritage_ui, crash_recovery_ui
-from . import infinite_decades, infinite_decades_ui, birth_dates
+from . import infinite_decades, infinite_decades_ui, birth_dates, portrait_studio
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
@@ -39,6 +39,8 @@ FEATURES = {
     "sims": ("Sims", "People, life stages, portraits and family details"),
     "households": ("Households", "Residences, branches, class and rotation"),
     "relationships": ("Relationships", "Marriages, partners and couple portraits"),
+    "portrait-studio": ("Portrait Studio", "Historical AI portraits, life-stage galleries and AI settings"),
+    "ai-settings": ("AI Portrait Settings", "Enable image generation and connect your private image provider"),
     "pregnancies": ("Pregnancies", "Pregnancy timelines, outcomes and newborn scheduling"),
     "university": ("University", "Enrollment, terms, credits, grades and academic performance"),
     "rolls": ("Rolls", "Automatic obligations, outcomes and audited dice"),
@@ -113,7 +115,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.23")
+app = FastAPI(title="Decades Tracker", version="4.6.24")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1259,21 +1261,13 @@ def save_notification_preferences(request: Request, browser_enabled: str = Form(
 
 @app.post("/account/portraits")
 def save_portrait_provider(request: Request, provider: str = Form(...), comfyui_url: str = Form(""), openai_api_key: str = Form(""), openai_image_model: str = Form("")):
-    if not settings.local_mode:
-        raise HTTPException(400, "Hosted portrait settings are controlled by private deployment variables.")
-    try:
-        portraits.save_local_config(provider, comfyui_url, openai_api_key, openai_image_model)
-        request.session["portrait_notice"] = "Portrait provider saved."
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return RedirectResponse("/p/account", status_code=303)
+    request.session["portrait_notice"] = "Portrait setup has moved. Use the AI settings form below; nothing from the old form was saved."
+    return RedirectResponse("/p/ai-settings", status_code=303)
 
 
 @app.post("/account/portraits/test")
 def test_portrait_provider(request: Request):
-    result = portraits.test_provider()
-    request.session["portrait_notice"] = result["message"]
-    return RedirectResponse("/p/account", status_code=303)
+    return RedirectResponse("/p/ai-settings", status_code=303)
 
 
 @app.get("/api/notifications")
@@ -1531,6 +1525,8 @@ def feature_page(request: Request, page: str):
             return heritage_ui.render(request,session,ctx,templates)
         if page in crash_recovery_ui.PAGES:
             return crash_recovery_ui.render(request,session,ctx,templates)
+        if page in {portrait_studio.PAGE, "ai-settings"}:
+            return portrait_studio.render(__import__(__name__, fromlist=['app']), request, session, ctx)
         if page == "family-tree" and not save:
             return RedirectResponse("/p/saves", status_code=303)
         if infinite_decades.state(save) and page == "family-tree":
@@ -2229,7 +2225,7 @@ def feature_page(request: Request, page: str):
                 notification_categories=notifications.DEFAULT_CATEGORIES,
                 account_notice=request.session.pop("account_notice", None),
                 invitation_link=request.session.pop("invitation_link", None),
-                portrait_config=portraits.effective_config(),
+                portrait_config=portrait_studio.public_configuration(portrait_studio.configuration(session, user.id)),
                 portrait_notice=request.session.pop("portrait_notice", None),
             )
         if page == "automation" and save:
@@ -2328,7 +2324,7 @@ def feature_page(request: Request, page: str):
             )) if kind else 0
             if page=="sims":
                 ctx["name_cultures"]=names.library_names(session,save.id,include_recorded=bool(ctx["all_sims"]))
-        ctx.update(records=records, kind=kind, portrait_status=portraits.provider_status())
+        ctx.update(records=records, kind=kind, portrait_status=portrait_studio.public_configuration(portrait_studio.configuration(session, ctx['user'].id)))
         if page in {'university','planner','avatar','harry-potter','game-of-thrones','occult-rules'} and life_filter!='all':
             ctx['all_sims']=[row for row in ctx.get('all_sims',[]) if (_living_sim(row,save) if life_filter=='living' else sim_is_deceased(row,save))]
             if page=='planner':ctx['family_plan_analysis']=[row for row in ctx.get('family_plan_analysis',[]) if not row.get('sim') or (_living_sim(row['sim'],save) if life_filter=='living' else sim_is_deceased(row['sim'],save))]
@@ -2685,11 +2681,13 @@ def sim_profile(request: Request, sim_id: str):
         pregnancy_plan=domain.pregnancy_allowance_status(session,save,sim)
         catchup_roll_count=len(domain.prior_lifecycle_rolls(session,save,sim)) if sim_status(sim,save)!="Deceased" else 0
         sim_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==sim.id).order_by(Portrait.created_at)))
+        studio_profile_rows=portrait_studio.gallery(session, save.id, sim.id, limit=6)
         delete_impact=domain.sim_delete_impact(session,sim) if request.query_params.get("delete")=="1" else None
         name_history={"surname_at_birth":domain.surname_at_birth(sim),"married_surname":domain.married_surname(sim)}
         ctx = context(request, session, sim=sim, name_history=name_history, hogwarts_profile_theme=hogwarts_profile_theme(save,sim), all_sims=all_sims, all_households=households, relationships=relationships, relationship_rows=relationship_rows, partner_relationship_rows=partner_relationship_rows, other_relationship_rows=other_relationship_rows, parents=parents,children=children,siblings=siblings,current_household=current_household,related_rolls=related_rolls,life_history=life_history,illnesses=illnesses,pregnancies=pregnancies,university_profile=university_profile,profile_summary=profile_summary,pregnancy_plan=pregnancy_plan,catchup_roll_count=catchup_roll_count,sim_portraits=sim_portraits,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),portrait_notice=request.session.pop("portrait_notice",None),sim_notice=request.session.pop("sim_notice",None), delete_impact=delete_impact, title=sim.label, page="sims")
         from .play_clarity import life_schedule
         ctx['life_schedule']=life_schedule(session,save,sim)
+        ctx['studio_profile_rows']=studio_profile_rows
         return templates.TemplateResponse(request, "sim_profile.html", ctx)
 
 
@@ -2962,6 +2960,7 @@ def relationship_profile(request: Request, relationship_id: str):
         game_relationship_state = insights.game_relationship_detail(partners[0], partners[1]) if len(partners) == 2 else []
         relationship_portraits=list(session.scalars(select(Portrait).where(Portrait.record_id==relationship.id).order_by(Portrait.created_at)))
         ctx=context(request,session,relationship=relationship,all_sims=sims,partners=partners,game_relationship_state=game_relationship_state,is_partner_relationship=insights.relationship_is_partner(relationship),photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),relationship_portraits=relationship_portraits,portrait_status=portraits.provider_status(),portrait_notice=request.session.pop("portrait_notice",None),relationship_notice=request.session.pop("relationship_notice",None),title=relationship.label,page="relationships")
+        ctx['portrait_status']=portrait_studio.public_configuration(portrait_studio.configuration(session, signed_in(request,session).id))
         return templates.TemplateResponse(request,"relationship_profile.html",ctx)
 
 
@@ -5452,18 +5451,19 @@ def generate_marriage_portrait(request: Request, relationship_id: str, first_sim
         if not relationship or not first or not second: raise HTTPException(404)
         owned_save(request, session, relationship.save_id)
         if first.save_id != relationship.save_id or second.save_id != relationship.save_id: raise HTTPException(400)
-        first_photo = session.scalar(select(Portrait).where(Portrait.record_id == first.id, Portrait.stage == "default"))
-        second_photo = session.scalar(select(Portrait).where(Portrait.record_id == second.id, Portrait.stage == "default"))
+        first_photo = session.scalar(select(Portrait).where(Portrait.record_id == first.id).order_by((Portrait.stage == "default").desc(), Portrait.created_at.desc()).limit(1))
+        second_photo = session.scalar(select(Portrait).where(Portrait.record_id == second.id).order_by((Portrait.stage == "default").desc(), Portrait.created_at.desc()).limit(1))
         if not first_photo or not second_photo: raise HTTPException(400, "Both Sims need portraits first.")
         try:
-            generated = portraits.generate(first_photo.image, second_photo.image, first.label, second.label, marriage_year)
+            config = portrait_studio.configuration(session, signed_in(request,session).id)
+            generated = portraits.generate(first_photo.image, second_photo.image, first.label, second.label, marriage_year, config=config)
             normalized, mime = portraits.normalize_image(generated)
         except Exception as exc:
-            request.session["portrait_notice"]=f"Marriage portrait was not generated: {str(exc)[:220]}"
+            request.session["portrait_notice"]=portrait_studio.provider_error(exc)
             return RedirectResponse(f"/relationships/{relationship_id}",status_code=303)
         item = session.scalar(select(Portrait).where(Portrait.record_id == relationship.id, Portrait.stage == "marriage"))
-        if item: item.image, item.mime_type, item.source = normalized, mime, settings.portrait_provider
-        else: item=Portrait(save_id=relationship.save_id, record_id=relationship.id, stage="marriage", image=normalized, mime_type=mime, source=settings.portrait_provider);session.add(item)
+        if item: item.image, item.mime_type, item.source = normalized, mime, config['provider']
+        else: item=Portrait(save_id=relationship.save_id, record_id=relationship.id, stage="marriage", image=normalized, mime_type=mime, source=config['provider']);session.add(item)
         session.flush();sync.sync_portrait(session,session.get(ChronicleSave,relationship.save_id),item,relationship.id,"marriage")
         request.session["portrait_notice"]="Marriage portrait generated."
     return RedirectResponse(request.headers.get("referer") or "/p/relationships", status_code=303)
@@ -5488,5 +5488,6 @@ play_support_ui.register(app,db,context,templates)
 heritage_ui.register(__import__(__name__,fromlist=['app']))
 crash_recovery_ui.register(__import__(__name__,fromlist=['app']))
 usability_ui.register(__import__(__name__,fromlist=['app']))
+portrait_studio.register(__import__(__name__,fromlist=['app']))
 from . import action_previews
 action_previews.register(__import__(__name__,fromlist=['app']))

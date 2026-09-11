@@ -27,6 +27,7 @@
 <link rel="stylesheet" href="/static/usability.css?v={{static_version}}">
 <link rel="stylesheet" href="/static/play_clarity.css?v={{static_version}}">
 <link rel="stylesheet" href="/static/heritage.css?v={{static_version}}">
+{% if page in ['portrait-studio','ai-settings','sims'] %}<link rel="stylesheet" href="/static/portrait_studio.css?v={{static_version}}">{% endif %}
   <script src="/static/htmx.min.js?v={{static_version}}" defer></script>
 {% if ads_config.verification_available %}<meta name="google-adsense-account" content="{{ads_config.verification_client}}">{% endif %}
 {% if user and ads_config.consent_available %}<script id="decades-ad-config" type="application/json">{{ads_config|tojson}}</script>{% endif %}
