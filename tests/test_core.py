@@ -4424,7 +4424,9 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertIn("Bookworm",page.text);self.assertIn("Logic (level 5)",page.text);self.assertIn("Learned to Walk",page.text)
             self.assertIn("LIFE AT A GLANCE",page.text);self.assertIn("Family connections",page.text);self.assertIn("Health & family planning",page.text);self.assertIn("PROFILE EDITOR",page.text)
             self.assertIn('dossier-portrait deceased-portrait',page.text)
-            self.assertIn('deceased-portrait',client.get("/p/sims").text)
+            # The gameplay list defaults to living Sims; explicitly request
+            # the deceased record when checking its monochrome portrait.
+            self.assertIn('deceased-portrait',client.get("/p/sims?record_status=dead&q=Visible+Telemetry").text)
             for field in ("first_name","birth_global_day","mother_id","household_id","game_traits","game_skills","game_milestones","notes"):
                 self.assertIn(f'name="{field}"',page.text)
             with SessionLocal() as session:
