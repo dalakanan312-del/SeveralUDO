@@ -14,7 +14,7 @@ $compilerCandidates = @(
 )
 $compiler = $compilerCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
 $output = Join-Path $bridgeRoot "SeveralUDOClockSync.ts4script"
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) "severaludo_clock_sync_2211"
+$staging = Join-Path ([System.IO.Path]::GetTempPath()) "severaludo_clock_sync_2212"
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $resolvedStaging = [System.IO.Path]::GetFullPath($staging)
 

@@ -16,7 +16,7 @@ from .domain import (
     schedule_rolls,
     sync_generations,
 )
-from . import game_metadata, telemetry
+from . import game_metadata, telemetry, trait_visibility
 
 
 def _key(action: str, sim_id: str, value: str) -> str:
@@ -1007,6 +1007,16 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
     if telemetry_version >= 6 and snapshot.get("inventory_scan_supported") is True:
         clearable.update({"game_inventory_items", "game_inventory_scan_supported"})
     updates = {key: value for key, value in telemetry_values.items() if value not in (None, "", []) or key in clearable}
+    if snapshot.get("traits_scan_supported") is False:
+        updates.pop("game_traits", None)
+        updates.pop("game_trait_details", None)
+    elif "game_trait_details" in updates:
+        updates["game_trait_details"] = trait_visibility.retain_classification(
+            updates["game_trait_details"], data.get("game_trait_details"),
+        )
+        if not updates["game_trait_details"] and "trait_details" not in snapshot:
+            # Legacy trait-only reports carry no new classification evidence.
+            updates.pop("game_trait_details")
     changed_telemetry = any(data.get(key) != value for key, value in updates.items())
     # Only a small subset of live telemetry can change whether a roll applies.
     # Mark it for the intake path so a newly detected occult or relocation does

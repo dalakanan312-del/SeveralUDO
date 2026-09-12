@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.11 reliable, named life-history telemetry for The Sims 4."""
+"""Clock Sync 2.2.12 named life-history telemetry and game trait types."""
 
 import base64
 import hashlib
@@ -13,7 +13,7 @@ from . import compat_201 as _compat
 from . import names as _names
 
 
-VERSION = "2.2.11"
+VERSION = "2.2.12"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -187,7 +187,27 @@ def _trait_snapshot(sim_info):
                     values.append(value)
         except Exception:
             continue
-    rows = [_name_row(value, ("trait_",), "trait") for value in values]
+    rows = []
+    for value in values:
+        row = _name_row(value, ("trait_",), "trait")
+        if not row:
+            continue
+        # equipped_traits includes internal traits too. The actual tuning
+        # TraitType, not the display name or CAS visibility flag, distinguishes
+        # HIDDEN traits from personality/reward/other regular traits.
+        trait_type = _names.safe_attr(value, 'trait_type')
+        try:
+            from traits.trait_type import TraitType
+            if trait_type is not None:
+                trait_type = TraitType(trait_type)
+                row['trait_type_id'] = int(trait_type)
+                row['trait_type'] = _names.safe_attr(trait_type, 'name') or str(trait_type).rsplit('.', 1)[-1]
+                row['is_hidden'] = trait_type == TraitType.HIDDEN
+                row['visibility_source'] = 'game-trait-type'
+        except Exception:
+            # Unsupported tuning must remain unclassified, never guessed.
+            pass
+        rows.append(row)
     return sorted((row for row in rows if row), key=lambda row: (row['name'].casefold(), str(row['tuning_id']))), supported
 
 

@@ -1,4 +1,5 @@
 import io
+from enum import IntEnum
 import json
 import struct
 import sys
@@ -24,6 +25,8 @@ class ClockNamesTests(unittest.TestCase):
         self.mod = self.load_module()
         self.names = self.mod._names
         self.names._bundled = {101: 'Creative', 202: 'Logic', 303: 'First Steps'}
+        self.trait_type = IntEnum('TraitType', {'PERSONALITY': 0, 'GAMEPLAY': 1, 'HIDDEN': 4})
+        self.enterContext(patch.dict(sys.modules, {'traits.trait_type': types.SimpleNamespace(TraitType=self.trait_type)}))
 
     def test_localized_proto_is_not_stringified_as_a_name(self):
         trait = type('trait_Creative', (), {'display_name': LocalizedString(101), 'guid64': 50})
@@ -99,12 +102,31 @@ class ClockNamesTests(unittest.TestCase):
         self.assertEqual(result['milestone_details'][0]['localization_key'], 303)
 
     def test_equipped_and_hidden_traits_are_unioned_without_duplicates(self):
-        first = type('trait_Creative', (), {'guid64': 1})
-        second = type('trait_HiddenFlag', (), {'guid64': 2})
+        first = type('trait_Creative', (), {'guid64': 1, 'trait_type': self.trait_type.PERSONALITY})
+        second = type('trait_HiddenFlag', (), {'guid64': 2, 'trait_type': self.trait_type.HIDDEN})
         sim = types.SimpleNamespace(trait_tracker=types.SimpleNamespace(equipped_traits=(first,), traits=(first, second)))
         result = self.mod._extended_snapshot(sim, None)
         self.assertEqual(result['traits'], ['Creative', 'Hidden Flag'])
         self.assertEqual(len(result['trait_details']), 2)
+        self.assertFalse(result['trait_details'][0]['is_hidden'])
+        self.assertTrue(result['trait_details'][1]['is_hidden'])
+        self.assertEqual(result['trait_details'][1]['trait_type'], 'HIDDEN')
+        self.assertEqual(result['trait_details'][1]['trait_type_id'], 4)
+
+    def test_visibility_comes_from_type_not_name_or_cas_flag(self):
+        values = (
+            type('trait_HiddenTalent', (), {'guid64': 1, 'trait_type': self.trait_type.GAMEPLAY, 'cas_trait_hidden': True}),
+            type('trait_FriendlyLookingName', (), {'guid64': 2, 'trait_type': self.trait_type.HIDDEN, 'cas_trait_hidden': False}),
+            type('trait_HiddenUnknown', (), {'guid64': 3}),
+            type('trait_InvalidType', (), {'guid64': 4, 'trait_type': 'broken'}),
+        )
+        rows, supported = self.mod._trait_snapshot(types.SimpleNamespace(trait_tracker=types.SimpleNamespace(equipped_traits=values)))
+        by_id = {row['tuning_id']: row for row in rows}
+        self.assertTrue(supported)
+        self.assertFalse(by_id['1']['is_hidden'])
+        self.assertTrue(by_id['2']['is_hidden'])
+        self.assertNotIn('is_hidden', by_id['3'])
+        self.assertNotIn('is_hidden', by_id['4'])
 
     def test_legacy_traits_resolve_by_key_not_sorted_position(self):
         self.mod._previous_extended_snapshot = lambda *args: {'traits': ['hash: 202', 'hash: 101', 'Custom readable name']}

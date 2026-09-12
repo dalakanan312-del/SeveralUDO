@@ -50,7 +50,7 @@
     <label>Father / second parent<select name="father_id"><option value="">Unknown</option>{% for person in all_sims %}<option value="{{person.id}}" {% if person.id==p.get('inferred_father_id') %}selected{% endif %}>{{person.label}}</option>{% endfor %}</select></label>
     <label>Tracker household<select name="household_id"><option value="">Unassigned</option>{% for home in all_households %}<option value="{{home.id}}" {% if home.id==p.get('inferred_household_id') %}selected{% endif %}>{{home.label}}</option>{% endfor %}</select></label>
     <label>Career<input name="career" value="{{p.get('career','')}}"></label><label>Education<input name="education" value="{{p.get('education','')}}"></label>
-    <label class="wide">Traits — one per line<textarea name="traits">{{game_labels(p.get('traits'),p.get('trait_details'),kind='trait')|join('\n')}}</textarea></label>
+    {% with trait_sections=trait_groups(p.get('traits'),p.get('trait_details')),trait_field_prefix='' %}{% include '_trait_fields.html' %}{% endwith %}
     <label class="wide">Skills — one per line<textarea name="skills">{{game_labels(p.get('skills'),p.get('skill_details'),kind='skill')|join('\n')}}</textarea></label>
     <label class="wide">Milestones — one per line<textarea name="milestones">{{game_labels(p.get('milestones'),p.get('milestone_details'),kind='milestone')|join('\n')}}</textarea></label>
   {% elif action == 'pregnancy_discovered' %}

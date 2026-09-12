@@ -1,4 +1,4 @@
-SEVERALUDO CLOCK SYNC 2.2.11
+SEVERALUDO CLOCK SYNC 2.2.12
 Complete Windows installation guide
 ===================================
 
@@ -14,7 +14,12 @@ THE INCLUDED TOOLS
 6. config.json - your private connection to one tracker save. A reusable kit contains config-template.json instead.
 7. This guide and TROUBLESHOOTING.txt.
 
-READABLE TRAIT, SKILL AND MILESTONE NAMES (2.2.11)
+VISIBLE AND HIDDEN TRAITS (2.2.12)
+- Reports include each trait's actual game TraitType and whether it is HIDDEN. Equipped traits can be hidden too; the reader does not infer visibility from names or from the separate CAS flag.
+- The tracker separates regular traits, hidden traits, and unclassified legacy data on Sim profiles and new-Sim reviews. Hidden traits stay available to illness, occult, and other automations.
+- Install the script while The Sims 4 is closed. Load your household and wait for a fresh report. Old reports without type information remain clearly labeled as unclassified, not guessed.
+
+READABLE TRAIT, SKILL AND MILESTONE NAMES (2.2.11 AND LATER)
 - Names are resolved before transmission, rather than sending the game's "hash: ..." debug text. Traits, skills, milestones, aspirations, careers, relationship sentiments and other named details use the shared reader.
 - The compact game-name dictionary is embedded inside SeveralUDOClockSync.ts4script; there is no extra dictionary file to install. Loaded English custom-mod string tables are read in small cached batches when the game exposes them. No optional mod is required.
 - If a string table is unavailable, Clock Sync uses the readable tuning name. If neither source has a name, it reports an unidentified item and retains the localization key and tuning ID separately; it does not invent an in-game name.
