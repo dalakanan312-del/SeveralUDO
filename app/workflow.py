@@ -1,6 +1,7 @@
 """Read-only wayfinding: existing pages, section anchors and related tasks."""
 
 RELATED_TASKS = {
+    'family-fortunes': (('Planned marriages','/p/relationships'),('Dowries & promises','/p/life-records#dowries'),('Estate plans','/p/historical-life#estate'),('Exact endings','/p/storyline')),
     'historical-addresses': (('Current households','/p/households'),('Titles & estates','/p/titles-estates'),('Record a move','/p/world#migration-new')),
     'titles-estates': (('Historical address book','/p/historical-addresses'),('Inheritance & finances','/p/historical-life#estate'),('Succession rules','/p/challenge#succession')),
     'naming-customs': (('Regional name library','/p/names'),('Add a Sim','/p/sims'),('Family connections','/p/family-tree')),
@@ -13,7 +14,7 @@ RELATED_TASKS = {
     'branch-comparison': (('Manage branches','/p/infinite-decades'), ('Explore family tree','/p/family-tree')),
     'historical-check': (('Read source guidance','/p/historical-guidance'), ('Edit rule tables','/p/roll-tables')),
     'writers-room': (('Read Storyline','/p/storyline'), ('Family correspondence tools','/p/historical-life#letters')),
-    'drama': (('Roll an in-game drama prompt', '/p/drama-randomizer'), ('Read recorded outcomes', '/p/storyline')),
+    'drama': (('Play Family Fortunes', '/p/family-fortunes'), ('Roll an in-game drama prompt', '/p/drama-randomizer'), ('Read recorded outcomes', '/p/storyline')),
     'drama-randomizer': (('Play the decision-tree game', '/p/drama'), ('Read recorded outcomes', '/p/storyline'), ('Review game changes', '/p/automation')),
     'today': (('What should I play next?', '/p/play-next'), ('Review game updates', '/p/automation'), ('Plan household turns', '/p/planner#rotation'), ('View the timeline', '/p/timeline'), ('Edit roll rules', '/p/roll-tables')),
     'automation': (('Check game connection', '/p/clock'), ('Return to Today', '/p/today'), ('Correct a Sim profile', '/p/sims')),

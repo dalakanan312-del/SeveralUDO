@@ -14,13 +14,27 @@
     const d=dialog('Review before confirming');paragraph(d,p.label);
     paragraph(d,p.actual!=null?`Result ${p.actual} · ${p.outcome}`:`Moves ${p.counts.moved} pending rolls · adds ${p.counts.added} obligations · retires ${p.counts.retired}`);
     if(p.completed_unchanged)paragraph(d,'Completed results stay unchanged.');
-    paragraph(d,'No proposed changes have been applied. Native die throws are retained, so reopening this preview does not reroll them.');
+    paragraph(d,p.kind==='roll'?'No proposed changes have been applied. Decline this result to roll again. Retries and updated previews keep the same throw.':'No proposed changes have been applied.');
     const ul=document.createElement('ul');for(const effect of p.effects){const li=document.createElement('li');li.textContent=effect;ul.append(li);}d.append(ul);
     const confirm=document.createElement('button');confirm.type='button';confirm.className='primary';confirm.textContent='Confirm these changes';
-    const cancel=document.createElement('button');cancel.type='button';cancel.textContent='Keep unchanged';cancel.addEventListener('click',()=>d.close());d.append(confirm,cancel);
+    const cancel=document.createElement('button');cancel.type='button';cancel.textContent=p.kind==='roll'?'Decline result':'Keep unchanged';d.append(confirm,cancel);
     const errorMessage=document.createElement('p');errorMessage.setAttribute('role','alert');errorMessage.hidden=true;d.append(errorMessage);
     const refresh=document.createElement('button');refresh.type='button';refresh.textContent='Review updated preview';refresh.hidden=true;d.append(refresh);
     function showError(error){errorMessage.hidden=false;errorMessage.textContent='Nothing confirmed. '+error.message;}
+    async function decline(){
+      if(cancel.disabled)return;
+      if(cancel.dataset.closeOnly==='true'){d.close();return;}
+      if(p.kind!=='roll'){d.close();return;}
+      const wasConfirmDisabled=confirm.disabled,wasRefreshDisabled=refresh.disabled;
+      confirm.disabled=true;cancel.disabled=true;refresh.disabled=true;
+      try{await json('/api/previews/'+encodeURIComponent(p.token)+'/decline',{method:'POST',headers:headers()});
+        d.close();report('Result declined. Click Roll for a fresh throw; the same number can occur by chance.');
+      }catch(error){errorMessage.hidden=false;errorMessage.textContent='Could not finish declining. '+error.message;
+        confirm.disabled=wasConfirmDisabled;cancel.disabled=false;refresh.disabled=wasRefreshDisabled;
+        if(error.status===409||error.status===404){confirm.disabled=true;refresh.disabled=true;cancel.dataset.closeOnly='true';cancel.textContent='Close preview';}}
+    }
+    cancel.addEventListener('click',decline);
+    d.addEventListener('cancel',e=>{if(p.kind==='roll'){e.preventDefault();return decline();}});
     refresh.addEventListener('click',async()=>{refresh.disabled=true;cancel.disabled=true;
       try{
         if(p.kind!=='roll'){location.assign(p.return_to||'/p/rules');return;}

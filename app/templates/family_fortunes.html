@@ -1,0 +1,71 @@
+{% extends 'base.html' %}
+{% block title %}Family Fortunes · Decades Tracker{% endblock %}
+{% block body %}
+<div class="ff-shell">
+<header class="section-heading"><div><p class="eyebrow">PLAY · BARGAINS & LEGACIES</p><h1>Family Fortunes</h1><p>Arrange a future together. Decide what the next generation inherits.</p></div>{% if ff_game %}<a class="button" href="/p/family-fortunes">All boards</a>{% endif %}</header>
+<div id="ff-error" class="notice" role="alert" hidden></div>
+<noscript><p class="notice">Turn on JavaScript to play these boards. Your existing records remain unchanged.</p></noscript>
+{% if not save %}<p class="empty">Create or select a save to play.</p>
+{% elif not ff_game %}
+<section class="panel ff-setup">
+ <h2>Set the table</h2><p>Three offers. One complication. A recorded ending only when you approve it.</p>
+ <form id="ff-start">
+  <fieldset class="ff-mode"><legend>Choose your game</legend>
+   <label><input type="radio" name="mode" value="matchmaking" checked><span><strong>Matchmaker’s Table</strong><small>Choose a couple, build a dowry, and negotiate the family’s demands.</small></span></label>
+   <label><input type="radio" name="mode" value="inheritance"><span><strong>Inheritance Dispute</strong><small>Divide an estate, honor earlier promises, and answer a rival claim.</small></span></label>
+  </fieldset>
+  <div class="ff-grid">
+   <label>Household<select name="household_id" required>{% for h in ff_homes %}<option value="{{h.id}}">{{h.label}}</option>{% endfor %}</select></label>
+   <label>Negotiation purse (§)<input name="budget" type="number" min="0" max="1000000000" value="1000" required><small id="ff-funds-hint">An amount for this board, not an in-game transfer.</small></label>
+   <label data-inheritance hidden>Known debts (§)<input name="debts" type="number" min="0" value="0"></label>
+   <label>Property or trade cards <span class="muted">(optional)</span><textarea name="properties" rows="3" maxlength="1600" placeholder="The family cottage&#10;The weaving workshop"></textarea><small>One per line, up to eight. Player-entered, not detected in game.</small></label>
+  </div>
+  <fieldset data-inheritance hidden><legend>Beneficiaries · choose up to ten</legend><p>Include heirs, a surviving spouse, children, or wards. Unpaid dowry recipients need a share too.</p>
+   <label>Find a beneficiary<input type="search" data-search="beneficiaries" placeholder="Search Sims"></label>
+   <div class="ff-beneficiary-picker" id="ff-beneficiaries">{% for p in ff_people %}<label data-name="{{p.label|lower}}" data-home="{{ff_data.people[loop.index0].home}}"><input type="checkbox" name="beneficiary_ids" value="{{p.id}}">{{p.label}}</label>{% endfor %}</div>
+  </fieldset>
+  <p class="muted">Eligible matches use your marriage ages and kinship limit. Estate demands use your succession settings. Scenarios are fictional; funds and existing heirlooms come from the tracker.</p>
+  <button class="primary" type="submit" {% if not ff_homes %}disabled{% endif %}>Deal a scenario →</button>
+ </form>
+</section>
+{% if ff_recent %}<section class="panel"><h2>Your saved boards</h2><div class="ff-recent">{% for g in ff_recent %}<a href="/p/family-fortunes?game={{g.id}}"><strong>{{g.label}}</strong><span>{{g.data.status|capitalize}} · Round {{g.data.round}} / 3 · started GD {{g.data.started_global_day}}</span></a>{% endfor %}</div><p class="muted">Showing the most recent 24. Boards are stored with this save.</p></section>{% endif %}
+{% else %}
+{% set d = ff_game.data %}
+<section class="panel ff-scene">
+ <div class="ff-scene-top"><p class="eyebrow">{{'MATCHMAKER’S TABLE' if d.mode=='matchmaking' else 'INHERITANCE DISPUTE'}} · {{d.household_name}}</p><span class="ff-round">Round {{d.round}} / 3</span></div>
+ <h2>{{ff_scenario.title}}</h2><p>{{ff_scenario.opening}}</p>
+ {% if d.round %}<div class="ff-complication"><strong>A new demand</strong><p>{{ff_scenario.twist}}</p></div>{% endif %}
+ <p class="muted">Fictional negotiation · §{{'{:,}'.format(d.budget)}} purse · {{d.funds_source}} · started GD {{d.started_global_day}}</p>
+</section>
+{% if ff_problem %}<div class="notice" role="alert">{{ff_problem}} Your saved layout remains available below; no ending can be applied.</div>{% endif %}
+{% if d.status == 'abandoned' %}<p class="notice">This board was put away. It created no relationship, estate settlement, or Storyline ending.</p>
+{% elif d.status == 'confirmed' or d.preview %}
+{% set p = d.preview %}
+<section class="panel ff-review"><p class="eyebrow">{{'RECORDED · GD '~d.confirmed_global_day if d.status=='confirmed' else 'FINAL REVIEW · NOTHING APPLIED YET'}}</p><h2>{{p.ending}}</h2>
+ <div class="ff-grid">{% for row in p.evaluation.summary %}<article class="ff-allocation"><h3>{{row.name}}</h3><strong>§{{'{:,}'.format(row.cash)}}</strong><ul>{% for a in row.assets if a.kind != 'cash' %}<li>{{a.label}}{% if a.kind=='promise' %} — {{a.detail}}{% endif %}</li>{% endfor %}</ul></article>{% endfor %}</div>
+ <p>Retained: §{{'{:,}'.format(p.evaluation.reserve)}} · Set aside for debt review: §{{'{:,}'.format(p.evaluation.debts)}}</p>
+ {% if p.evaluation.risks %}<h3>Unresolved objections</h3><ul>{% for risk in p.evaluation.risks %}<li>{{risk}}</li>{% endfor %}</ul>{% endif %}
+ <h3>{{'What was recorded' if d.status=='confirmed' else 'What confirming will do'}}</h3><ul>{% for change in p.changes %}<li>{{change}}</li>{% endfor %}</ul>
+ <div class="ff-actions">{% if d.status=='confirmed' %}<a class="button primary" href="/p/storyline">Read in Storyline</a>{% if d.result_ids.get('relationship') %}<a class="button" href="/p/relationships">Planned marriage</a><a class="button" href="/p/life-records#dowries">Dowry & promises</a>{% endif %}{% if d.result_ids.get('estate') %}<a class="button" href="/p/historical-life#estate">Estate plan</a>{% endif %}<a class="button" href="/p/today">In-game follow-up</a>
+ {% else %}<button class="primary" data-action="confirm" {% if ff_problem %}disabled{% endif %}>Confirm this ending</button><button data-action="edit">Return to the board</button>{% endif %}</div>
+</section>
+{% else %}
+<section class="ff-play" aria-label="Negotiation board">
+ <p class="ff-instructions" id="ff-instructions"><strong>Drag a card to a destination.</strong> Or select a card, then tap “Place selected card here.” This also works with Tab and Enter.</p>
+ <p id="ff-announcement" class="ff-announcement" role="status" aria-live="polite">Your saved layout is ready.</p>
+ {% if d.mode=='matchmaking' %}
+ <section class="panel"><h2>The proposed couple</h2><div class="ff-grid" id="ff-couple"></div>
+ {% if not d.round %}<details open><summary>Eligible Sims</summary><label>Find a Sim<input type="search" id="ff-sim-search" placeholder="Search names"></label><div id="ff-candidates" class="ff-candidates"></div><p class="muted">Only living, unpromised Sims meeting your marriage-age setting appear. Kinship is checked when you submit. The first partner must belong to {{d.household_name}}.</p></details>{% endif %}
+ <label class="ff-date">Planned marriage Global Day<input id="ff-marriage-day" type="number" min="{{save.global_day}}" value="{{d.marriage_day}}" {% if d.round>=3 %}disabled{% endif %}></label>
+ </section>{% endif %}
+ <div class="ff-board"><section class="ff-reserve" id="ff-reserve"></section><section id="ff-destinations" class="ff-destinations" aria-label="Recipients"></section></div>
+ <div class="ff-actions ff-board-actions"><button data-action="save" {% if d.round>=3 %}disabled{% endif %}>Save layout</button><button class="primary" data-action="negotiate" {% if d.round>=3 or ff_problem %}disabled{% endif %}>{{'Submit opening offer' if not d.round else 'Submit offer '~(d.round+1) if d.round<3 else 'All offers played'}}</button><button data-action="review" {% if d.round<2 or ff_problem %}disabled{% endif %}>Review ending</button><span id="ff-save-state">Saved</span></div>
+</section>
+{% if ff_assessment %}<section class="panel ff-requirements"><div class="ff-scene-top"><h2>The families’ response</h2><strong>{{ff_assessment.met}} / {{ff_assessment.total}} demands met</strong></div><p>Based on your saved layout. Submit your next offer to hear the response to changes.</p><ul>{% for c in ff_assessment.checks %}<li class="{{'ff-met' if c.met else 'ff-unmet'}}"><span aria-hidden="true">{{'✓' if c.met else '○'}}</span><div><strong>{{c.label}}</strong><p>{{c.detail}}</p></div></li>{% endfor %}</ul></section>{% endif %}
+{% endif %}
+{% if d.history %}<details class="panel ff-history" {% if d.status=='confirmed' %}open{% endif %}><summary>Negotiation record · {{d.history|length}} rounds</summary>{% for h in d.history %}<article><h3>Round {{h.round}}</h3><p>{{h.offer}}</p>{% if h.revelation %}<p><strong>New demand:</strong> {{h.revelation}}</p>{% endif %}<ul>{% for f in h.feedback %}<li>{{f}}</li>{% endfor %}</ul></article>{% endfor %}</details>{% endif %}
+{% if d.status=='playing' %}<details class="panel"><summary>Put this board away</summary><p>Keep the board in history without creating an ending or changing family records.</p><button data-action="abandon">End without recording an outcome</button></details>{% endif %}
+{% endif %}
+</div>
+{% endblock %}
+{% block scripts %}<script id="ff-data" type="application/json">{{ff_data|tojson}}</script><script src="/static/family_fortunes.js?v={{static_version}}" defer></script>{% endblock %}

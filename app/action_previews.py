@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from sqlalchemy import event, select, update, delete
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
-from .models import Record, ChronicleSave, ActionPreview, uid
+from .models import Record, ChronicleSave, ActionPreview, DiceAudit, uid
 from .preview_random import RandomTape, PreviewChanged
 from . import domain, dice, core_rulesets, advanced, avatar_rules, harry_potter_rules, game_of_thrones_rules
 
@@ -201,12 +201,11 @@ def prepare(session,save,user,kind,form,roll=None,native=False):
     if roll:session.refresh(roll)
     now=datetime.now(timezone.utc)
     session.execute(delete(ActionPreview).where(ActionPreview.user_id==user.id,ActionPreview.created_at<now-timedelta(days=1)).execution_options(synchronize_session=False))
-    actual=None;wording=str(form.get('outcome') or '')
+    actual=None;audit=None;wording=str(form.get('outcome') or '')
     if roll:
         if roll.deleted or roll.kind!='roll' or roll.data.get('completed'):raise ValueError('That roll is no longer pending.')
         if native:
-            # Reopening a preview never gives another throw for this obligation.
-            from .models import DiceAudit
+            # Retries retain a throw until the player explicitly declines it.
             audit_context='pending-preview-v'+str(roll.version)
             audit=session.scalar(select(DiceAudit).where(DiceAudit.save_id==save.id,DiceAudit.context==audit_context,DiceAudit.context_id==roll.id).order_by(DiceAudit.created_at.desc()).limit(1))
             if not audit:
@@ -218,6 +217,11 @@ def prepare(session,save,user,kind,form,roll=None,native=False):
             except (TypeError,ValueError):raise ValueError('Enter a whole-number result.')
             notation,_=dice.notation_for_roll(roll.data.get('die'),roll.data.get('bad_results'));quantity,sides,modifier=dice.parse(notation)
             if not quantity+modifier<=actual<=quantity*sides+modifier:raise ValueError('That result is outside the configured die range.')
+            # If the player switched from a native throw to manual entry, a
+            # decline also releases the throw that was already pending then.
+            audit=session.scalar(select(DiceAudit).where(DiceAudit.save_id==save.id,
+                DiceAudit.context=='pending-preview-v'+str(roll.version),DiceAudit.context_id==roll.id)
+                .order_by(DiceAudit.created_at.desc()).limit(1))
     session.flush();stamp=fingerprint(save)
     dependencies=roll_dependencies(session,save,roll) if roll else None
     plan=simulate(session,save,lambda:domain.complete_roll(session,save,roll,actual,wording) if roll else apply_packs(session,save,form) if kind=='packs' else apply_settings(session,save,form))
@@ -230,6 +234,7 @@ def prepare(session,save,user,kind,form,roll=None,native=False):
     if len(json.dumps(plan,default=str))>8*1024*1024:raise ValueError('This change is too large for one preview. Make smaller calendar or rulepack changes.')
     ticket=ActionPreview(user_id=user.id,save_id=save.id,operation=kind,fingerprint=stamp,
         payload={'plan':plan,'description':description,'actual':actual,'roll_id':roll.id if roll else None,
+                 'audit_id':audit.id if audit else None,'native':bool(native),
                  'dependencies':dependencies,'outcome_override':wording,
                  'return_to':safe_return(str(form.get('return_to') or '/p/today'))})
     session.add(ticket);session.flush();return ticket
@@ -244,10 +249,63 @@ def public_preview(ticket,label):
             'return_to':ticket.payload['return_to']}
 
 
+def reserved_audit(session,ticket):
+    """Resolve the original throw, including previews made before audit IDs were saved."""
+    if 'audit_id' in ticket.payload:
+        row=session.get(DiceAudit,ticket.payload['audit_id'],populate_existing=True) if ticket.payload['audit_id'] else None
+        return row if row and row.save_id==ticket.save_id and row.context_id==ticket.payload.get('roll_id') else None
+    original=next((c['before'] for c in ticket.payload.get('plan',{}).get('records',[])
+                   if c['after']['id']==ticket.payload.get('roll_id')),None)
+    if not original:return None
+    version=str(original['version'])
+    return session.scalar(select(DiceAudit).where(DiceAudit.save_id==ticket.save_id,
+        DiceAudit.context_id==ticket.payload.get('roll_id'),DiceAudit.total==ticket.payload.get('actual'),
+        DiceAudit.created_at<=ticket.created_at,
+        DiceAudit.context.in_(['pending-preview-v'+version,'declined-preview-v'+version]))
+        .order_by(DiceAudit.created_at.desc()).limit(1).execution_options(populate_existing=True))
+
+
+def declined(session,ticket):
+    if ticket.payload.get('declined'):return True
+    origin_id=ticket.payload.get('origin_preview_id')
+    origin=session.get(ActionPreview,origin_id,populate_existing=True) if origin_id else None
+    if origin and origin.save_id==ticket.save_id and origin.user_id==ticket.user_id and origin.payload.get('declined'):return True
+    audit=reserved_audit(session,ticket)
+    return bool(audit and audit.context.startswith('declined-preview-'))
+
+
+def decline(session,save,ticket):
+    """Release only this pending throw; never undo a completed result or erase history."""
+    if ticket.operation!='roll':raise ValueError('Only a roll result can be declined.')
+    if declined(session,ticket):return ticket.payload  # A retry must not release a newer throw.
+    roll=session.get(Record,ticket.payload['roll_id'],populate_existing=True)
+    if ticket.consumed or (roll and roll.data.get('completed')):
+        raise ValueError('This roll has already been confirmed. Its completed result was not changed.')
+    audit=reserved_audit(session,ticket)
+    if audit and audit.context.startswith('pending-preview-'):
+        audit.context=audit.context.replace('pending-preview-','declined-preview-',1)
+        from . import sync
+        sync.sync_dice_audit(session,save,audit)
+    ticket.payload={**ticket.payload,'declined':True,'declined_at':datetime.now(timezone.utc).isoformat()}
+    origin_id=ticket.payload.get('origin_preview_id')
+    origin=session.get(ActionPreview,origin_id,populate_existing=True) if origin_id else None
+    if origin and origin.user_id==ticket.user_id and origin.save_id==ticket.save_id and not origin.consumed:
+        origin.payload={**origin.payload,'declined':True,'declined_at':ticket.payload['declined_at']}
+    # Refreshed manual previews can have no native audit. Mark their siblings
+    # too, so expiry cleanup of the original ticket cannot resurrect them.
+    for sibling in session.scalars(select(ActionPreview).where(ActionPreview.save_id==ticket.save_id,
+            ActionPreview.user_id==ticket.user_id,ActionPreview.consumed.is_(False),
+            ActionPreview.payload['origin_preview_id'].as_string()==(origin_id or ticket.id))):
+        sibling.payload={**sibling.payload,'declined':True,'declined_at':ticket.payload['declined_at']}
+    session.flush()
+    return ticket.payload
+
+
 def confirm(session,save,ticket):
     # Serialize with normal save writers. No partial plan is applied on a stale tab.
     if session.get_bind().dialect.name=='sqlite':session.execute(update(ChronicleSave).where(ChronicleSave.id==save.id).values(revision=ChronicleSave.revision))
     session.refresh(save,with_for_update=True)
+    if declined(session,ticket):raise ValueError('This result was declined. Use Roll again to generate a fresh throw.')
     if ticket.consumed:raise ValueError('This preview has already been confirmed.')
     created=ticket.created_at.replace(tzinfo=timezone.utc) if ticket.created_at.tzinfo is None else ticket.created_at
     if datetime.now(timezone.utc)-created>timedelta(minutes=15):raise ValueError('This preview expired. Review a fresh preview.')
@@ -304,16 +362,35 @@ def response(m,request,session,save,form,kind,roll=None,native=False):
 
 def register(m):
     from fastapi import Request
+    def owned_ticket(request,session,token):
+        user=m.signed_in(request,session)
+        if not user:raise HTTPException(401)
+        ticket=session.scalar(select(ActionPreview).where(ActionPreview.id==token,ActionPreview.user_id==user.id))
+        if not ticket:raise HTTPException(404)
+        save=m.owned_save(request,session,ticket.save_id)
+        if request.session.get('save_id')!=save.id:raise HTTPException(409,'The active save changed. Return to Today.')
+        # Always lock the save before its preview, including competing tabs.
+        if session.get_bind().dialect.name=='sqlite':session.execute(update(ChronicleSave).where(ChronicleSave.id==save.id).values(revision=ChronicleSave.revision))
+        session.refresh(save,with_for_update=True)
+        session.refresh(ticket,with_for_update=True)
+        return user,save,ticket
+
+    @m.app.post('/api/previews/{token}/decline')
+    def decline_action(request:Request,token:str):
+        with m.db() as session:
+            _,save,ticket=owned_ticket(request,session,token)
+            try:payload=decline(session,save,ticket)
+            except ValueError as exc:raise HTTPException(409,str(exc))
+            if request.headers.get('X-Decades-Fragment'):
+                return JSONResponse({'ok':True,'declined':True,'return_to':payload['return_to']})
+        return RedirectResponse(payload['return_to'],303)
+
     @m.app.post('/api/previews/{token}/refresh')
     def refresh_action(request:Request,token:str):
         with m.db() as session:
-            user=m.signed_in(request,session)
-            if not user:raise HTTPException(401)
-            ticket=session.scalar(select(ActionPreview).where(ActionPreview.id==token,ActionPreview.user_id==user.id).with_for_update())
-            if not ticket:raise HTTPException(404)
-            save=m.owned_save(request,session,ticket.save_id)
-            if request.session.get('save_id')!=save.id:raise HTTPException(409,'The active save changed. Return to Today.')
+            user,save,ticket=owned_ticket(request,session,token)
             if ticket.operation!='roll' or ticket.consumed:raise HTTPException(409,'Return to the page to review the current state.')
+            if declined(session,ticket):raise HTTPException(409,'This result was declined. Use Roll again to generate a fresh throw.')
             roll=session.get(Record,ticket.payload['roll_id'])
             if not roll or roll.save_id!=save.id:raise HTTPException(404)
             # Even an expired or legacy preview retains its original die result.
@@ -321,17 +398,15 @@ def register(m):
                   'return_to':ticket.payload['return_to']}
             try:fresh=prepare(session,save,user,'roll',form,roll=roll,native=False)
             except ValueError as exc:raise HTTPException(409,str(exc))
+            audit=reserved_audit(session,ticket)
+            fresh.payload={**fresh.payload,'audit_id':audit.id if audit else None,'native':ticket.payload.get('native',bool(audit)),
+                           'origin_preview_id':ticket.payload.get('origin_preview_id') or ticket.id}
             return JSONResponse({'preview':public_preview(fresh,roll.label)})
 
     @m.app.post('/api/previews/{token}/confirm')
     def confirm_action(request:Request,token:str):
         with m.db() as session:
-            user=m.signed_in(request,session)
-            if not user:raise HTTPException(401)
-            ticket=session.scalar(select(ActionPreview).where(ActionPreview.id==token,ActionPreview.user_id==user.id).with_for_update())
-            if not ticket:raise HTTPException(404)
-            save=m.owned_save(request,session,ticket.save_id)
-            if request.session.get('save_id')!=save.id:raise HTTPException(409,'The active save changed.')
+            _,save,ticket=owned_ticket(request,session,token)
             try:payload=confirm(session,save,ticket)
             except ValueError as exc:raise HTTPException(409,str(exc))
             if ticket.operation=='roll':

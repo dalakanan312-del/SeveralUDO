@@ -70,6 +70,8 @@ def _drama_scene_sentence(item: Record) -> str:
     graceful fallback rather than reverting to a generic summary.
     """
     data = item.data or {}
+    if data.get('source') == 'Family Fortunes':
+        return str(data.get('body') or '').strip()
     title = str(data.get("card_title") or item.label or "A household decision").strip()
     if data.get('source') == 'Drama Randomizer':
         return f"The household played out “{title}”: {str(data.get('body') or '').strip()}"

@@ -33,8 +33,12 @@ New-Item -ItemType Directory -Force -Path $AppPayload | Out-Null
 # Windows builds have produced an empty app payload directory during COLLECT.
 # Copying the runtime templates and static assets explicitly makes the native
 # bundle self-contained and prevents a blank local launch after installation.
-Copy-Item -LiteralPath "app\templates" -Destination (Join-Path $AppPayload "templates") -Recurse -Force
-Copy-Item -LiteralPath "app\static" -Destination (Join-Path $AppPayload "static") -Recurse -Force
+foreach ($AssetFolder in @("templates", "static")) {
+  $AssetDestination = Join-Path $AppPayload $AssetFolder
+  New-Item -ItemType Directory -Force -Path $AssetDestination | Out-Null
+  Get-ChildItem -LiteralPath (Join-Path "app" $AssetFolder) -Force |
+    Copy-Item -Destination $AssetDestination -Recurse -Force
+}
 Copy-Item -LiteralPath "app\medieval_names.json" -Destination (Join-Path $AppPayload "medieval_names.json") -Force
 Copy-Item -LiteralPath "app\game_localization_fallbacks.json" -Destination (Join-Path $AppPayload "game_localization_fallbacks.json") -Force
 Copy-Item -LiteralPath "assets\README - Native Desktop.txt" -Destination "dist\Decades Tracker\START HERE - Decades Tracker.txt" -Force

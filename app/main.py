@@ -21,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain, drama_randomizer, play_support_ui, usability, usability_ui, heritage, heritage_ui, crash_recovery_ui
-from . import infinite_decades, infinite_decades_ui, birth_dates, portrait_studio, trait_visibility
+from . import infinite_decades, infinite_decades_ui, birth_dates, portrait_studio, trait_visibility, family_fortunes_ui
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
@@ -31,6 +31,7 @@ from .workflow import related_tasks, page_sections
 
 
 FEATURES = {
+    **family_fortunes_ui.PAGES,
     **heritage_ui.PAGES,
     **crash_recovery_ui.PAGES,
     **play_support_ui.PAGES,
@@ -115,7 +116,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.26")
+app = FastAPI(title="Decades Tracker", version="4.6.27")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1520,6 +1521,8 @@ def feature_page(request: Request, page: str):
         life_filter=request.query_params.get('living','living')
         if life_filter not in {'all','living','dead'}:life_filter='living'
         ctx['ui_living']=life_filter
+        if page in family_fortunes_ui.PAGES:
+            return family_fortunes_ui.render(request,session,ctx,templates)
         if page in play_support_ui.PAGES:
             return play_support_ui.render(request,session,ctx,templates)
         if page in heritage_ui.PAGES:
@@ -5508,6 +5511,7 @@ def health():
 
 play_support_ui.register(app,db,context,templates)
 heritage_ui.register(__import__(__name__,fromlist=['app']))
+family_fortunes_ui.register(__import__(__name__,fromlist=['app']))
 crash_recovery_ui.register(__import__(__name__,fromlist=['app']))
 usability_ui.register(__import__(__name__,fromlist=['app']))
 portrait_studio.register(__import__(__name__,fromlist=['app']))

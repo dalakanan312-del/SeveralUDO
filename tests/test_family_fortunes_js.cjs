@@ -1,0 +1,12 @@
+const assert = require('node:assert/strict');
+const {moveCard} = require('../app/static/family_fortunes.js');
+const cards = [{id:'c',kind:'cash',amount:101},{id:'h',kind:'heirloom'}];
+const original = {c:'reserve',h:'reserve'};
+const moved = moveCard(original,cards,'c','offer',['reserve','offer']);
+assert.deepEqual(original,{c:'reserve',h:'reserve'});
+assert.deepEqual(moved,{c:'offer',h:'reserve'});
+assert.equal(Object.keys(moved).length,2);
+assert.equal(moveCard(original,cards,'h','debts',['reserve','debts']),null);
+assert.equal(moveCard(original,cards,'fake','offer',['offer']),null);
+assert.equal(moveCard(original,cards,'c','foreign',['reserve','offer']),null);
+console.log('Family Fortunes card conservation and destination checks passed.');

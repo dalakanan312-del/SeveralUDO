@@ -142,7 +142,7 @@ def review_changes(item,by_id):
 
 NAVIGATION_GROUPS=(
  {'id':'play','label':'Play','description':'Decide, play and review','icon':'▶',
-  'pages':('today','play-next','automation','clock','crash-recovery','rolls','save-a-sims','planner','family-projects','seasonal-routines','story-threads','events','challenge','drama-randomizer','drama','avatar','harry-potter','game-of-thrones')},
+  'pages':('today','play-next','automation','clock','crash-recovery','rolls','save-a-sims','planner','family-projects','seasonal-routines','story-threads','events','challenge','drama-randomizer','drama','family-fortunes','avatar','harry-potter','game-of-thrones')},
  {'id':'people','label':'People','description':'Sims, families and daily life','icon':'♟',
   'pages':('sims','households','historical-addresses','titles-estates','relationships','pregnancies','illnesses','university','family-tree','life-records','world','names','naming-customs')},
  {'id':'history','label':'History','description':'Remember and compare','icon':'✒',

@@ -10,7 +10,7 @@ from .models import Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudi
 
 
 SYNC_KINDS = {
-    "dynasty_branch",
+    "dynasty_branch", "family_fortune_game",
     "sim", "household", "relationship", "pregnancy", "roll", "event",
     "event_result", "illness", "note", "era_rule", "roll_rule", "roll_rule_era", "event_rule", "plant",
     "campaign", "service", "migration", "play_rotation", "family_plan", "portrait_meta",

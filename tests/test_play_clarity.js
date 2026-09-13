@@ -54,3 +54,33 @@ test('ordinary confirmation is one click and does not refresh or rethrow',async(
   await h.submit();await h.dialog().children.find(n=>n.textContent==='Confirm these changes').click();
   assert.equal(h.calls.length,2);assert.equal(h.events[0].type,'decades:roll-confirmed');assert.equal(h.dialog(),undefined);
 });
+
+test('decline reaches the server before closing and the next Roll opens a fresh result',async()=>{
+  const h=harness([{status:200,data:{preview:preview('old')}},{status:200,data:{ok:true,declined:true}},
+    {status:200,data:{preview:{...preview('new'),actual:4}}}]);
+  await h.submit();await h.dialog().children.find(n=>n.textContent==='Decline result').click();
+  assert.equal(h.calls[1].url,'/api/previews/old/decline');assert.equal(h.dialog(),undefined);assert.equal(h.events.length,0);
+  await h.submit();assert.equal(h.calls[2].url,'/api/rolls/roll-id/roll');
+  assert.ok(h.dialog().children.some(n=>n.textContent==='Result 4 · No trial'));
+});
+
+test('decline failure keeps the dialog and supports an idempotent retry',async()=>{
+  const h=harness([{status:200,data:{preview:preview('old')}},{status:503,data:{detail:'Try again'}},{status:200,data:{ok:true,declined:true}}]);
+  await h.submit();const dialog=h.dialog();const decline=dialog.children.find(n=>n.textContent==='Decline result');
+  await decline.click();assert.equal(h.dialog(),dialog);assert.equal(decline.disabled,false);assert.equal(h.events.length,0);
+  await decline.click();assert.equal(h.calls[1].url,h.calls[2].url);assert.equal(h.dialog(),undefined);
+});
+
+test('Escape declines a roll instead of silently retaining it',async()=>{
+  const h=harness([{status:200,data:{preview:preview('old')}},{status:200,data:{ok:true,declined:true}}]);
+  await h.submit();let prevented=false;
+  await h.dialog().listeners.cancel({preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);assert.equal(h.calls[1].url,'/api/previews/old/decline');assert.equal(h.dialog(),undefined);
+});
+
+test('a roll already confirmed elsewhere can close without trying to decline it again',async()=>{
+  const h=harness([{status:200,data:{preview:preview('old')}},{status:409,data:{detail:'This roll has already been confirmed.'}}]);
+  await h.submit();const dialog=h.dialog();await dialog.children.find(n=>n.textContent==='Decline result').click();
+  await dialog.children.find(n=>n.textContent==='Close preview').click();
+  assert.equal(h.dialog(),undefined);assert.equal(h.calls.length,2);assert.equal(h.events.length,0);
+});
