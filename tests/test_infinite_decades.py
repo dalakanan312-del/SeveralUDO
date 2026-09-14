@@ -228,6 +228,48 @@ class InfiniteDecadesTests(unittest.TestCase):
         self.assertEqual(before,self.people[2].data)
         self.assertEqual(dynasty.unpack_snapshot(child.data['snapshot']),point)
 
+    def test_new_split_picker_only_living_sims_but_history_keeps_everyone(self):
+        self.enable()
+        for person,extra in zip(self.people[:4],[{'death_confirmed':True},{'game_was_dead':True},
+                {'death_global_day':100},{'death_global_day':120}]):
+            person.data={**person.data,**extra}
+        self.session.commit()
+        with patch.object(main,'SessionLocal',self.sessions):
+            client=TestClient(main.app)
+            client.post('/saves/select',data={'save_id':self.save.id})
+            page=client.get('/p/infinite-decades');self.assertEqual(page.status_code,200)
+            client.close()
+        form=page.text.split('Capture a new split',1)[1].split('</form>',1)[0]
+        for person in self.people[:3]+self.people[4:]:self.assertNotIn('value="'+person.id+'"',form)
+        self.assertIn('value="'+self.people[3].id+'"',form) # future death is still living
+        history=page.text.split('id="dynasty-members"',1)[1]
+        for person in self.people:self.assertIn(person.label,history)
+
+    def test_stale_split_rejects_dead_member_without_changing_branch(self):
+        self.enable();dead=self.people[1]
+        dead.data={**dead.data,'death_global_day':self.save.global_day};self.session.commit()
+        before=copy.deepcopy(self.save.settings);count=len(dynasty.branches(self.session,self.save))
+        with patch.object(main,'SessionLocal',self.sessions):
+            client=TestClient(main.app);client.post('/saves/select',data={'save_id':self.save.id})
+            response=client.post('/infinite/'+self.save.id+'/capture',data={
+                'sim_ids':[dead.id,self.people[2].id],'label':'Stale choice','game_save_name':'Checkpoint','checkpoint_confirmed':'yes'},
+                headers={'X-Dynasty-Epoch':dynasty.state(self.save)['epoch']})
+            self.assertEqual(response.status_code,409);self.assertIn('Only living Sims',response.text);client.close()
+        self.session.expire_all()
+        self.assertEqual(self.save.settings,before)
+        self.assertEqual(len(dynasty.branches(self.session,self.save)),count)
+        self.assertFalse(self.people[2].deleted)
+
+    def test_future_death_can_split_but_unborn_cannot(self):
+        self.enable()
+        unborn=self.people[1];unborn.data={**unborn.data,'birth_global_day':110}
+        living=self.people[2];living.data={**living.data,'death_global_day':120};self.session.commit()
+        with self.assertRaisesRegex(ValueError,'Only living Sims'):
+            dynasty.capture(self.session,self.save,[unborn.id,living.id],'Invalid','Checkpoint')
+        self.session.rollback()
+        child=dynasty.capture(self.session,self.save,[living.id],'Living','Checkpoint');self.session.commit()
+        self.assertEqual(dynasty.unpack_snapshot(child.data['snapshot'])['member_sim_ids'],[living.id])
+
     def test_latest_split_first_and_completed_outcomes_retained(self):
         first=self.enable();cara=self.capture();dara=self.capture(3,108)
         with self.assertRaisesRegex(ValueError,'Finish the active'): dynasty.activate_next(self.session,self.save)

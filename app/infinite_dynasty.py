@@ -328,6 +328,8 @@ def capture(session, save, selected_ids, label, game_save_name):
     _lock(session, save)
     if frozen(save) or not state(save): raise ValueError("Capture a split while playing an active branch.")
     sims, selected = _selected(session, save, selected_ids)
+    if any(not alive(s,save) or (s.data or {}).get("infinite_frozen") for s in selected):
+        raise ValueError("Only living Sims in the active branch can depart in a new split. Refresh the selection; deceased Sims remain in dynasty history.")
     selected_ids = {s.id for s in selected}
     if not label.strip() or not game_save_name.strip(): raise ValueError("Name the branch and record its matching in-game checkpoint.")
     if not any(alive(s, save) for s in sims if s.id not in selected_ids): raise ValueError("Leave a living Sim in the current branch. Select only departing family members.")
