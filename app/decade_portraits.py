@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from . import portraits, sync
 from .models import ChronicleSave, Portrait, Record
-from .tray_scanner import _name_key, _sim_names, decode_sgi, discover_portraits, import_portraits
+from .tray_scanner import decode_sgi, discover_portraits, import_portraits, match_portraits
 
 
 DEFAULT_BACKGROUND = "#2b2118"
@@ -28,7 +28,8 @@ def _living(sim: Record, day: int) -> bool:
         death = int(data["death_global_day"]) if data.get("death_global_day") not in (None, "") else None
     except (TypeError, ValueError):
         death = None
-    return not bool(data.get("game_was_dead")) and birth <= day and (death is None or death > day)
+    # A later death must not erase a person from an earlier archive repair.
+    return birth <= day and (death > day if death is not None else not bool(data.get("game_was_dead")))
 
 
 def _milestone(save: ChronicleSave) -> tuple[int, int] | None:
@@ -154,11 +155,13 @@ def _combine_households(save_name: str, year: int, plates: list[tuple[str, bytes
 
 
 def save_from_tray(session: Session, save: ChronicleSave, year: int, background: str,
-                   root: Path | None = None) -> dict:
+                   root: Path | None = None, *, capture_day: int | None = None,
+                   import_individual: bool = True) -> dict:
     """Build one archive plate for each active household from newest exact Tray matches."""
     from .domain import journal
 
     background = _hex_color(background)
+    day = int(save.global_day if capture_day is None else capture_day)
     candidates = discover_portraits(root)
     sims = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
@@ -168,23 +171,14 @@ def save_from_tray(session: Session, save: ChronicleSave, year: int, background:
     )))
     homes = [home for home in homes if bool((home.data or {}).get("active", True))]
 
-    tracker_names: dict[str, list[Record]] = {}
-    for sim in sims:
-        for key in _sim_names(sim):
-            tracker_names.setdefault(key, []).append(sim)
-    newest = {}
-    for candidate in candidates:
-        newest.setdefault(_name_key(candidate.name), candidate)
+    candidates_by_sim, ambiguous = match_portraits(candidates, sims)
     matched: dict[str, tuple[str, bytes]] = {}
-    invalid = ambiguous = 0
-    for key, candidate in newest.items():
-        matches = {sim.id:sim for sim in tracker_names.get(key, ())}
-        if len(matches) > 1:
-            ambiguous += 1; continue
-        if not matches:
+    invalid = 0
+    for sim in sims:
+        candidate = candidates_by_sim.get(sim.id)
+        if candidate is None:
             continue
-        sim = next(iter(matches.values()))
-        if not _living(sim, save.global_day):
+        if not _living(sim, day):
             continue
         try:
             matched[sim.id] = (sim.label, decode_sgi(candidate.image_path.read_bytes()))
@@ -196,7 +190,7 @@ def save_from_tray(session: Session, save: ChronicleSave, year: int, background:
     household_plates: list[tuple[str, bytes]] = []
     missing: list[str] = []
     for home in homes:
-        members = [sim for sim in sims if (sim.data or {}).get("current_household_id") == home.id and _living(sim, save.global_day)]
+        members = [sim for sim in sims if (sim.data or {}).get("current_household_id") == home.id and _living(sim, day)]
         people = [matched[sim.id] for sim in members if sim.id in matched]
         missing.extend(sim.label for sim in members if sim.id not in matched)
         if not people:
@@ -210,13 +204,15 @@ def save_from_tray(session: Session, save: ChronicleSave, year: int, background:
             "source_key":source_key, "household_id":home.id, "household_name":home.label,
             "portrait_year":int(year), "member_ids":[sim.id for sim in members if sim.id in matched],
             "member_names":[sim.label for sim in members if sim.id in matched],
+            "missing_member_ids":[sim.id for sim in members if sim.id not in matched],
+            "missing_member_names":[sim.label for sim in members if sim.id not in matched],
             "background_color":background, "source":"Sims 4 Tray Library",
         }
         if record:
-            base=record.version; record.label=f"{home.label} — {year} portrait"; record.global_day=save.global_day
+            base=record.version; record.label=f"{home.label} — {year} portrait"; record.global_day=day
             record.data={**(record.data or {}), **payload}; record.version += 1; journal(session,record,"upsert",base); updated += 1
         else:
-            record=Record(save_id=save.id,kind="household_portrait",label=f"{home.label} — {year} portrait",global_day=save.global_day,data=payload)
+            record=Record(save_id=save.id,kind="household_portrait",label=f"{home.label} — {year} portrait",global_day=day,data=payload)
             session.add(record); session.flush(); journal(session,record,"upsert",0); created += 1
         image = _compose(home.label, int(year), people, background)
         portrait = session.scalar(select(Portrait).where(Portrait.record_id == record.id, Portrait.stage == "default"))
@@ -240,13 +236,15 @@ def save_from_tray(session: Session, save: ChronicleSave, year: int, background:
             "source_key":snapshot_key,"portrait_year":int(year),
             "household_portrait_ids":[record.id for record in records],
             "household_names":[name for name,_image in household_plates],
+            "member_count":sum(len(record.data["member_ids"]) for record in records),
+            "missing_member_names":sorted(set(missing)),
             "background_color":background,"source":"Combined Sims 4 Tray household portraits",
         }
         if snapshot:
-            base=snapshot.version;snapshot.label=f"{save.name} — {year} Decade Snapshot";snapshot.global_day=save.global_day
+            base=snapshot.version;snapshot.label=f"{save.name} — {year} Decade Snapshot";snapshot.global_day=day
             snapshot.data={**(snapshot.data or {}),**snapshot_payload};snapshot.version+=1;journal(session,snapshot,"upsert",base)
         else:
-            snapshot=Record(save_id=save.id,kind="decade_snapshot",label=f"{save.name} — {year} Decade Snapshot",global_day=save.global_day,data=snapshot_payload)
+            snapshot=Record(save_id=save.id,kind="decade_snapshot",label=f"{save.name} — {year} Decade Snapshot",global_day=day,data=snapshot_payload)
             session.add(snapshot);session.flush();journal(session,snapshot,"upsert",0)
         combined=_combine_households(save.name,int(year),household_plates,background)
         snapshot_portrait=session.scalar(select(Portrait).where(Portrait.record_id==snapshot.id,Portrait.stage=="default"))
@@ -257,7 +255,7 @@ def save_from_tray(session: Session, save: ChronicleSave, year: int, background:
             session.add(snapshot_portrait)
         session.flush();sync.sync_portrait(session,save,snapshot_portrait,snapshot.id,"default")
 
-    individual = import_portraits(session, save, root=root)
+    individual = import_portraits(session, save, root=root) if import_individual else {}
     return {
         "available":len(candidates), "created":created, "updated":updated,
         "records":records, "missing":sorted(set(missing)), "ambiguous":ambiguous,
