@@ -205,6 +205,18 @@ def match_portraits(candidates: list[TrayPortrait], sims: list) -> tuple[dict, i
                 same_stage = [item for item in group if item.age_stage == candidate.age_stage]
                 if len(eligible) == len(same_stage) == 1:
                     pairs.append((eligible[0], candidate))
+            # One person may have aged up since the Library photo. Once all
+            # other people in this same-name group have unique stage matches,
+            # the final one-to-one remainder is safe if its photo is not later
+            # in life stage than the current Sim. Never infer between twins.
+            remaining_sims = [sim for sim in choices if all(sim.id != pair[0].id for pair in pairs)]
+            remaining_photos = [item for item in group if all(item != pair[1] for pair in pairs)]
+            stages = ["newborn","infant","toddler","child","teen","youngadult","adult","elder"]
+            if pairs and len(remaining_sims) == len(remaining_photos) == 1:
+                sim, candidate = remaining_sims[0], remaining_photos[0]
+                current = _stage_key((sim.data or {}).get("game_age_stage") or (sim.data or {}).get("life_stage"))
+                if current in stages and candidate.age_stage in stages and stages.index(candidate.age_stage) <= stages.index(current):
+                    pairs.append((sim, candidate))
             if len(pairs) < max(len(choices), len(group)):
                 ambiguous += 1
         for sim, candidate in pairs:

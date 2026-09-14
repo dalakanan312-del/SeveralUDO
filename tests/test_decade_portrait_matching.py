@@ -36,6 +36,17 @@ class TrayMatchingTests(unittest.TestCase):
         self.assertEqual(found,{})
         self.assertEqual(ambiguous,1)
 
+    def test_child_aged_up_after_photo_is_unique_remaining_match(self):
+        found, ambiguous = tray_scanner.match_portraits(
+            [photo(1,"youngadult"),photo(2,"child")], [person("father"),person("son",stage="teen")])
+        self.assertEqual({key:value.tray_sim_id for key,value in found.items()},{"father":1,"son":2})
+        self.assertEqual(ambiguous,0)
+
+    def test_remaining_photo_cannot_be_from_a_future_life_stage(self):
+        found, _ = tray_scanner.match_portraits(
+            [photo(1,"youngadult"),photo(2,"teen")], [person("father"),person("son",stage="child")])
+        self.assertEqual(set(found),{"father"})
+
     def test_one_tracker_name_does_not_choose_between_two_tray_people(self):
         found, _ = tray_scanner.match_portraits([photo(1,"child"),photo(2,"child")], [person("a",stage="child")])
         self.assertEqual(found,{})
