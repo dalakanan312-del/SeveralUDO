@@ -116,7 +116,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.27")
+app = FastAPI(title="Decades Tracker", version="4.6.28")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -5375,13 +5375,15 @@ def download_windows_installer(request: Request):
 
 
 @app.post("/api/clock/report")
-async def clock_report(request: Request, authorization: str | None = Header(None)):
+def clock_report(report: dict, authorization: str | None = Header(None)):
+    # FastAPI runs synchronous handlers in its worker pool. Database work and
+    # first-use game-name loading must not freeze every page/live-status request.
     if not authorization or not authorization.startswith("Bearer "): raise HTTPException(401)
     digest = hash_secret(authorization[7:].strip())
     with db() as session:
         link = session.scalar(select(ClockLink).where(ClockLink.token_hash == digest, ClockLink.enabled.is_(True)))
         if not link: raise HTTPException(401, "Invalid clock token")
-        return clock.receive(session, link, await request.json())
+        return clock.receive(session, link, report)
 
 
 @app.get("/api/clock/ping")

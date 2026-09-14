@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import wraps
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -161,9 +162,53 @@ def _unmapped_telemetry(snapshot: dict) -> dict:
     }
 
 
+def with_game_sim_lookup(function):
+    """Share one Sim lookup within one report, never between saves/requests."""
+    @wraps(function)
+    def wrapped(session, link, report, *args, **kwargs):
+        previous = session.info.get('clock_sim_lookup')
+        session.info['clock_sim_lookup'] = {'save_id': link.save_id, 'rows': None, 'by_id': {}}
+        try:
+            return function(session, link, report, *args, **kwargs)
+        finally:
+            if previous is None:
+                session.info.pop('clock_sim_lookup', None)
+            else:
+                session.info['clock_sim_lookup'] = previous
+    return wrapped
+
+
+def cache_tracked_sims(session: Session, save: ChronicleSave, rows: list[Record]) -> None:
+    cache = session.info.get('clock_sim_lookup')
+    if cache is None or cache['save_id'] != save.id:
+        return
+    cache['rows'] = rows
+    cache['by_id'] = {}
+    for row in rows:
+        key = str((row.data or {}).get('game_sim_id') or '').strip()
+        if key and not row.deleted:
+            cache['by_id'].setdefault(key, row)
+
+
 def _game_sim(session: Session, save: ChronicleSave, game_sim_id: str) -> Record | None:
     game_sim_id = str(game_sim_id or "").strip()
     if not game_sim_id:
+        return None
+    cache = session.info.get('clock_sim_lookup')
+    if cache is not None and cache['save_id'] == save.id:
+        if cache['rows'] is None:
+            cache_tracked_sims(session, save, list(session.scalars(select(Record).where(
+                Record.save_id == save.id, Record.kind == 'sim', Record.deleted.is_(False),
+            ))))
+        row = cache['by_id'].get(game_sim_id)
+        if row is not None and not row.deleted and str((row.data or {}).get('game_sim_id') or '').strip() == game_sim_id:
+            return row
+        # An imported Sim may acquire a game ID later in this same report.
+        # The cached rows are live ORM objects, not stale copies of their data.
+        for row in cache['rows']:
+            if not row.deleted and str((row.data or {}).get('game_sim_id') or '').strip() == game_sim_id:
+                cache['by_id'][game_sim_id] = row
+                return row
         return None
     return session.scalar(select(Record).where(
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),

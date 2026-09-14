@@ -137,7 +137,7 @@ function Send-OldestReport {
     $next = Get-ChildItem -LiteralPath $queuePath -Filter "report-*.json" -File -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -First 1
     if ($null -eq $next) {
         Write-RelayHealth -State "waiting" -Message "The relay is ready; no reports are waiting."
-        return $true
+        return $false
     }
     $envelope = $null
     try {
@@ -147,6 +147,8 @@ function Send-OldestReport {
         }
         $headers = @{ Authorization = "Bearer $($envelope.sync_token)" }
         $body = if ($envelope.payload_json) { [string]$envelope.payload_json } else { $envelope.payload | ConvertTo-Json -Depth 20 -Compress }
+        Write-RelayHealth -State "sending" -Message "The tracker is processing the oldest queued report." -Envelope $envelope
+        $sendWatch = [System.Diagnostics.Stopwatch]::StartNew()
         $response = Invoke-RestMethod -Uri $envelope.receiver_url -Method Post -Headers $headers -ContentType "application/json" -Body $body -TimeoutSec 30
         if ($response.status -eq "rejected" -or $response.permanent_rejection -eq $true) {
             $destination = Join-Path $quarantinePath $next.Name
@@ -168,6 +170,7 @@ function Send-OldestReport {
             report_sequence = $envelope.report_sequence
             report_checksum = $envelope.report_checksum
             tracker_global_day = $response.tracker_global_day
+            processing_ms = $sendWatch.ElapsedMilliseconds
             sent_at = [DateTimeOffset]::UtcNow.ToString("o")
         }
         Write-JsonAtomic -Path $resultPath -Value $result
@@ -215,7 +218,8 @@ try {
         Import-LegacyPendingReport
         $sent = Send-OldestReport
         if ($Once) { break }
-        if ($sent) { Start-Sleep -Milliseconds 400 } else { Start-Sleep -Seconds 3 }
+        # Drain a backlog promptly, but retain ordered, acknowledged delivery.
+        if ($sent) { Start-Sleep -Milliseconds 25 } else { Start-Sleep -Seconds 3 }
     }
 }
 finally {

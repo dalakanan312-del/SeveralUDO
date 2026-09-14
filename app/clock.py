@@ -1105,12 +1105,16 @@ from .play_clarity import receipt_summary
 
 @with_report
 @receipt_summary
+@automation.with_game_sim_lookup
 def receive(session: Session, link: ClockLink, report: dict) -> dict:
     save = session.get(ChronicleSave, link.save_id)
     from . import crash_recovery
     crash_recovery.lock(session, save)
     from . import infinite_decades
     infinite_decades.lock_current_branch(session, save)
+    # A receiver worker can wait behind a prior report. Read the link again
+    # under that lock so anchors and rewind checks use the committed clock.
+    session.refresh(link)
     if not infinite_decades.import_allowed(save):
         return {"ok": True, "status": "paused", "automation_paused": True, "advanced": 0,
                 "tracker_global_day": save.global_day, "message": "Infinite Decades branch is frozen or awaiting its matching game checkpoint."}
@@ -1247,6 +1251,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     tracked = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
     )))
+    automation.cache_tracked_sims(session, save, tracked)
     tracked_by_game_id = {
         str(record.data.get("game_sim_id") or "").strip(): record for record in tracked
         if str(record.data.get("game_sim_id") or "").strip()

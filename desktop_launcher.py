@@ -103,6 +103,10 @@ def relay_heartbeat_fresh(folder: Path, maximum_age: float = 12.0) -> bool:
         moment = datetime.fromisoformat(checked)
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=timezone.utc)
+        # The relay stamps its heartbeat immediately before a blocking POST.
+        # Allow that 30-second request to finish before declaring it stuck.
+        if payload.get('state') == 'sending':
+            maximum_age = max(maximum_age, 45.0)
         return max(0.0, (datetime.now(timezone.utc) - moment.astimezone(timezone.utc)).total_seconds()) <= maximum_age
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
