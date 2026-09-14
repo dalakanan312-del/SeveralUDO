@@ -23,13 +23,13 @@ function Write-JsonAtomic {
 
 function Read-JsonFile {
     param([string]$Path)
-    return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 }
 
 function Write-RelayHealth {
     param([string]$State, [string]$Message = "", [object]$Envelope = $null)
-    $queued = @(Get-ChildItem -LiteralPath $queuePath -Filter "report-*.json" -File -ErrorAction SilentlyContinue).Count
-    $quarantined = @(Get-ChildItem -LiteralPath $quarantinePath -Filter "*.json" -File -ErrorAction SilentlyContinue).Count
+    $queued = if ([System.IO.Directory]::Exists($queuePath)) { [System.IO.Directory]::GetFiles($queuePath, "report-*.json").Length } else { 0 }
+    $quarantined = if ([System.IO.Directory]::Exists($quarantinePath)) { [System.IO.Directory]::GetFiles($quarantinePath, "*.json").Length } else { 0 }
     $value = @{
         relay_version = "2.2.12"
         state = $State
@@ -134,11 +134,15 @@ function Import-LegacyPendingReport {
 }
 
 function Send-OldestReport {
-    $next = Get-ChildItem -LiteralPath $queuePath -Filter "report-*.json" -File -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -First 1
-    if ($null -eq $next) {
+    # Enumerate names directly: building and sorting thousands of PowerShell
+    # FileInfo objects for every report adds seconds to a large catch-up queue.
+    $paths = [System.IO.Directory]::GetFiles($queuePath, "report-*.json")
+    if ($paths.Length -eq 0) {
         Write-RelayHealth -State "waiting" -Message "The relay is ready; no reports are waiting."
         return $false
     }
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
+    $next = [pscustomobject]@{ FullName = $paths[0]; Name = [System.IO.Path]::GetFileName($paths[0]) }
     $envelope = $null
     try {
         $envelope = Read-JsonFile $next.FullName
