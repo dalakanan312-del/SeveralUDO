@@ -13,7 +13,7 @@ import httpx
 from fastapi import FastAPI
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
-from app.db import Base
+from app.db import Base, ensure_local_query_indexes
 from app.models import ChronicleSave, Record, Workspace
 from app import automation, main
 from desktop_launcher import relay_heartbeat_fresh
@@ -51,6 +51,25 @@ class ClockPerformanceTests(unittest.TestCase):
         receive(self.session, self.link, {})
         self.assertEqual(len(queries), 1)
         self.assertNotIn('clock_sim_lookup', self.session.info)
+
+    def test_existing_database_gets_missing_index_without_changing_records(self):
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql('DROP INDEX ix_records_save_kind_deleted_day')
+            before = connection.exec_driver_sql('SELECT id, data, version FROM records ORDER BY id').all()
+        self.assertEqual(ensure_local_query_indexes(self.engine), 1)
+        self.assertEqual(ensure_local_query_indexes(self.engine), 0)
+        with self.engine.connect() as connection:
+            after = connection.exec_driver_sql('SELECT id, data, version FROM records ORDER BY id').all()
+            plan = connection.exec_driver_sql(
+                'EXPLAIN QUERY PLAN SELECT id FROM records WHERE save_id=? AND kind=? AND deleted=0',
+                (self.save.id, 'sim')).all()
+        self.assertEqual(before, after)
+        self.assertIn('ix_records_save_kind_deleted_day', str(plan))
+
+    def test_local_index_upgrade_does_not_mutate_hosted_database(self):
+        bind = MagicMock(); bind.dialect.name = 'postgresql'
+        self.assertEqual(ensure_local_query_indexes(bind), 0)
+        bind.begin.assert_not_called()
 
     def test_seeded_lookup_sees_imported_identity_and_deletion(self):
         @automation.with_game_sim_lookup

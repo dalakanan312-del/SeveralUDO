@@ -67,6 +67,27 @@ if settings.database_url.startswith("sqlite"):
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
+def ensure_local_query_indexes(bind) -> int:
+    """Upgrade an existing SQLite table's lookup index without changing rows.
+
+    create_all() only creates indexes when it creates the table. Older desktop
+    saves otherwise keep scanning records from every save for each clock lookup.
+    """
+    if bind.dialect.name != 'sqlite':
+        return 0
+    name = 'ix_records_save_kind_deleted_day'
+    with bind.begin() as connection:
+        existing = {row[1] for row in connection.exec_driver_sql('PRAGMA index_list(records)')}
+        if name in existing:
+            return 0
+        connection.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_records_save_kind_deleted_day '
+            'ON records (save_id, kind, deleted, global_day)'
+        )
+        connection.exec_driver_sql('ANALYZE ix_records_save_kind_deleted_day')
+    return 1
+
+
 def session_scope() -> Iterator[Session]:
     session = SessionLocal()
     try:

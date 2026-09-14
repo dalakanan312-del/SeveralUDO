@@ -1,5 +1,6 @@
 # Decades Tracker 4.6.28 — Clock backlog performance
 
+- Add a missing combined lookup index to older local databases on startup. Existing tables were not receiving the newer index through create_all(), causing small queries to scan records across every save. No saved record is changed by this upgrade.
 - Reuse the Sim identity lookup within each received report instead of repeatedly querying the same relatives and relationship targets. It is discarded between reports, preserves newly attached identities, and never crosses saves.
 - Process reports on a receiver worker so database work and first-use name loading do not block the main page/live-status request loop.
 - Refresh clock anchors under the save lock before applying a queued report.

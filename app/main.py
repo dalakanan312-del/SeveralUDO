@@ -23,7 +23,7 @@ from . import accounts, advanced, auth, automation, avatar_rules, backup_service
 from . import domain, drama_randomizer, play_support_ui, usability, usability_ui, heritage, heritage_ui, crash_recovery_ui
 from . import infinite_decades, infinite_decades_ui, birth_dates, portrait_studio, trait_visibility, family_fortunes_ui
 from .config import ROOT, settings
-from .db import Base, SessionLocal, engine
+from .db import Base, SessionLocal, engine, ensure_local_query_indexes
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
 from .security import hash_secret, token
 from .session_policy import REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware, set_session_mode
@@ -713,6 +713,7 @@ def db():
 def startup() -> None:
     Base.metadata.create_all(engine)
     if settings.local_mode:
+        ensure_local_query_indexes(engine)
         with db() as session:
             user = session.scalar(select(User).where(User.email == "local@decades.invalid"))
             if not user:
