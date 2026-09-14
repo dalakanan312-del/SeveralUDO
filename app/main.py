@@ -21,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain, drama_randomizer, play_support_ui, usability, usability_ui, heritage, heritage_ui, crash_recovery_ui
-from . import infinite_decades, infinite_decades_ui, birth_dates, portrait_studio, trait_visibility, family_fortunes_ui
+from . import infinite_decades, infinite_decades_ui, birth_dates, portrait_studio, trait_visibility, family_fortunes_ui, decade_album
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine, ensure_local_query_indexes
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
@@ -41,6 +41,7 @@ FEATURES = {
     "households": ("Households", "Residences, branches, class and rotation"),
     "relationships": ("Relationships", "Marriages, partners and couple portraits"),
     "portrait-studio": ("Portrait Studio", "Historical AI portraits, life-stage galleries and AI settings"),
+    "decade-snapshots": ("Decade Snapshots", "One growing group portrait per year, shared across dynasty branches"),
     "ai-settings": ("AI Portrait Settings", "Enable image generation and connect your private image provider"),
     "pregnancies": ("Pregnancies", "Pregnancy timelines, outcomes and newborn scheduling"),
     "university": ("University", "Enrollment, terms, credits, grades and academic performance"),
@@ -116,7 +117,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.29")
+app = FastAPI(title="Decades Tracker", version="4.6.30")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -942,9 +943,7 @@ def home(request: Request):
                 Record.save_id==save.id,Record.kind=="session_journal",Record.deleted.is_(False),
             ).order_by(Record.global_day.desc(),Record.updated_at.desc()).limit(1))
         selected_rule_packs=list((save.settings or {}).get("selected_rule_packs") or []) if save else []
-        decade_snapshots=list(session.scalars(select(Record).where(
-            Record.save_id==save.id,Record.kind=="decade_snapshot",Record.deleted.is_(False),
-        ).order_by(Record.data["portrait_year"].as_integer().desc()).limit(12))) if save else []
+        decade_snapshots=decade_album.archives(session,save)[:12]
         return templates.TemplateResponse(request, "dashboard.html", {
             **ctx, "counts": counts, "rule_packs":advanced.RULE_PACKS,
             "core_rulesets":core_rulesets.CORE_RULESETS,
@@ -952,6 +951,33 @@ def home(request: Request):
             "selected_rule_packs":selected_rule_packs,"decade_snapshots":decade_snapshots,
             "household_quick_rows":household_quick_rows,"upcoming_glance":upcoming_glance,"data_health":data_health,"latest_digest":latest_digest,
         })
+
+
+@app.post("/api/decade-snapshots")
+async def update_decade_album(request: Request):
+    form=await request.form()
+    from starlette.concurrency import run_in_threadpool
+    return await run_in_threadpool(_update_decade_album,request,form)
+
+
+def _update_decade_album(request,form):
+    with db() as session:
+        ctx=context(request,session);save=ctx.get("save")
+        if not save: raise HTTPException(400,"Open a save first.")
+        year=int_or_none(form.get("year"))
+        if year is None: raise HTTPException(400,"Enter a year.")
+        try:
+            with session.begin_nested():
+                if any(r.data.get("portrait_year")==year and not r.data.get("album_version") for r in decade_album.archives(session,save)):
+                    backup_service.create_snapshot(session,save,"before-decade-group-portrait",force=True)
+                result=decade_album.update(session,save,year,selected_ids=form.getlist("member_ids"),
+                    background=str(form.get("background_color") or decade_album.DEFAULT_BACKGROUND),
+                    show_names=str(form.get("show_names") or "").casefold() in {"true","on","1"})
+            request.session["decade_notice"]=f"Added {result['added']} Sims; kept {result['kept']} existing portraits. This year still has one snapshot."
+            if result["missing"]: request.session["decade_notice"]+=" No matching photo: "+", ".join(result["missing"])+"."
+        except ValueError as exc:
+            request.session["decade_notice"]=str(exc)
+    return RedirectResponse(f"/p/decade-snapshots?year={year}",status_code=303)
 
 
 @app.post("/auth/register")
@@ -1515,6 +1541,11 @@ def feature_page(request: Request, page: str):
         ctx = context(request, session, page=page, title=FEATURES[page][0], subtitle=FEATURES[page][1])
         if not ctx["user"]: return RedirectResponse("/", status_code=303)
         save = ctx["save"]
+        if page==decade_album.PAGE:
+            if not save: return RedirectResponse("/p/saves",status_code=303)
+            return templates.TemplateResponse(request,"decade_snapshots.html",{
+                **ctx,**decade_album.page_context(session,save,request.query_params.get("year")),
+                "decade_notice":request.session.pop("decade_notice",None)})
         raw_params=usability.QueryParams(request.url.query)
         if page=='today' and raw_params.get('view')!='tools' and any(key in raw_params for key in ('task','due','roll_kind','preview','roll_page')):
             return RedirectResponse('/p/today?'+urlencode({**dict(raw_params),'view':'tools'}),status_code=303)
@@ -3368,7 +3399,14 @@ async def accept_automation(request: Request, candidate_id: str):
             portrait_year=int_or_none(value("portrait_year",payload.get("portrait_year"))) or historical_year(save,save.global_day)
             try: portrait_year=int(portrait_year)
             except (TypeError,ValueError): portrait_year=save.start_year+(save.global_day-1)//max(1,save.days_per_year)
-            result=decade_portraits.save_from_tray(session,save,portrait_year,str(value("background_color",payload.get("background_color")) or decade_portraits.DEFAULT_BACKGROUND))
+            try:
+                with session.begin_nested():
+                    if any(r.data.get("portrait_year")==portrait_year and not r.data.get("album_version") for r in decade_album.archives(session,save)):
+                        backup_service.create_snapshot(session,save,"before-decade-group-portrait",force=True)
+                    result=decade_album.update(session,save,portrait_year,background=str(value("background_color",payload.get("background_color")) or decade_album.DEFAULT_BACKGROUND))
+            except ValueError as exc:
+                request.session["automation_notice"]=str(exc)+" The reminder is still waiting."
+                return RedirectResponse("/p/automation",status_code=303)
             if not result["records"]:
                 request.session["automation_notice"]=(
                     "No current household portraits were found yet. In The Sims 4, save each active household to My Library, "
@@ -3383,8 +3421,8 @@ async def accept_automation(request: Request, candidate_id: str):
             }}
             item.data={**item.data,"payload":payload}
             request.session["automation_notice"]=(
-                f"Saved {len(result['records'])} household portrait{'s' if len(result['records'])!=1 else ''} and one combined Decade Snapshot for {portrait_year}. "
-                f"{len(result['missing'])} current household member{'s' if len(result['missing'])!=1 else ''} had no unambiguous Tray portrait."
+                f"Added {result['added']} Sims to the shared {portrait_year} Decade Snapshot; kept {result['kept']} existing portraits. "
+                f"{len(result['missing'])} Sims had no matching photo. Open History → Decade Snapshots to add photos later."
             )
         elif action=="unknown_illness" and sim:
             illness_name=str(value("illness_name",payload.get("suggested_name") or "Unclassified illness") or "Unclassified illness").strip()

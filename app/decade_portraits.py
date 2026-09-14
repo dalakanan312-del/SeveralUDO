@@ -51,13 +51,29 @@ def schedule_prompt(session: Session, save: ChronicleSave) -> int:
     if not milestone:
         return 0
     year, due_day = milestone
-    source_key = f"save-portrait:{year}"
+    from .decade_album import _branch
+    branch_id, branch_name = _branch(save)
+    source_key = f"save-portrait:{year}:{branch_id}"
     exists = session.scalar(select(Record.id).where(
         Record.save_id == save.id,
         Record.kind == "game_candidate",
         Record.data["source_key"].as_string() == source_key,
     ).limit(1))
     if exists:
+        return 0
+    # Do not reopen an already handled pre-album reminder on the original
+    # branch. Other branches still receive their own opportunity to contribute.
+    old = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "game_candidate",
+        Record.data["source_key"].as_string() == f"save-portrait:{year}",
+    )))
+    if any(str((item.data or {}).get("infinite_branch_id") or "main") == branch_id for item in old):
+        return 0
+    albums = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == "decade_snapshot", Record.deleted.is_(False),
+        Record.data["portrait_year"].as_integer() == year,
+    )))
+    if any(branch_id in ((item.data or {}).get("contributions") or {}) for item in albums):
         return 0
     households = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
@@ -72,7 +88,7 @@ def schedule_prompt(session: Session, save: ChronicleSave) -> int:
             "action":"save_portrait", "status":"pending", "source_key":source_key,
             "payload":{
                 "portrait_year":year, "milestone_global_day":due_day,
-                "background_color":DEFAULT_BACKGROUND,
+                "background_color":"#ffffff", "branch_id":branch_id, "branch_name":branch_name,
                 "household_ids":[home.id for home in active],
                 "household_names":[home.label for home in active],
             },

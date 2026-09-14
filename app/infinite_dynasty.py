@@ -24,6 +24,7 @@ KEY = "infinite_decades"
 KIND = "dynasty_branch"
 FINISHED = {"extinct", "modern"}
 SHADOWS = {KIND, "save_metadata", "clock_state", "clock_protocol_state", "clock_diagnostic", "game_candidate", "portrait_blob"}
+SHARED_ARCHIVES = {"decade_snapshot", "household_portrait"}
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 MARKERS = {"infinite_frozen", "infinite_frozen_global_day", "infinite_branch_id"}
 
@@ -168,7 +169,7 @@ def _references(value, ids):
 
 
 def _belongs(row, chosen, sims, homes, home_ids):
-    if row.kind in SHADOWS: return False
+    if row.kind in SHADOWS | SHARED_ARCHIVES: return False
     if row.kind == "sim": return row.id in chosen
     if row.kind == "household": return row.id in homes
     data = row.data or {}
@@ -181,7 +182,7 @@ def _belongs(row, chosen, sims, homes, home_ids):
 
 
 def snapshot(session, save, chosen=None, *, include_all=False):
-    rows = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.not_in(SHADOWS))))
+    rows = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.not_in(SHADOWS | SHARED_ARCHIVES))))
     sims = {r.id for r in rows if r.kind == "sim"}
     chosen = set(chosen) if chosen is not None else {r.id for r in rows if r.kind == "sim" and not r.deleted}
     homes = {household_id(r) for r in rows if r.id in chosen}
@@ -244,12 +245,15 @@ def _reset_game(session, save, *, preserve_candidates=False):
 
 def _restore_working_view(session, save, target, payload):
     from .backup_service import public_settings
-    current = {r.id: r for r in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.not_in(SHADOWS)))}
+    current = {r.id: r for r in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.not_in(SHADOWS | SHARED_ARCHIVES)))}
     restored_ids = {r["id"] for r in payload["records"]}
     old_branch = state(save).get("active_branch_id")
     for row in current.values():
         if row.id not in restored_ids: _freeze(session, row, save.global_day, (row.data or {}).get("infinite_branch_id") or old_branch)
     for entry in payload["records"]:
+        # Older checkpoints may contain archive metadata. Shared albums now
+        # live outside the branch timeline and must never be rewound by it.
+        if entry["kind"] in SHARED_ARCHIVES: continue
         row = current.get(entry["id"])
         if row is None:
             row = Record(id=entry["id"], save_id=save.id, kind=entry["kind"], version=0, data={})
@@ -258,6 +262,8 @@ def _restore_working_view(session, save, target, payload):
         row.label, row.global_day = entry["label"], entry.get("global_day")
         _touch(session, row, {**entry["data"], "infinite_branch_id": target.id}, deleted=bool(entry.get("deleted")))
     for photo in payload.get("portraits", []):
+        owner = session.get(Record, photo["record_id"])
+        if owner and owner.kind in SHARED_ARCHIVES: continue
         row = session.scalar(select(Portrait).where(Portrait.save_id == save.id,
             Portrait.record_id == photo["record_id"], Portrait.stage == photo["stage"]))
         raw = base64.b64decode(photo["image"], validate=True)
@@ -503,8 +509,8 @@ def _protect_frozen(session, _context, _instances):
             raise BranchFrozenError("Paused or completed dynasty history cannot be changed.")
         if isinstance(item, Portrait):
             sim = session.get(Record, item.record_id)
-            if sim and (sim.data or {}).get("infinite_frozen"): raise BranchFrozenError("This portrait belongs to a paused family branch.")
+            if sim and sim.kind not in SHARED_ARCHIVES and (sim.data or {}).get("infinite_frozen"): raise BranchFrozenError("This portrait belongs to a paused family branch.")
         if isinstance(item, Record):
             previous = inspect(item).attrs.data.history.deleted
-            if (item.data or {}).get("infinite_frozen") or any((d or {}).get("infinite_frozen") for d in previous): raise BranchFrozenError("This record belongs to a paused family branch.")
-            if item.kind not in SHADOWS: item.data = {**(item.data or {}), "infinite_branch_id": state(save)["active_branch_id"]}
+            if item.kind not in SHARED_ARCHIVES and ((item.data or {}).get("infinite_frozen") or any((d or {}).get("infinite_frozen") for d in previous)): raise BranchFrozenError("This record belongs to a paused family branch.")
+            if item.kind not in SHADOWS | SHARED_ARCHIVES: item.data = {**(item.data or {}), "infinite_branch_id": state(save)["active_branch_id"]}

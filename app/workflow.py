@@ -1,6 +1,7 @@
 """Read-only wayfinding: existing pages, section anchors and related tasks."""
 
 RELATED_TASKS = {
+    'decade-snapshots': (('Individual portraits','/p/portrait-studio'),('Dynasty branches','/p/infinite-decades'),('Family history','/p/storyline')),
     'family-fortunes': (('Planned marriages','/p/relationships'),('Dowries & promises','/p/life-records#dowries'),('Estate plans','/p/historical-life#estate'),('Exact endings','/p/storyline')),
     'historical-addresses': (('Current households','/p/households'),('Titles & estates','/p/titles-estates'),('Record a move','/p/world#migration-new')),
     'titles-estates': (('Historical address book','/p/historical-addresses'),('Inheritance & finances','/p/historical-life#estate'),('Succession rules','/p/challenge#succession')),

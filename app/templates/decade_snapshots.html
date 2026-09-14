@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block body %}
+<header class="hero compact"><p class="eyebrow">THE FAMILY, TOGETHER</p><h1>Decade Snapshots</h1><p>One growing group portrait for each year. New branches add people to the same image; the people already pictured stay exactly as they were.</p></header>
+{% if decade_notice %}<p class="notice" role="status">{{decade_notice}}</p>{% endif %}
+<section class="panel">
+<form method="get" action="/p/decade-snapshots" class="row"><label>Snapshot year<input type="number" name="year" value="{{album_year}}" max="{{album_current_year}}" required></label><button>Open year</button></form>
+<p class="muted">Adding from <strong>{{album_branch_name}}</strong>. Only Sims recorded as alive during {{album_year}} are offered. Someone born later belongs in a later snapshot.</p>
+{% if not infinite_frozen %}
+<form method="post" action="/api/decade-snapshots" class="form-grid">
+<input type="hidden" name="year" value="{{album_year}}">
+<label>Plain background<input type="color" name="background_color" value="{{album_selected.data.get('background_color','#ffffff') if album_selected and album_selected.data.get('album_version') else '#ffffff'}}"></label>
+<label class="check"><input type="checkbox" name="show_names" {% if album_selected and album_selected.data.get('show_names') %}checked{% endif %}> Include small names in the image</label>
+<details class="wide" open><summary><strong>Add Sims from this branch · {{album_candidates|length}} available</strong></summary>
+<div class="album-choices">{% for sim in album_candidates %}<label class="check"><input type="checkbox" name="member_ids" value="{{sim.id}}" checked> {{sim.label}}</label>{% else %}<p>Everyone eligible is already included, or this branch has no Sims for that year.</p>{% endfor %}</div></details>
+<p class="wide muted">Save households to My Library before scanning, or upload pictures on Sim profiles. Transparent, full-body Tray photos give the group-portrait look. Imported photos keep their own backgrounds. Existing pictures are never replaced by a later life stage.</p>
+<button class="primary wide">{{'Add selected Sims / update this same image' if album_selected else 'Create this year’s group portrait'}}</button>
+{% if album_selected and not album_selected.data.get('album_version') %}<p class="wide muted">The first update converts the old layout. The original image and a restorable save backup are kept. If an original member’s photo cannot be recovered, the old image stays unchanged.</p>{% endif %}
+</form>{% else %}<p>Continue an active branch to add people. Your shared album remains available while a branch is paused or complete.</p>{% endif %}
+</section>
+{% for album in albums %}
+<section class="panel decade-album" id="album-{{album.id}}">
+<div class="section-heading"><div><p class="eyebrow">{{album.data.get('member_count','')}} SIMS · SHARED FAMILY ARCHIVE</p><h2>{{album.data.portrait_year}}</h2></div><div class="row"><a class="button" href="/p/decade-snapshots?year={{album.data.portrait_year}}">Add Sims / layout</a><a class="button" href="/portraits/{{album.id}}/default?v={{album.version}}" download="{{album.data.portrait_year}}-Decade-Snapshot.webp">Download image</a></div></div>
+<a class="album-picture" href="/portraits/{{album.id}}/default?v={{album.version}}" target="_blank" rel="noopener"><img src="/portraits/{{album.id}}/default?v={{album.version}}" alt="{{album.label}}" loading="lazy"></a>
+{% if album.data.get('missing_member_names') %}<p class="notice">Still missing a matching photo: {{album.data.missing_member_names|join(', ')}}. Upload or save those portraits, then add them here.</p>{% endif %}
+{% if album.data.get('original_preserved') %}<p class="muted"><a href="/portraits/{{album.id}}/original" target="_blank" rel="noopener">View preserved original layout</a></p>{% endif %}
+<details><summary>Who’s pictured and where they came from</summary><div class="album-roster">{% for member in album.data.get('members',[]) %}<article><a href="/sims/{{member.sim_id}}">{{member.name}}</a><small>{{member.household_name}} · {{member.branch_name}}<br>{{member.photo_age_stage or 'Stage not recorded'}} · {{member.photo_source}}</small></article>{% else %}<p>Original household collage. Update its layout to create the detailed roster.</p>{% endfor %}</div></details>
+</section>{% else %}<section class="panel"><h2>Start the family album</h2><p>Choose a year and add the first household above. You can return to the same image when another branch reaches that year.</p></section>{% endfor %}
+{% endblock %}

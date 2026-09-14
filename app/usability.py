@@ -146,7 +146,7 @@ NAVIGATION_GROUPS=(
  {'id':'people','label':'People','description':'Sims, families and daily life','icon':'♟',
   'pages':('sims','households','historical-addresses','titles-estates','relationships','pregnancies','illnesses','university','family-tree','life-records','world','names','naming-customs')},
  {'id':'history','label':'History','description':'Remember and compare','icon':'✒',
-  'pages':('timeline','storyline','portrait-studio','writers-room','family-chronicle','notes','statistics','legacy-lab','infinite-decades','branch-comparison','historical-life')},
+  'pages':('timeline','storyline','decade-snapshots','portrait-studio','writers-room','family-chronicle','notes','statistics','legacy-lab','infinite-decades','branch-comparison','historical-life')},
  {'id':'settings','label':'Settings','description':'Rules, preferences and maintenance','icon':'⚙',
   'pages':('rules','roll-tables','occult-rules','historical-guidance','historical-check','catch-up','plants','guides','tutorial','saves','sync','appearance','ai-settings','account','health','dice-audit','support')},
 )
