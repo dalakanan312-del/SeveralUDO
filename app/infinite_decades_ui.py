@@ -35,6 +35,7 @@ def render(request, session, ctx, templates):
     ctx.update(page="infinite-decades", title="Infinite Decades", branch_state=dynasty.state(save),
         branches=family, branch_meta=dynasty.metadata, branch_year=dynasty.year,
         active_branch=active, next_branch=dynasty.next_branch(family),
+        playable_branches=dynasty.playable_branches(family),
         branch_sims=[r for r in sims if not r.deleted], dynasty_sims=sims,
         split_sims=[r for r in sims if dynasty.alive(r,save) and not (r.data or {}).get("infinite_frozen")],
         starting_sims=[r for r in sims if r.data.get("infinite_frozen") and r.data.get("infinite_branch_id") == dynasty.state(save).get("starting_branch_id")],
@@ -141,5 +142,17 @@ def register(app, db, owned_save):
             dynasty.confirm_game(session, save)
             request.session["infinite_notice"] = "Matching game checkpoint confirmed. New reports can update only the active family line."
         return run(request, save_id, action)
+
+    @router.post("/infinite/{save_id}/play")
+    def play_branch(request: Request,save_id: str,branch_id: str=Form(...),
+                    current_game_save_name: str=Form(""),checkpoint_confirmed: str=Form(""),load_confirmed: str=Form("")):
+        if load_confirmed!="yes": raise HTTPException(400,"Confirm you will load the selected branch's matching Sims checkpoint.")
+        def action(session,save):
+            if dynasty.state(save).get("status")=="active" and checkpoint_confirmed!="yes":
+                raise ValueError("Save the current family's game checkpoint before switching branches.")
+            target=dynasty.activate_branch(session,save,branch_id,current_game_save_name)
+            request.session["infinite_notice"]=(f"Now playing {target.label} at year {dynasty.year(save)} / GD {save.global_day}. "
+                "Any unfinished previous line is paused with its progress preserved. Load the selected Sims checkpoint, reconnect game reading, and confirm the match below.")
+        return run(request,save_id,action)
 
     app.include_router(router)

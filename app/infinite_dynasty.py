@@ -181,7 +181,7 @@ def _belongs(row, chosen, sims, homes, home_ids):
     return not refs or bool(refs & homes)
 
 
-def snapshot(session, save, chosen=None, *, include_all=False):
+def snapshot(session, save, chosen=None, *, include_all=False, include_candidates=False):
     rows = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.not_in(SHADOWS | SHARED_ARCHIVES))))
     sims = {r.id for r in rows if r.kind == "sim"}
     chosen = set(chosen) if chosen is not None else {r.id for r in rows if r.kind == "sim" and not r.deleted}
@@ -193,7 +193,10 @@ def snapshot(session, save, chosen=None, *, include_all=False):
     if preferences.get("current_heir_id") not in chosen: preferences["current_heir_id"] = None
     if preferences.get("main_household_id") not in homes:
         preferences["main_household_id"] = next(iter(sorted(homes - {""})), None)
+    candidates = [{"id":r.id,"label":r.label,"global_day":r.global_day,"data":copy.deepcopy(r.data)}
+        for r in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="game_candidate",Record.deleted.is_(False)))] if include_candidates else []
     return {"global_day": save.global_day, "start_year": save.start_year, "days_per_year": save.days_per_year,
+            "automation_candidates":candidates,
             "pregnancy_days": save.pregnancy_days, "settings": preferences,
             "member_sim_ids": sorted(chosen), "records": [
                 {"id": r.id, "kind": r.kind, "label": r.label, "global_day": r.global_day,
@@ -277,6 +280,16 @@ def _restore_working_view(session, save, target, payload):
     _set_state(save, active_branch_id=target.id, branch_name=target.label, status="active",
         split_global_day=metadata(target)["split_global_day"], game_ready=False, epoch=uuid4().hex)
     _reset_game(session, save)
+    # Mid-play pauses retain the branch's inbox. Old checkpoints omit this list.
+    for entry in payload.get("automation_candidates", []):
+        row=session.get(Record,entry["id"])
+        if row and (row.save_id!=save.id or row.kind!="game_candidate"):
+            raise ValueError("A saved automation review no longer belongs to this dynasty.")
+        if row is None:
+            row=Record(id=entry["id"],save_id=save.id,kind="game_candidate",version=0,data={})
+            session.add(row)
+        row.label,row.global_day=entry["label"],entry.get("global_day")
+        _touch(session,row,copy.deepcopy(entry["data"]),deleted=False)
 
 
 def _selected(session, save, ids):
@@ -403,6 +416,39 @@ def next_branch(family):
     waiting = [r for r in family if metadata(r).get("status") == "waiting"]
     return max(waiting, key=lambda r: (metadata(r)["split_year"], metadata(r)["split_global_day"],
                metadata(r)["created_at"], r.id), default=None)
+
+
+def playable_branches(family):
+    return [row for row in family if metadata(row).get("status") in {"waiting","paused"}]
+
+
+def activate_branch(session, save, branch_id, current_game_save_name=""):
+    """Choose a waiting branch or resume a pause without losing current progress."""
+    _lock(session,save)
+    if not enabled(save): raise ValueError("Turn Infinite Decades on before playing another branch.")
+    target=session.get(Record,branch_id)
+    if (not target or target.save_id!=save.id or target.kind!=KIND
+            or target.id==state(save).get("active_branch_id")
+            or metadata(target).get("status") not in {"waiting","paused"}):
+        raise ValueError("Choose a waiting or paused branch from this dynasty. Completed branches remain read-only.")
+    payload=unpack_snapshot(target.data["snapshot"])
+    current=active_branch(session,save)
+    pause_current=state(save).get("status")=="active"
+    if pause_current and (not current or not str(current_game_save_name).strip()):
+        raise ValueError("Save the current family in the game and enter its checkpoint name before switching branches.")
+    current_payload=snapshot(session,save,include_candidates=True) if pause_current else None
+    # Both a corrupt target and a failure during restoration leave everything,
+    # including the current branch snapshot and its inbox, unchanged.
+    with session.begin_nested(), branch_operation(session,save):
+        from .backup_service import create_snapshot
+        create_snapshot(session,save,"before-branch-switch",force=True)
+        if pause_current:
+            _update_branch(session,current,current_payload,status="paused",current_global_day=save.global_day,
+                split_game_save_name=metadata(current).get("split_game_save_name") or metadata(current).get("game_save_name"),
+                game_save_name=str(current_game_save_name).strip()[:240])
+        _restore_working_view(session,save,target,payload)
+        _update_branch(session,target,status="active")
+    return target
 
 
 def activate_next(session, save):
