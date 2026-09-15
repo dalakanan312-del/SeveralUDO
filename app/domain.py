@@ -2372,6 +2372,7 @@ def _lethal_outcome(text: str) -> bool:
 
 def event_roll_configuration(event: Record, rule_data: dict | None = None) -> dict:
     """Merge native event fields, recovered prose and the imported rule table."""
+    from . import event_targets
     data = event.data or {}
     rule = rule_data or {}
     prose = event_roll_spec(data.get("notes") or "")
@@ -2399,6 +2400,8 @@ def event_roll_configuration(event: Record, rule_data: dict | None = None) -> di
         "failure_outcome": _mapped_roll_outcome(int(re.findall(r"\d+", bad_results)[0]), result_rules) if bad_results and result_rules else "",
         "failure_is_lethal": lethal,
         "event_rule_id": rule.get("record_id"),
+        "roll_scope": event_targets.roll_scope(data, rule=rule),
+        "target_location": event_targets.source_location(data) if str(data.get('location') or '').casefold() in event_targets.PLACEHOLDERS else data.get('location'),
     }
 
 
@@ -2420,7 +2423,7 @@ def repair_pending_event_rolls(session: Session, save: ChronicleSave) -> int:
     if not events:
         return 0
     rule_map = _event_rule_map(session, save)
-    changed = 0
+    changed = retire_inapplicable_event_rolls(session, save)
     rolls = session.scalars(select(Record).where(
         Record.save_id == save.id,
         Record.kind == "roll",
@@ -2429,7 +2432,7 @@ def repair_pending_event_rolls(session: Session, save: ChronicleSave) -> int:
     ))
     for roll in rolls:
         data = dict(roll.data or {})
-        if bool(data.get("completed")) or not data.get("event_id"):
+        if bool(data.get("completed")) or data.get('infinite_frozen') or not data.get("event_id"):
             continue
         event = events.get(str(data.get("event_id") or ""))
         if not event:
@@ -2447,6 +2450,10 @@ def repair_pending_event_rolls(session: Session, save: ChronicleSave) -> int:
                 dict(candidate) for candidate in (event_data.get("source_roll_plan") or [])
                 if isinstance(candidate, dict) and int(candidate.get("index") or 0) == wanted_index
             ), None)
+        if data.get('automatic_followup') and not step:
+            # Legacy configured follow-ups have no source-plan index. Their
+            # own die must not be overwritten with the parent's primary die.
+            continue
         if step:
             result_rules = str(step.get("result_rules") or "")
             bad_results = str(step.get("bad_results") or "")
@@ -2460,6 +2467,19 @@ def repair_pending_event_rolls(session: Session, save: ChronicleSave) -> int:
                 ),
                 "failure_is_lethal": bool(step.get("failure_is_lethal")) or _lethal_outcome(result_rules),
             })
+        first_root = next((s for s in event_data.get('source_roll_plan') or []
+                           if s.get('parent_index') is None and not s.get('parent_indices')), {})
+        if not data.get('automatic_followup') and (not step or step.get('index') == first_root.get('index')):
+            sim = session.get(Record,data.get('sim_id')) if data.get('sim_id') else None
+            sex = str((sim.data or {}).get('sex') or '').casefold() if sim else ''
+            key = 'female' if re.search(r'\b(?:female|woman|girl)\b',sex) else 'male' if re.search(r'\b(?:male|man|boy)\b',sex) else ''
+            dice_by_sex, rules_by_sex = event_data.get('die_by_sex') or {}, event_data.get('result_rules_by_sex') or {}
+            if key and (key in dice_by_sex or key in rules_by_sex):
+                rules = str(rules_by_sex.get(key) or spec['result_rules'] or '')
+                bad = _result_numbers(rules) if ':' in rules else rules
+                spec.update(die=str(dice_by_sex.get(key) or spec['die']),bad_results=bad,result_rules=rules,
+                            failure_outcome=_mapped_roll_outcome(int(re.findall(r'\d+',bad)[0]),rules) if bad and rules else '',
+                            failure_is_lethal=_lethal_outcome(rules))
         context_label = str((step or {}).get("context") or "").split(";")[0].strip()
         source = str(data.get("source") or "")
         show_context = bool(context_label and (":step:" in source or source.startswith("conditional-followup:")))
@@ -2607,6 +2627,9 @@ def _event_is_global(event: Record) -> bool:
     data = event.data or {}
     scope = str(data.get("scope") or "").strip().casefold()
     location = str(data.get("location") or "").strip().casefold()
+    from .event_targets import source_location
+    if source_location(data) is not None:
+        return False
     return scope.startswith("global") or location.startswith("global") or scope in {"world", "worldwide", "all", "everyone", "all sims"}
 
 
@@ -2684,7 +2707,7 @@ def _event_location_matches(target: object, places: object) -> bool:
         for place in recorded_places:
             place_alias = _EVENT_LOCATION_ALIASES.get(place, place)
             if any(
-                member == place_alias or member in place_alias or place_alias in member
+                member == place_alias or re.search(r"(?<!\w)" + re.escape(member) + r"(?!\w)", place_alias)
                 for member in members
             ):
                 return True
@@ -2885,8 +2908,12 @@ def repair_duplicate_events(session: Session, save: ChronicleSave) -> dict:
 
 def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None = None,
                    household: Record | None = None, save: ChronicleSave | None = None,
-                   fallback_location: str = "", pregnancies: list[Record] | None = None) -> bool:
+                   fallback_location: str = "", pregnancies: list[Record] | None = None,
+                   migrations: list[Record] | None = None, step: dict | None = None) -> bool:
+    from . import event_targets
     data, original = event.data or {}, sim.data or {}
+    if sim.deleted or original.get('infinite_frozen') or original.get('game_was_dead'):
+        return False
     household_data = household.data if household else {}
     # Household and challenge defaults fill gaps but never replace explicit Sim data.
     sim_data = {**(household_data or {}), **original}
@@ -2897,12 +2924,16 @@ def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None 
         return False
     if death is not None and int(death) <= due:
         return False
-    text = f"{rule.get('eligibility','')} {data.get('affected_class','')} {data.get('notes','')}".casefold()
+    text = event_targets.eligibility_text(data, step, rule).casefold()
+    if save and re.search(r'\bmain household\b',text) and not re.search(r'\bside\b|\ball households\b',text):
+        if not household or household.id != (save.settings or {}).get('main_household_id'): return False
+    if save and re.search(r'\bside households?\b',text) and not re.search(r'\bmain\b|\ball households\b',text):
+        if not household or not (save.settings or {}).get('main_household_id') or household.id == save.settings['main_household_id']: return False
     sex = str(sim_data.get("sex") or "").casefold()
-    explicit_sexes = rule.get("eligible_sexes")
+    explicit_sexes = (step or {}).get("eligible_sexes") or rule.get("eligible_sexes") or data.get("eligible_sexes")
     sex_rule = " ".join(map(str, explicit_sexes)) if isinstance(explicit_sexes, (list, tuple, set)) else str(explicit_sexes or "")
     sex_rule = sex_rule.casefold()
-    sex_text = f"{sex_rule} {text}"
+    sex_text = sex_rule if sex_rule and sex_rule not in {'all','any','all sims'} else text
     mentions_male = bool(re.search(r"\b(?:male|males|men|man|boys?)\b", sex_text))
     mentions_female = bool(re.search(r"\b(?:female|females|women|woman|girls?)\b", sex_text))
     male_only = mentions_male and not mentions_female
@@ -2923,17 +2954,17 @@ def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None 
         except (TypeError, ValueError):
             pass
         age_match = re.search(r"\b(\d+)\s*\+", text)
-        if age_match and age < int(age_match.group(1)):
+        if age_match and age < (lifecycle_age_days(save, int(age_match.group(1))) if save else int(age_match.group(1))):
             return False
         eligible_stages = {
             str(value or "").strip().casefold()
-            for value in (data.get("eligible_life_stages") or rule.get("eligible_life_stages") or [])
+            for value in ((step or {}).get("eligible_life_stages") or data.get("eligible_life_stages") or rule.get("eligible_life_stages") or [])
             if str(value or "").strip()
         }
         if eligible_stages:
             inferred_stage = DEFAULT_STAGES[0][0].casefold()
             for stage_name, minimum, _die, _bad in DEFAULT_STAGES:
-                if age >= minimum:
+                if age >= (lifecycle_age_days(save, minimum) if save else minimum):
                     inferred_stage = stage_name.casefold()
             stage_matches = inferred_stage in eligible_stages or (
                 inferred_stage in {"being born", "newborn", "infant"} and "baby" in eligible_stages
@@ -2957,50 +2988,42 @@ def _event_applies(event: Record, sim: Record, due: int, rule_data: dict | None 
                         break
             if not stage_matches and not pregnant_at_event:
                 return False
-    if _event_is_global(event):
-        return True
+    if not event_targets.matches_attributes(data, step, rule, sim, household):
+        return False
     target = str(data.get("location") or "").casefold()
-    challenge = save.settings if save else {}
-    places = " ".join(str(value or "") for value in (
-        sim_data.get("country"), sim_data.get("last_game_world"), sim_data.get("birthplace"),
-        sim_data.get("location"), sim_data.get("world"), household_data.get("country"),
-        household_data.get("location"), household_data.get("world"),
-        (challenge or {}).get("challenge_location"), (challenge or {}).get("location"),
-        (challenge or {}).get("country"),
-    )).casefold()
-    if not places.strip():
-        places = fallback_location.casefold()
-    target_parts = _location_parts(target)
-    if target_parts and not _event_location_matches(target, places):
+    places = event_targets.location_at(sim, household, save, due, migrations or [], fallback_location)
+    local = event_targets.source_location(data, step) if step else event_targets.source_location(data)
+    if local is None: local = event_targets.source_location(data)
+    if target in event_targets.PLACEHOLDERS and local is not None:
+        if not local or not _event_location_matches(local, places): return False
+    elif not _event_is_global(event) and _location_parts(target) and not _event_location_matches(target, places):
         return False
     social = str(sim_data.get("social_class") or household_data.get("social_class") or "").casefold()
-    affected = str(data.get("affected_class") or "").casefold()
+    affected = " ".join(str(v or '') for v in (data.get("affected_class"), rule.get('eligibility'), (step or {}).get('selector'))).casefold()
     class_words = ("nobility", "noble", "royal", "peasant", "working", "middle", "upper", "lower")
     requested = [word for word in class_words if word in affected]
-    return not requested or any(word in social for word in requested)
+    aliases = {'nobility':'noble|nobility|aristocrat','noble':'noble|nobility|aristocrat',
+               'royal':'royal|royalty','peasant':'peasant|peasantry'}
+    return not requested or any(re.search(r'\b(?:'+aliases.get(word,re.escape(word))+r')\b',social) for word in requested)
 
 
 def _source_roll_step_applies(step: dict, sim: Record, household: Record | None,
-                              save: ChronicleSave, fallback_location: str) -> bool:
+                              save: ChronicleSave, fallback_location: str, due: int | None = None,
+                              migrations: list[Record] | None = None) -> bool:
     """Apply a source table's narrower location without widening its event.
 
     Some historical entries contain separate dice tables for different places.
     The event itself must reach all of those Sims, while a table should only be
     scheduled for its own region.
     """
-    target = str(step.get("location") or step.get("eligible_location") or "").strip()
-    if not target or _normalized_location(target) in {"all", "global", "world", "worldwide"}:
+    from . import event_targets
+    target = event_targets.source_location({}, step)
+    if target is None:
         return True
-    sim_data = sim.data or {}
-    household_data = household.data if household else {}
-    challenge = save.settings or {}
-    places = " ".join(str(value or "") for value in (
-        sim_data.get("country"), sim_data.get("last_game_world"), sim_data.get("birthplace"),
-        sim_data.get("location"), sim_data.get("world"), household_data.get("country"),
-        household_data.get("location"), household_data.get("world"),
-        challenge.get("challenge_location"), challenge.get("location"), challenge.get("country"),
-    ))
-    return _event_location_matches(target, places or fallback_location)
+    if not target: return False
+    places = event_targets.location_at(sim, household, save, due if due is not None else save.global_day,
+                                      migrations or [], fallback_location)
+    return _event_location_matches(target, places)
 
 
 def _remarriage_rule(record: Record) -> bool:
@@ -4296,6 +4319,61 @@ def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, r
     return created
 
 
+def retire_inapplicable_event_rolls(session: Session, save: ChronicleSave) -> int:
+    """Archive invalid automatic pending work; keep results and branches intact."""
+    from . import event_targets
+    pending = list(session.scalars(select(Record).where(Record.save_id==save.id,
+        Record.kind=='roll',Record.deleted.is_(False),Record.data['completed'].as_boolean().is_not(True),
+        Record.data['infinite_frozen'].as_boolean().is_not(True),Record.data['event_id'].as_string().is_not(None),
+    )))
+    if not pending: return 0
+    records = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.deleted.is_(False),
+        Record.kind.in_(['event','sim','household','pregnancy','migration']),
+    )))
+    by_id = {r.id:r for r in records}
+    sims = [r for r in records if r.kind == 'sim' and not (r.data or {}).get('infinite_frozen')]
+    moves = [r for r in records if r.kind == 'migration']
+    pregnancies = [r for r in records if r.kind == 'pregnancy']
+    rules = _event_rule_map(session, save)
+    count = 0
+    for roll in pending:
+        d = roll.data or {}
+        if (roll.kind != 'roll' or d.get('completed') or d.get('infinite_frozen')
+                or not str(d.get('source') or '').startswith(('event:', 'conditional-followup:'))): continue
+        event = by_id.get(str(d.get('event_id') or ''))
+        if not event or (event.data or {}).get('infinite_frozen'): continue
+        ed = event.data or {}; rule = rules.get(event_key(event), {})
+        step = next((s for s in ed.get('source_roll_plan') or [] if s.get('index') == d.get('source_roll_plan_index')), {})
+        if d.get('automatic_followup') and not step:
+            step = {'roll_scope':d.get('roll_scope') or 'sim','selector':d.get('roll_type') or ''}
+        unit = event_targets.roll_scope(ed, step, rule)
+        reason = ''
+        if event_is_ignored(event) or not ed.get('active', True) or not ed.get('roll_required'):
+            reason = 'The source event is hidden, inactive, or no longer requires rolls.'
+        elif unit != str(d.get('roll_scope') or 'sim'):
+            reason = 'The source requires one roll per household, not one per Sim.' if unit == 'household' else 'The source requires individual Sim checks.'
+        else:
+            candidates = ([by_id.get(str(d.get('sim_id') or ''))] if unit == 'sim' else
+                          [s for s in sims if (s.data or {}).get('current_household_id') == d.get('household_id')])
+            due = int(roll.global_day if roll.global_day is not None else save.global_day)
+            valid = False
+            for sim in candidates:
+                if not sim or sim.kind != 'sim' or (sim.data or {}).get('infinite_frozen'): continue
+                death = (sim.data or {}).get('death_global_day')
+                if death is not None and int(death) <= save.global_day: continue
+                home = by_id.get(str((sim.data or {}).get('current_household_id') or ''))
+                if (_event_applies(event,sim,due,rule,home,save,'',pregnancies,moves,step)
+                        and _source_roll_step_applies(step,sim,home,save,'',due,moves)):
+                    valid = True; break
+            if not valid: reason = 'No living eligible target matches the source location and restrictions on the due day.'
+        if reason:
+            base = roll.version; roll.deleted = True
+            roll.data = {**d, 'retired_reason':reason, 'retired_global_day':save.global_day, 'event_target_repair':True}
+            roll.version += 1; journal(session,roll,'delete',base); count += 1
+    return count
+
+
 def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Record] | None = None) -> int:
     """Backfill reached historical-event rolls without running every scheduler.
 
@@ -4304,6 +4382,7 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
     the indexed record day, because older imports can leave those two values out
     of sync.
     """
+    from . import event_targets
     repaired = repair_pending_event_rolls(session, save)
     if sims is None:
         sims = list(session.scalars(select(Record).where(
@@ -4342,21 +4421,28 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
     pregnancies = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "pregnancy", Record.deleted.is_(False),
     )))
-    household_locations = {
-        _normalized_location(value)
-        for household in households.values()
-        for value in (
-            (household.data or {}).get("country"),
-            (household.data or {}).get("location"),
-            (household.data or {}).get("world"),
-        )
-        if _normalized_location(value)
-    }
-    fallback_location = next(iter(household_locations)) if len(household_locations) == 1 else ""
+    migrations = list(session.scalars(select(Record).where(
+        Record.save_id == save.id, Record.kind == 'migration', Record.deleted.is_(False),
+    )))
+    sims = [s for s in sims if not s.deleted and not (s.data or {}).get('infinite_frozen')]
+    sim_by_id = {s.id:s for s in sims}
+    # An unrelated household's country is not evidence for an unassigned Sim.
+    # The target's own household and explicit challenge defaults are resolved
+    # by event_targets.location_at instead.
+    fallback_location = ""
     existing_event_sources = set(session.scalars(select(Record.data["source"].as_string()).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
         Record.data["source"].as_string().like("event:%"),
     )))
+    completed_households = set()
+    for old in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == 'roll',
+            Record.deleted.is_(False), Record.data['completed'].as_boolean().is_(True),
+            Record.data['event_id'].as_string().is_not(None))):
+        od = old.data or {}
+        if od.get('infinite_frozen') or not str(od.get('source') or '').startswith('event:'): continue
+        person = sim_by_id.get(str(od.get('sim_id') or ''))
+        home_id = od.get('household_id') or ((person.data or {}).get('current_household_id') if person else None)
+        if home_id: completed_households.add((od['event_id'],str(home_id),int(od.get('source_roll_plan_index') or 0),int(old.global_day or 0)))
     created = repaired
     for event in events:
         event_data = event.data or {}
@@ -4444,11 +4530,11 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                         "failure_is_lethal": _lethal_outcome(result_rules),
                     })
                 context_label = str(step.get("context") or "").split(";")[0].strip()
-                roll_type = f"Event — {event.label}" + (f" — {context_label[:80]}" if root_position else "")
+                roll_type = f"Event — {event.label}" + (f" — {context_label[:80]}" if root_position and context_label else "")
                 for occurrence_number, due in enumerate(occurrence_days, start=1):
-                    if not _event_applies(event, sim, due, rule_data, household, save, fallback_location, pregnancies):
+                    if not _event_applies(event, sim, due, rule_data, household, save, fallback_location, pregnancies, migrations, step):
                         continue
-                    if step and not _source_roll_step_applies(step, sim, household, save, fallback_location):
+                    if step and not _source_roll_step_applies(step, sim, household, save, fallback_location, due, migrations):
                         continue
                     eligible_stages = {str(value).strip().casefold() for value in step.get("eligible_life_stages") or []}
                     if eligible_stages:
@@ -4457,14 +4543,18 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                             continue
                         age = due - int(birth); inferred_stage = DEFAULT_STAGES[0][0].casefold()
                         for stage_name, minimum, _die, _bad in DEFAULT_STAGES:
-                            if age >= minimum: inferred_stage = stage_name.casefold()
+                            if age >= lifecycle_age_days(save, minimum): inferred_stage = stage_name.casefold()
                         if inferred_stage not in eligible_stages and not (inferred_stage in {"being born", "newborn", "infant"} and "baby" in eligible_stages):
                             continue
-                    base_source = f"event:{event.id}:{sim.id}" if root_position == 0 else f"event:{event.id}:{sim.id}:step:{step_index}"
+                    unit = event_targets.roll_scope(event_data, step, rule_data)
+                    if unit == 'household' and (not household or (household.data or {}).get('infinite_frozen')): continue
+                    target_key = f'household:{household.id}' if unit == 'household' else sim.id
+                    if unit == 'household' and any((eid,household.id,step_index,due) in completed_households for eid in equivalent_event_ids): continue
+                    base_source = f"event:{event.id}:{target_key}" if root_position == 0 else f"event:{event.id}:{target_key}:step:{step_index}"
                     source = f"{base_source}:occurrence:{due}" if repeat_interval else base_source
                     equivalent_source_exists = False
                     for event_id in equivalent_event_ids:
-                        equivalent_base = f"event:{event_id}:{sim.id}" if root_position == 0 else f"event:{event_id}:{sim.id}:step:{step_index}"
+                        equivalent_base = f"event:{event_id}:{target_key}" if root_position == 0 else f"event:{event_id}:{target_key}:step:{step_index}"
                         candidates = {f"{equivalent_base}:occurrence:{due}"} if repeat_interval else {equivalent_base}
                         # Pre-4.4.8 builds created the first occurrence without
                         # an occurrence suffix. It represents year one and must
@@ -4477,8 +4567,15 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                     if equivalent_source_exists:
                         continue
                     historical_year = save.start_year + ((due - 1) // max(1, save.days_per_year))
-                    roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {sim.label}", global_day=due, data={
-                        "event_id": event.id, "source_id": event.id, "sim_id": sim.id, "sim_name": sim.label,
+                    eligible_ids = [s.id for s in sims if (s.data or {}).get('current_household_id') == household.id
+                                    and _event_applies(event,s,due,rule_data,household,save,fallback_location,pregnancies,migrations,step)
+                                    and _source_roll_step_applies(step,s,household,save,fallback_location,due,migrations)] if unit == 'household' else []
+                    target_label = household.label if unit == 'household' else sim.label
+                    roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {target_label}", global_day=due, data={
+                        "event_id": event.id, "source_id": event.id, "sim_id": sim.id if unit == 'sim' else None, "sim_name": sim.label if unit == 'sim' else None,
+                        "roll_scope":unit, "household_id":household.id if household else None,
+                        "household_name":household.label if household else None, "eligible_sim_ids":eligible_ids,
+                        "eligibility_summary":event_targets.eligibility_text(event_data,step,rule_data),
                         "roll_type": roll_type, "die": sim_spec["die"], "bad_results": sim_spec["bad_results"],
                         "result_rules": sim_spec["result_rules"], "failure_outcome": sim_spec["failure_outcome"],
                         "failure_is_lethal": sim_spec["failure_is_lethal"], "nonlethal": not sim_spec["failure_is_lethal"],
@@ -4554,6 +4651,7 @@ def schedule_campaign_rolls(session: Session, save: ChronicleSave, sims: list[Re
 
 def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Record, actual: int) -> int:
     """Schedule the configured event/war follow-up only when its trigger matches."""
+    from . import event_targets
     data = origin.data or {}; source_id = data.get("campaign_id") or data.get("event_id")
     if data.get('catch_up_resolution'):return 0
     source_record = session.get(Record, source_id) if source_id else None
@@ -4561,6 +4659,26 @@ def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Reco
     config = source_record.data or {}
     source_plan = [dict(step) for step in (config.get("source_roll_plan") or []) if isinstance(step, dict)]
     plan_index = data.get("source_roll_plan_index")
+    if not source_plan and data.get('roll_scope') == 'household' and config.get('followup_enabled'):
+        branches = config.get('followup_branches') or {}
+        selected = next((dict(value) for key,value in branches.items() if isinstance(value,dict) and failed(actual,str(key))),None)
+        if branches and selected is None: return 0
+        selected = selected or {}
+        trigger = str(config.get('followup_trigger_results') or data.get('bad_results') or '')
+        if not branches and trigger and not failed(actual,trigger): return 0
+        rules = str(selected.get('result_rules') or selected.get('bad_results') or config.get('followup_result_rules') or config.get('followup_bad_results') or '')
+        source_plan = [{'index':0,'bad_results':str(actual)}, {
+            'index':1,'parent_index':0,'trigger_results':str(actual),
+            'selector':selected.get('label') or config.get('followup_label') or '',
+            'label':selected.get('label') or config.get('followup_label') or source_record.label+' follow-up',
+            'die':selected.get('die') or config.get('followup_die') or 'd20',
+            'result_rules':rules,'bad_results':_result_numbers(rules) if ':' in rules else rules,
+            'roll_scope':selected.get('roll_scope') or config.get('followup_roll_scope') or '',
+            'delay_days':selected.get('delay_days',config.get('followup_delay_days')) or 0,
+            'delay_years':selected.get('delay_years',config.get('followup_delay_years')) or 0,
+            'failure_is_lethal':selected.get('failure_is_lethal',config.get('followup_failure_is_lethal')) or False,
+        }]
+        plan_index = 0
     if source_plan and plan_index is not None:
         try: plan_index = int(plan_index)
         except (TypeError, ValueError): plan_index = None
@@ -4578,15 +4696,18 @@ def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Reco
             if trigger and not failed(actual, trigger):
                 continue
             child_index = int(child.get("index") or 0)
-            source = f"conditional-followup:{origin.id}:step:{child_index}"
-            if session.scalar(select(Record.id).where(
-                Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
-                Record.data["source"].as_string() == source,
-            ).limit(1)):
-                continue
             sim_id = str(data.get("sim_id") or ""); sim = session.get(Record, sim_id) if sim_id else None
-            if not sim or sim.deleted:
-                continue
+            home = session.get(Record,data.get('household_id')) if data.get('household_id') else None
+            if not home and sim: home = session.get(Record,(sim.data or {}).get('current_household_id')) if (sim.data or {}).get('current_household_id') else None
+            unit = event_targets.roll_scope(config,child)
+            household_origin = data.get('roll_scope') == 'household'
+            if household_origin:
+                targets = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=='sim',Record.deleted.is_(False),
+                    Record.id.in_(data.get('eligible_sim_ids') or []))))
+            else: targets = [sim] if sim and not sim.deleted else []
+            targets = [s for s in targets if not (s.data or {}).get('infinite_frozen') and not (s.data or {}).get('game_was_dead')
+                       and ((s.data or {}).get('death_global_day') is None or int(s.data['death_global_day'])>save.global_day)]
+            if not targets or (unit=='household' and (not home or home.deleted)): continue
             result_rules = str(child.get("result_rules") or "")
             bad_results = str(child.get("bad_results") or "")
             delay = max(0, int(child.get("delay_days") or 0))
@@ -4594,15 +4715,24 @@ def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Reco
             due = save.global_day + delay
             label = str(child.get("label") or child.get("context") or f"{source_record.label} follow-up")[:160]
             lethal = bool(child.get("failure_is_lethal")) or _lethal_outcome(result_rules)
-            followup = Record(save_id=save.id, kind="roll", label=f"{sim.label} — {label}", global_day=due, data={
-                "sim_id":sim.id, "sim_name":sim.label, "event_id":data.get("event_id"),
+            for target in (targets[:1] if unit=='household' else targets):
+                if not _event_applies(source_record,target,due,{},home,save,step=child): continue
+                if not _source_roll_step_applies(child,target,home,save,'',due): continue
+                source = f"conditional-followup:{origin.id}:step:{child_index}"
+                if household_origin and unit=='sim': source += f':sim:{target.id}'
+                if session.scalar(select(Record.id).where(Record.save_id==save.id,Record.kind=='roll',Record.deleted.is_(False),
+                        Record.data['source'].as_string()==source).limit(1)): continue
+                followup = Record(save_id=save.id, kind="roll", label=f"{home.label if unit=='household' else target.label} — {label}", global_day=due, data={
+                "sim_id":target.id if unit=='sim' else None, "sim_name":target.label if unit=='sim' else None, "event_id":data.get("event_id"),
+                "roll_scope":unit, "household_id":home.id if home else None, "household_name":home.label if home else None,
+                "eligible_sim_ids":[s.id for s in targets] if unit=='household' else [],
                 "origin_roll_id":origin.id, "roll_type":label, "die":str(child.get("die") or "d20"),
                 "bad_results":bad_results, "result_rules":result_rules,
                 "failure_is_lethal":lethal, "nonlethal":not lethal,
                 "source":source, "due_global_day":due, "completed":False, "automatic_followup":True,
                 "source_roll_plan_index":child_index,
-            })
-            session.add(followup); session.flush(); journal(session, followup, "upsert", 0); created += 1
+                })
+                session.add(followup); session.flush(); journal(session, followup, "upsert", 0); created += 1
         if created or children:
             origin.data = {**origin.data, "event_followup_processed":True}
             return created
@@ -5751,6 +5881,22 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     rule_triggered = bool(rule_trigger_results) and bool(roll.data.get("occult_roll") or roll.data.get("rule_generated")) and failed(actual,rule_trigger_results)
     roll.data = {**roll.data, "actual": actual, "outcome": outcome_override.strip() or automatic_outcome or ("Failed" if is_bad else "Passed"), "completed": True, "completed_global_day": save.global_day,
                  "triggered":rule_triggered if (roll.data.get("occult_roll") or roll.data.get("rule_generated")) and rule_trigger_results else roll.data.get("triggered")}
+    if automate and roll.data.get('roll_scope') == 'household' and is_bad and not roll.data.get('nonlethal'):
+        # A household's "one Sim dies" result chooses one eligible member, not
+        # every member and not an arbitrary household representative. Preview
+        # uses the normal recorded RNG, so the selected victim is reviewable.
+        outcome = str(automatic_outcome or '')
+        if re.search(r'\b(?:one|1|a random)\s+(?:sim|household member)\s+(?:dies|is killed)\b',outcome,re.I):
+            candidates = [s for s in session.scalars(select(Record).where(Record.save_id==save.id,
+                Record.kind=='sim',Record.deleted.is_(False),Record.id.in_(roll.data.get('eligible_sim_ids') or [])))
+                if not (s.data or {}).get('infinite_frozen') and not (s.data or {}).get('game_was_dead')
+                and ((s.data or {}).get('death_global_day') is None or int(s.data['death_global_day'])>save.global_day)]
+            if candidates:
+                victim = roll_rng(session).choice(sorted(candidates,key=lambda s:s.id))
+                roll.data = {**roll.data,'sim_id':victim.id,'sim_name':victim.label,
+                             'household_victim_sim_id':victim.id,'household_victim_sim_name':victim.label}
+        if not roll.data.get('household_victim_sim_id'):
+            roll.data = {**roll.data,'nonlethal':True,'household_consequence_needs_review':True}
     allowance_changed = False
     hogwarts_house_changed = False
     if _is_hogwarts_sorting_roll(roll):

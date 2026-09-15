@@ -13,7 +13,9 @@ VALUE_FIELDS=('roll_type','source','source_key','due_global_day','die','bad_resu
               'due_global_day','delivery_global_day','death_global_day','birth_global_day','lifecycle_age_days',
               'aging_chart','occult_aging_mode','occult_types_at_scheduling','age_calendar_days_per_year',
               'maternal_baby_index','maternal_babies_delivered','failure_is_lethal','nonlethal',
-              'country','location','scope','event_phase','eligibility','trigger_reason')
+              'country','location','scope','event_phase','eligibility','trigger_reason',
+              'roll_scope','household_name','household_id','eligible_sim_ids','eligibility_summary',
+              'household_victim_sim_name','event_target_repair','retired_reason')
 
 def simple(data,fields):
     result={}
