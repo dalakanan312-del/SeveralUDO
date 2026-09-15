@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy import select,func
-from app import infinite_dynasty as dynasty,main
+from app import infinite_dynasty as dynasty,main,automation,clock
 from app.models import Record,Portrait,ClockLink,BackupSnapshot,ChronicleSave
 from tests import test_infinite_decades as fixtures
 
@@ -91,6 +91,45 @@ class BranchChoiceTests(unittest.TestCase):
         self.f.finish_modern();self.switch(self.older)
         with self.assertRaisesRegex(ValueError,'Completed branches remain read-only'):
             dynasty.activate_branch(self.s,self.save,self.parent.id,'Child game')
+
+    def test_clock_same_day_keeps_paused_branch_journal_unchanged(self):
+        old=automation.session_journal(self.s,self.save,['The parent family moved.'],24,6,0)
+        self.s.commit();old_data=copy.deepcopy(old.data);old_version=old.version
+        self.switch(self.newer)
+        self.assertTrue(old.data['infinite_frozen'])
+        frozen_data=copy.deepcopy(old.data);frozen_version=old.version
+        dynasty.confirm_game(self.s,self.save)
+        link=ClockLink(save_id=self.save.id,token_hash='branch-journal',enabled=True)
+        self.s.add(link);self.s.commit()
+        report={'protocol_version':2,'report_sequence':1,'game_day':24,'game_hour':6,'game_minute':46,
+                'household_sims':[{'game_sim_id':'99','first_name':'New','last_name':'Neighbor','household_id':'77'}]}
+        report['report_checksum']=clock.report_checksum(report)
+        result=clock.receive(self.s,link,report);self.s.commit()
+        self.assertTrue(result['ok']);self.assertTrue(result['journal_updated'])
+        self.assertEqual(link.last_game_day,24);self.assertEqual(self.save.global_day,108)
+        self.assertEqual(old.data,frozen_data);self.assertEqual(old.version,frozen_version)
+        self.assertEqual(old.data['entries'],old_data['entries']);self.assertGreaterEqual(old.version,old_version)
+        current=self.s.scalar(select(Record).where(Record.kind=='session_journal',Record.id!=old.id,
+            Record.data['infinite_branch_id'].as_string()==self.newer.id))
+        self.assertIsNotNone(current);self.assertEqual(current.data['source'],old.data['source'])
+        self.assertNotIn('The parent family moved.',current.data['entries'])
+        self.assertEqual(current.data['narrator_sim_id'],self.f.people[3].id)
+        merged=automation.session_journal(self.s,self.save,['Another new-branch change.'],24,7,0)
+        self.s.commit();self.assertEqual(merged.id,current.id)
+        self.assertEqual(old.data,frozen_data)
+        self.assertTrue(clock.receive(self.s,link,report)['duplicate'])
+
+    def test_ordinary_journal_reuses_live_entry_but_not_archived_entry(self):
+        ordinary=ChronicleSave(workspace_id=self.f.workspace.id,name='Ordinary',global_day=5)
+        self.s.add(ordinary);self.s.commit()
+        first=automation.session_journal(self.s,ordinary,['First change.'],3,8,0)
+        self.s.commit()
+        self.assertEqual(automation.session_journal(self.s,ordinary,['Next change.'],3,8,5).id,first.id)
+        first.deleted=True;self.s.commit();archived=copy.deepcopy(first.data)
+        fresh=automation.session_journal(self.s,ordinary,['Fresh change.'],3,9,0)
+        self.s.commit()
+        self.assertNotEqual(fresh.id,first.id);self.assertEqual(first.data,archived)
+        self.assertEqual(fresh.data['entries'],['Fresh change.'])
 
     def test_http_picker_confirmation_and_stale_tab(self):
         with patch.object(main,'SessionLocal',self.f.sessions):

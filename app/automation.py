@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import wraps
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .models import ChronicleSave, Record
@@ -1412,16 +1412,30 @@ def ensure_event_participation(session: Session, save: ChronicleSave) -> int:
 def session_journal(session: Session, save: ChronicleSave, changes: list[str], game_day: int,
                     game_hour: int | None = None, game_minute: int | None = None) -> Record | None:
     if not changes: return None
+    from .infinite_dynasty import state
+    branch_id = state(save).get("active_branch_id")
     current_heir = str((save.settings or {}).get("current_heir_id") or "")
     narrator = session.get(Record, current_heir) if current_heir else None
-    if not narrator or narrator.kind != "sim" or narrator.deleted:
+    if (not narrator or narrator.save_id != save.id or narrator.kind != "sim"
+            or narrator.deleted or (narrator.data or {}).get("infinite_frozen")):
         narrator = session.scalar(select(Record).where(
             Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
+            Record.data["infinite_frozen"].as_boolean().is_not(True),
         ).order_by(Record.global_day.asc(), Record.created_at.asc()).limit(1))
     narrator_name = narrator.label if narrator else "the household chronicler"
     narrative = f"I, {narrator_name}, set down what changed: " + " ".join(changes)
     source = f"game-session:{game_day}:{save.global_day}"
-    existing = session.scalar(select(Record).where(Record.save_id == save.id, Record.kind == "session_journal", Record.data["source"].as_string() == source))
+    # Two branches can report the same game day and Global Day. Their frozen
+    # journals are historical references, never targets for the active report.
+    lookup = select(Record).where(
+        Record.save_id == save.id, Record.kind == "session_journal",
+        Record.deleted.is_(False), Record.data["source"].as_string() == source,
+        Record.data["infinite_frozen"].as_boolean().is_not(True),
+    )
+    if branch_id:
+        lookup = lookup.where(or_(Record.data["infinite_branch_id"].as_string() == branch_id,
+                                  Record.data["infinite_branch_id"].as_string().is_(None)))
+    existing = session.scalar(lookup)
     if existing:
         merged = list(dict.fromkeys((existing.data.get("entries") or []) + changes)); base = existing.version
         existing.data = {**existing.data, "entries": merged, "notes": " ".join(merged),
