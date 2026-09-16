@@ -27,6 +27,7 @@ from .db import Base, SessionLocal, engine, ensure_local_query_indexes
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
 from .security import hash_secret, token
 from .session_policy import REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware, set_session_mode
+from . import birth_legitimacy
 from .workflow import related_tasks, page_sections
 
 
@@ -117,7 +118,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.40")
+app = FastAPI(title="Decades Tracker", version="4.6.41")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -2269,7 +2270,7 @@ def feature_page(request: Request, page: str):
                 for item in records if item.data.get("action") == "new_sim"
             }
             birth_events=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="event",Record.deleted.is_(False))))
-            birth_suggestions={};location_suggestions={}
+            birth_suggestions={};location_suggestions={};legitimacy_suggestions={}
             for candidate in (item for item in records if (item.data or {}).get("action")=="new_baby"):
                 payload=(candidate.data or {}).get("payload") or candidate.data or {}
                 pregnancy=session.get(Record,str(payload.get("pregnancy_id") or "")) if payload.get("pregnancy_id") else None
@@ -2279,6 +2280,7 @@ def feature_page(request: Request, page: str):
                 birthplace=payload.get("birthplace") or payload.get("lot_name") or payload.get("world_name") or maternal_location["place"]
                 location_suggestions[candidate.id]={**maternal_location,"place":birthplace}
                 birth_suggestions[candidate.id]=birth_circumstance_suggestion(session,save,pregnancy,mother,candidate.global_day,birthplace,birth_events)
+                legitimacy_suggestions[candidate.id]=birth_legitimacy.suggestion(session,save,payload.get('inferred_mother_id'),payload.get('inferred_father_id'),candidate.global_day)
             for candidate in (item for item in records if (item.data or {}).get("action") in {"relationship_change","household_change"}):
                 primary=session.get(Record,str((candidate.data or {}).get("sim_id") or ""))
                 payload=(candidate.data or {}).get("payload") or candidate.data or {}
@@ -2286,6 +2288,7 @@ def feature_page(request: Request, page: str):
                 historical=historical_sim_location(session,save,primary,candidate.global_day)
                 location_suggestions[candidate.id]={**historical,"place":known_place or historical["place"],"source":"Clock Sync detected lot/world" if known_place else historical["source"]}
             ctx["birth_circumstance_suggestions"]=birth_suggestions
+            ctx["legitimacy_suggestions"]=legitimacy_suggestions
             ctx["historical_location_suggestions"]=location_suggestions
             ctx["journals"] = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "session_journal", Record.deleted.is_(False)).order_by(Record.global_day.desc()).limit(30)))
             ctx["legacy_detections"] = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="detection_candidate",Record.deleted.is_(False)).order_by(Record.created_at.desc()).limit(50)))
@@ -2748,6 +2751,7 @@ async def add_sim(request: Request):
         sim_data={"sim_number":sim_number,"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":int_or_none(form.get("generation")),"birth_global_day":birth,"death_global_day":death,"game_age_stage":str(form.get("age_stage") or ""),"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"birth_circumstances":str(form.get("birth_circumstances") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":"include_in_family_tree" not in form or str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"birthplace":str(form.get("birthplace") or ""),"cause_of_death":str(form.get("cause_of_death") or ""),"death_place":str(form.get("death_place") or ""),"notes":str(form.get("notes") or "")}
         if sim_data["generation"] is not None: sim_data["generation_source"]="manual"
         sim_data.update(birth_fields);sim_data.update(death_calendar_fields(save,death,form.get("death_game_hour"),form.get("death_game_minute")))
+        sim_data=birth_legitimacy.apply_default(session,save,sim_data)
         record = Record(save_id=save.id, kind="sim", label=name, global_day=birth, data=sim_data)
         session.add(record); session.flush(); birth_dates.apply_to_record(record, save)
         session.add(record); session.flush(); session.add(Change(save_id=save.id, device_id="local" if settings.local_mode else "web", record_id=record.id, kind="sim", operation="upsert", base_version=0, new_version=1, payload=sync.serialize(record))); save.revision += 1+domain.sync_generations(session,save); domain.schedule_rolls(session, save); domain.auto_pass_lifecycle_rolls_for_added_sim(session,save,record)
@@ -2787,6 +2791,9 @@ async def edit_sim(request: Request, sim_id: str):
         data.update(birth_fields)
         birth_dates.retain_edit_provenance(record.data or {}, data, save)
         birth_multiples.retain_edit_provenance(record.data or {}, data)
+        if any(data.get(key)!=(record.data or {}).get(key) for key in ('legitimacy','mother_id','father_id','birth_global_day')):
+            data.pop('legitimacy_source',None);data.pop('legitimacy_marriage_id',None)
+        data=birth_legitimacy.apply_default(session,save,data)
         for key in ("death_game_hour","death_game_minute","death_time","historical_death_date","historical_death_date_range","death_date_precision"):
             data.pop(key,None)
         data.update(death_calendar_fields(save,data["death_global_day"],form.get("death_game_hour"),form.get("death_game_minute")))
@@ -3110,6 +3117,7 @@ def pregnancy_profile(request: Request, pregnancy_id: str):
         suggested_birth_location=historical_sim_location(session,save,mother,suggested_birth_day)
         birth_circumstance=birth_circumstance_suggestion(session,save,pregnancy,mother,suggested_birth_day,suggested_birth_location["place"])
         ctx=context(request,session,pregnancy=pregnancy,all_sims=sims,children=children,pregnancy_progress=progress,progress_history=progress_history[:30],birth_circumstance=birth_circumstance,suggested_birth_location=suggested_birth_location,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),title=pregnancy.label,page="pregnancies")
+        ctx['birth_legitimacy_suggestion']=birth_legitimacy.suggestion(session,save,(pregnancy.data or {}).get('mother_id'),(pregnancy.data or {}).get('father_id'),suggested_birth_day)
         return templates.TemplateResponse(request,"pregnancy_profile.html",ctx)
 
 
@@ -3151,6 +3159,7 @@ def add_pregnancy_newborn(request: Request, pregnancy_id: str, first_name: str =
         suggested=birth_circumstance_suggestion(session,save,pregnancy,mother,birth,resolved_birthplace)
         reviewed=birth_circumstances_reviewed in {"1","true","on","yes"};circumstances=birth_circumstances.strip() if reviewed else suggested["summary"]
         name=" ".join(part.strip() for part in (first_name,last_name) if part.strip());sim_data={"sim_number":next_sim_number(session,save.id),"first_name":first_name.strip(),"last_name":last_name.strip(),"surname_at_birth":last_name.strip(),"maiden_name":last_name.strip(),"sex":sex,"birth_global_day":birth,"birthplace":resolved_birthplace,"birth_country":maternal_location["country"],"birth_location_source":maternal_location["source"] if not birthplace.strip() else "Reviewed manual birthplace","legitimacy":legitimacy.strip(),"birth_status":suggested["birth_status"] or "Live birth","multiple_birth_status":suggested["multiple_birth_status"],"birth_circumstances":circumstances,"birth_circumstance_tags":suggested["tags"] if circumstances==suggested["summary"] else [],"birth_circumstances_source":"Reviewed suggestion" if reviewed else "Automatic tracker inference","death_global_day":None,"mother_id":mother.id,"father_id":father.id if father else None,"current_household_id":mother.data.get("current_household_id"),"species_occult":"Human","pregnancy_id":pregnancy.id,"newborn_rolls_required":bool(data.get("birth_newborn_rolls_required",True)),"notes":notes}
+        sim_data=birth_legitimacy.apply_default(session,save,sim_data)
         newborn=Record(save_id=save.id,kind="sim",label=name,global_day=birth,data=sim_data);session.add(newborn);session.flush();domain.journal(session,newborn,"upsert",0)
         base=pregnancy.version;delivered=int(data.get("babies_delivered") or 0)+1;expected=max(1,int(data.get("babies_expected") or 1));will_deliver=delivered>=expected
         data.update({"babies_delivered":delivered,"actual_delivery_global_day":birth,"delivery_global_day":birth,"status":"Delivered" if will_deliver else "Active","outcome":data.get("outcome") or "Live birth"});pregnancy.data=data;pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=2+domain.sync_generations(session,save)
@@ -3595,6 +3604,7 @@ async def accept_automation(request: Request, candidate_id: str):
                 sim_data.update({key:value for key,value in birth_estimate.items() if key.startswith("birth_estimate_") or key.startswith("estimated_birth_global_day_range_")})
                 sim_data.update({"original_birth_estimate_global_day":birth_estimate.get("estimated_birth_global_day"),"birth_global_day_estimated":accepted_estimate and birth_estimate.get("birth_estimate_precision")!="reported-birth-day"})
             sim_data.update(reviewed_birth_fields);sim_data["birth_time_source"]=reviewed_birth_fields.get("birth_estimate_source") if submitted_birth_year is not None else "Clock Sync newborn detection" if action=="new_baby" and birth_hour is not None and birth_minute is not None else birth_estimate.get("birth_estimate_source") if accepted_estimate else "Reviewed manual birth day"
+            sim_data=birth_legitimacy.apply_default(session,save,sim_data)
             sim=Record(save_id=save.id,kind="sim",label=name,global_day=birth,data=sim_data);session.add(sim);session.flush();domain.journal(session,sim,"upsert",0);clock._store_game_portrait(session,save,sim,payload);resolved_record=sim
             if pregnancy:
                 pregnancy_base=pregnancy.version;linked=list(pregnancy.data.get("linked_newborn_ids") or [])

@@ -1,0 +1,6 @@
+{% set chosen_legitimacy=selected_legitimacy|default('') %}
+<label>Legitimacy<select name="legitimacy">
+<option value="" {% if not chosen_legitimacy %}selected{% endif %}>Automatic{% if legitimacy_suggestion.get('value') %} — {{legitimacy_suggestion.value}}{% else %} / not recorded{% endif %}</option>
+{% for choice in ['Legitimate','Illegitimate','Adopted','Unknown','Not applicable'] %}<option value="{{choice}}" {% if chosen_legitimacy==choice %}selected{% endif %}>{{choice}}</option>{% endfor %}
+{% if chosen_legitimacy and chosen_legitimacy not in ['Legitimate','Illegitimate','Adopted','Unknown','Not applicable'] %}<option value="{{chosen_legitimacy}}" selected>{{chosen_legitimacy}}</option>{% endif %}
+</select><small>Defaults to Legitimate when these two parents were married at birth. Choose Unknown or another status to override. Changing the parents or birth date recalculates Automatic when saved.</small></label>
