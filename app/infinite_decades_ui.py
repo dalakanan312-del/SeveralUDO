@@ -12,6 +12,7 @@ def _people(session, save):
 
 
 def render(request, session, ctx, templates):
+    from .dynasty_register import context as register_context
     save = ctx.get("save")
     family = dynasty.branches(session, save)
     family.sort(key=lambda r: (dynasty.metadata(r).get("status") == "archive", -dynasty.metadata(r).get("split_global_day", 1)))
@@ -37,6 +38,7 @@ def render(request, session, ctx, templates):
         active_branch=active, next_branch=dynasty.next_branch(family),
         playable_branches=dynasty.playable_branches(family),
         branch_sims=[r for r in sims if not r.deleted], dynasty_sims=sims,
+        dynasty_register=register_context(save, sims, family),
         split_sims=[r for r in sims if dynasty.alive(r,save) and not (r.data or {}).get("infinite_frozen")],
         starting_sims=[r for r in sims if r.data.get("infinite_frozen") and r.data.get("infinite_branch_id") == dynasty.state(save).get("starting_branch_id")],
         branch_homes={r.id:r.label for r in rows if r.kind == "household"}, branch_home_id=dynasty.household_id,

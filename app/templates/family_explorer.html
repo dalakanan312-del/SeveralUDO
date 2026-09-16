@@ -4,7 +4,7 @@
 <link rel="stylesheet" href="/static/family-tree.css?v={{static_version}}">
 <section class="ft-explorer" id="family-explorer">
   <header class="ft-heading"><div><h1>Family Tree</h1><p>{{save.name}}</p></div>{% if family_graph.infinite %}<a class="button" href="/p/infinite-decades">Branches & checkpoints</a>{% endif %}</header>
-  {% if family_graph.infinite %}<p class="notice">Frozen relatives keep their preserved dates. Exploring this tree never activates a branch or schedules rolls.</p>{% endif %}
+  {% if family_graph.infinite %}<p class="notice">This diagram explores connections around your selected Sim. <a href="/p/infinite-decades#dynasty-register">See every Sim in the whole dynasty register</a>. Frozen relatives keep their preserved dates. Exploring never activates a branch or schedules rolls.</p>{% endif %}
   {% if family_graph.nodes %}
   <div class="ft-controls" aria-label="Family tree controls">
     <label class="ft-search">Find a Sim<input type="search" name="search" placeholder="Name, birth surname, or Sim number" autocomplete="off" aria-controls="family-search-results"><span class="ft-search-results" id="family-search-results" data-search-results aria-live="polite"></span></label>

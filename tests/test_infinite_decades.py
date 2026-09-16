@@ -242,7 +242,7 @@ class InfiniteDecadesTests(unittest.TestCase):
         form=page.text.split('Capture a new split',1)[1].split('</form>',1)[0]
         for person in self.people[:3]+self.people[4:]:self.assertNotIn('value="'+person.id+'"',form)
         self.assertIn('value="'+self.people[3].id+'"',form) # future death is still living
-        history=page.text.split('id="dynasty-members"',1)[1]
+        history=page.text.split('id="dynasty-register"',1)[1].split('</section>',1)[0]
         for person in self.people:self.assertIn(person.label,history)
 
     def test_stale_split_rejects_dead_member_without_changing_branch(self):
