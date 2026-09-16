@@ -29,6 +29,7 @@ class TraitVisibilityTests(unittest.TestCase):
     def test_grouping_preserves_unknown_and_never_guesses_from_names(self):
         self.assertEqual(traits.groups(LABELS, ROWS), {
             'visible': ['Creative'], 'hidden': ['Vampire', 'Influenza'], 'unknown': ['Legacy custom trait'],
+            'likes': [], 'dislikes': [], 'preferences': [],
         })
         self.assertEqual(traits.groups(['Creative', 'Hidden Talent'])['unknown'], ['Creative', 'Hidden Talent'])
         localized = [{'name': 'Vampire', 'localization_key': 987654321, 'is_hidden': True}]

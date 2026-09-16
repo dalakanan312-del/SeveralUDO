@@ -117,7 +117,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.39")
+app = FastAPI(title="Decades Tracker", version="4.6.40")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -690,6 +690,7 @@ templates.env.globals.update(
     trait_labels=game_metadata.readable_trait_labels,
     game_labels=game_metadata.readable_named_labels,
     trait_groups=trait_visibility.groups,
+    preference_groups=trait_visibility.preference_groups,
     relationship_is_partner=insights.relationship_is_partner,
 )
 
@@ -2773,7 +2774,7 @@ async def edit_sim(request: Request, sim_id: str):
         birth,birth_fields=resolve_birth_input(save,form.get("birth_global_day"),form.get("birth_year"),form.get("birth_game_hour"),form.get("birth_game_minute"))
         data = dict(record.data or {});previous_generation=data.get("generation");previous_generation_source=str(data.get("generation_source") or "").casefold();submitted_generation=int_or_none(form.get("generation"));birth_surname=str(form.get("surname_at_birth") or form.get("maiden_name") or data.get("surname_at_birth") or data.get("maiden_name") or last_name).strip();married_surname=str(form.get("married_surname") or form.get("married_name") or "").strip();data.update({"title":title,"first_name":first_name,"last_name":last_name,"suffix":suffix,"surname_at_birth":birth_surname,"maiden_name":birth_surname,"married_surname":married_surname,"married_name":married_surname,"sex":str(form.get("sex") or ""),"generation":submitted_generation,"birth_global_day":birth,"death_global_day":int_or_none(form.get("death_global_day")),"birth_status":str(form.get("birth_status") or ""),"multiple_birth_status":str(form.get("multiple_birth_status") or ""),"birth_circumstances":str(form.get("birth_circumstances") or ""),"mother_id":mother_id or None,"father_id":father_id or None,"current_household_id":household_id or None,"historical_household":str(form.get("historical_household") or ""),"species_occult":str(form.get("species") or "Human"),"occult_alignment":str(form.get("occult_alignment") or ""),"dormant_occult_types":detected_form_list(str(form.get("dormant_occult_types") or "")),"occult_water_access":str(form.get("occult_water_access") or "Unknown"),"werewolf_confined":str(form.get("werewolf_confined") or "").casefold() in {"1","true","on","yes"},"vampire_hunt_exposure":str(form.get("vampire_hunt_exposure") or "Secret identity"),"vampire_suspicion_raised":str(form.get("vampire_suspicion_raised") or "").casefold() in {"1","true","on","yes"},"occult_notes":str(form.get("occult_notes") or ""),"legitimacy":str(form.get("legitimacy") or ""),"fertility_status":str(form.get("fertility_status") or ""),"succession_override":str(form.get("succession_override") or ""),"succession_notes":str(form.get("succession_notes") or ""),"played_through_global_day":int_or_none(form.get("played_through_global_day")),"include_in_family_tree":str(form.get("include_in_family_tree") or "").casefold() in {"1","true","on","yes"},"cause_of_death":str(form.get("cause_of_death") or ""),"birthplace":str(form.get("birthplace") or ""),"death_place":str(form.get("death_place") or ""),"game_career":str(form.get("game_career") or "").strip(),"game_education":str(form.get("game_education") or "").strip(),"game_traits":detected_form_list(str(form.get("game_traits") or "")),"game_skills":detected_form_list(str(form.get("game_skills") or "")),"game_milestones":detected_form_list(str(form.get("game_milestones") or "")),"notes":str(form.get("notes") or "")})
         if form.get("trait_sections") == "1":
-            reviewed_traits = trait_visibility.reviewed(form, record.data.get("game_trait_details"), prefix="game_")
+            reviewed_traits = trait_visibility.reviewed(form, record.data.get("game_trait_details"), prefix="game_", values=record.data.get("game_traits"))
             data.update(game_traits=reviewed_traits["traits"], game_trait_details=reviewed_traits["trait_details"])
         if last_name != previous_current_surname or married_surname != previous_married_surname:
             data.pop("married_name_source_relationship_id",None)
@@ -3582,7 +3583,7 @@ async def accept_automation(request: Request, candidate_id: str):
                 "game_stable_tuning_ids":payload.get("stable_tuning_ids") or {},
             })
             if form.get("trait_sections") == "1":
-                reviewed_traits = trait_visibility.reviewed(form, payload.get("trait_details"))
+                reviewed_traits = trait_visibility.reviewed(form, payload.get("trait_details"), values=payload.get("traits"))
                 sim_data.update(game_traits=reviewed_traits["traits"], game_trait_details=reviewed_traits["trait_details"])
                 payload = {**payload, **reviewed_traits}
             sim_data["surname_at_birth"] = last

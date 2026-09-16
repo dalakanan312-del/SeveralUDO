@@ -1,4 +1,10 @@
 <input type="hidden" name="trait_sections" value="1">
+<input type="hidden" name="preference_sections" value="1">
 <label class="wide">Traits — one per line<textarea name="{{trait_field_prefix}}traits">{{trait_sections.visible|join('\n')}}</textarea></label>
+<details class="wide"><summary>Likes &amp; dislikes ({{trait_sections.likes|length + trait_sections.dislikes|length + trait_sections.preferences|length}})</summary><div class="form-grid">
+<label>Likes — one per line<textarea name="{{trait_field_prefix}}likes">{{trait_sections.likes|join('\n')}}</textarea></label>
+<label>Dislikes — one per line<textarea name="{{trait_field_prefix}}dislikes">{{trait_sections.dislikes|join('\n')}}</textarea></label>
+{% if trait_sections.preferences %}<label class="wide">Other preferences — one per line<textarea name="{{trait_field_prefix}}preferences">{{trait_sections.preferences|join('\n')}}</textarea></label>{% endif %}
+</div><small>These preferences are separate from personality and hidden traits. The original game identifiers are retained.</small></details>
 <details class="wide"><summary>Hidden traits ({{trait_sections.hidden|length}})</summary><label>Hidden traits — one per line<textarea name="{{trait_field_prefix}}hidden_traits">{{trait_sections.hidden|join('\n')}}</textarea></label><small>Hidden traits are kept separately, not discarded. Your next game report can refresh their classification.</small></details>
 {% if trait_sections.unknown %}<details class="wide"><summary>Unclassified traits ({{trait_sections.unknown|length}})</summary><p>The report did not include visibility. Keep these here until a fresh Clock Sync report arrives, or move a known trait into the appropriate field.</p><label>Unclassified traits — one per line<textarea name="{{trait_field_prefix}}unclassified_traits">{{trait_sections.unknown|join('\n')}}</textarea></label></details>{% endif %}
