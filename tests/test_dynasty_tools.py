@@ -89,6 +89,10 @@ class DynastyToolsTests(unittest.TestCase):
         self.assertEqual(sim.data['birth_global_day'],birth)
         self.assertEqual(summary['pending'],1)
 
+    def test_deceased_sim_without_known_death_day_is_not_age_checked(self):
+        sim=self.f.people[0];sim.data={**sim.data,'death_confirmed':True,'game_age_stage':'Elder'};self.s.commit()
+        self.assertNotIn(sim.label,{r['name'] for r in t.resume_summary(self.s,self.save,self.root)['mismatches']})
+
     def test_year_birth_marriage_generation_goals(self):
         payload=t.point(self.s,self.save,self.root)
         for mode,target in [('year',1300),('generation',2)]:

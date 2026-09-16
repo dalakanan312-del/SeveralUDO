@@ -112,7 +112,7 @@ def resume_summary(session, save, row):
     mismatches = []
     for sid, entry in live.items():
         data = entry['data']; observed = observations.get(sid)
-        if data.get('birth_global_day') is None or (integer(data.get('death_global_day'), day+1) <= day): continue
+        if data.get('birth_global_day') is None or data.get('death_confirmed') or data.get('game_was_dead') or (integer(data.get('death_global_day'), day+1) <= day): continue
         if occult_aging_profile(SimpleNamespace(data=data))['ordinary_aging_exempt']: continue
         expected = expected_stage(save,payload,entry)
         actual = str((observed.data if observed else data).get('game_age_stage') or '').replace('Age.', '').replace('_', ' ').strip()
