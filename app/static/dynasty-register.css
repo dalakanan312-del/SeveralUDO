@@ -10,7 +10,7 @@
 .dynasty-register-scroll { overflow-x: auto; }
 .dynasty-register table { width: 100%; border-collapse: collapse; font-size: .87rem; }
 .dynasty-register th,.dynasty-register td { padding: .45rem .6rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line, #666); }
-.dynasty-register th[scope=row] { min-width: 130px; }
+.dynasty-register th[scope=row] { min-width: 130px; text-transform: none; letter-spacing: normal; font-size: inherit; font-weight: 600; }
 .dynasty-register td small { display: block; color: var(--muted); white-space: nowrap; }
 .dynasty-register [hidden] { display: none !important; }
 .dynasty-register .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }

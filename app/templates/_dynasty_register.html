@@ -10,7 +10,7 @@
   </div>
   {% for group in dynasty_register.groups %}
   <details class="dynasty-register-group" open data-register-group data-search="{{group.search}}">
-    <summary><strong>{{group.split_year if group.split_year is not none else 'Year unknown'}} · {{group.name}}</strong><span>{{group.status|title}} · {{group.members|length}} Sims{% if group.year is not none %} · Played to {{group.year}} / GD {{group.day}}{% endif %}</span></summary>
+    <summary><strong>{{group.split_year if group.split_year is not none else 'Year unknown'}} · {{group.name}}</strong><span>{{group.status|title}} · {{group.members|length}} {{'Sim' if group.members|length==1 else 'Sims'}}{% if group.year is not none %} · {{'Starts at' if group.status=='waiting' else 'Played to'}} {{group.year}} / GD {{group.day}}{% endif %}</span></summary>
     <div class="dynasty-register-branch"><span>{% if group.parent %}From {{group.parent}}. {% endif %}{% if group.checkpoint %}Game checkpoint: {{group.checkpoint}}{% endif %}</span>
     {% if group.id!='unassigned' %}<a href="/p/infinite-decades?branch_id={{group.id}}#branch-history">Branch history</a>{% endif %}
     {% if group.status in ['waiting','paused'] and infinite_enabled %}<a href="#choose-branch">Choose this branch to play</a>{% endif %}</div>
