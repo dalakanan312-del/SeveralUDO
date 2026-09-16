@@ -1977,7 +1977,7 @@ class CoreSmokeTests(unittest.TestCase):
                     Record(save_id=save.id,kind="sim",label=younger,global_day=save.global_day,data={"birth_global_day":save.global_day}),
                 ]
                 session.add_all(rows);session.commit();record_ids=[row.id for row in rows]
-            everyone=client.get(f"/p/sims?q={marker}")
+            everyone=client.get(f"/p/sims?q={marker}&record_status=all")
             self.assertEqual(everyone.status_code,200)
             profiles=everyone.text.split('<section class="profile-grid">',1)[1].split("</section>",1)[0]
             self.assertLess(profiles.index(older),profiles.index(deceased))

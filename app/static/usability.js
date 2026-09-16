@@ -1,6 +1,6 @@
 /* Per-person preferences and small, guarded updates. No private form drafts are stored. */
 (() => {
-  const KEYS=['q','record_status','living','sort','density','thumbnail','task','roll_kind','due','window','household','review_quality','status','scope','location','rolls','interest','year','start_year','end_year','kind','focus','depth','direction','region','culture','sex','span','mode'];
+  const KEYS=['q','record_status','living','sort','density','thumbnail','task','roll_kind','due','window','household','review_quality','status','scope','location','rolls','interest','year','start_year','end_year','kind','focus','depth','direction','region','culture','sex','span','mode','sim_branch'];
   const cleanFilters=params=>Object.fromEntries([...new Set(params.keys())].filter(key=>KEYS.includes(key)).map(key=>[key,params.getAll(key).length>1?params.getAll(key):params.get(key)]));
   const weekdays=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const weekday=day=>weekdays[((Number(day)%7)+7)%7];

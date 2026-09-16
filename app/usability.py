@@ -6,7 +6,7 @@ from starlette.datastructures import QueryParams
 from .models import Record,UiPreference,ClockReceipt
 from sqlalchemy.orm import object_session
 
-QUERY_KEYS={'q','record_status','living','sort','density','thumbnail','task','roll_kind','due','window','household','review_quality','status','scope','location','rolls','interest','year','start_year','end_year','kind','focus','depth','direction','region','culture','sex','span','mode'}
+QUERY_KEYS={'q','record_status','living','sort','density','thumbnail','task','roll_kind','due','window','household','review_quality','status','scope','location','rolls','interest','year','start_year','end_year','kind','focus','depth','direction','region','culture','sex','span','mode','sim_branch'}
 ACTIVE_PAGES={'sims','relationships','pregnancies','illnesses','university','planner','households','rolls','today','automation','occult-rules'}
 
 def people_picker(session,save):

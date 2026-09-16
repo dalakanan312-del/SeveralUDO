@@ -21,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain, drama_randomizer, play_support_ui, usability, usability_ui, heritage, heritage_ui, crash_recovery_ui
-from . import infinite_decades, infinite_decades_ui, birth_dates, birth_multiples, portrait_studio, trait_visibility, family_fortunes_ui, decade_album
+from . import infinite_decades, infinite_decades_ui, birth_dates, birth_multiples, portrait_studio, trait_visibility, family_fortunes_ui, decade_album, sim_directory
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine, ensure_local_query_indexes
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
@@ -117,7 +117,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.37")
+app = FastAPI(title="Decades Tracker", version="4.6.38")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1567,9 +1567,9 @@ def feature_page(request: Request, page: str):
             return RedirectResponse("/p/saves", status_code=303)
         if infinite_decades.state(save) and page == "family-tree":
             return infinite_decades_ui.render_tree(request, session, ctx, templates)
-        if page == "infinite-decades" or (infinite_decades.frozen(save) and page != "saves"):
+        if page == "infinite-decades" or (infinite_decades.frozen(save) and page not in {"saves", "sims"}):
             return infinite_decades_ui.render(request, session, ctx, templates)
-        if save:
+        if save and not infinite_decades.frozen(save):
             if page in {"sims", "today", "pregnancies", "timeline", "storyline"}:
                 birth_dates.fill_missing(session, save)
                 save.revision += birth_multiples.reconcile(session, save)
@@ -1616,7 +1616,7 @@ def feature_page(request: Request, page: str):
         if save and page == "challenge":
             domain.schedule_marriage_rolls(session, save)
             save.revision += domain.schedule_campaign_rolls(session, save)
-        if save:
+        if save and not infinite_decades.frozen(save):
             added_portrait_prompt=decade_portraits.schedule_prompt(session,save)
             if added_portrait_prompt:
                 save.revision += added_portrait_prompt
@@ -1634,16 +1634,8 @@ def feature_page(request: Request, page: str):
             if list_living not in {'all','living','dead'}:list_living='living'
             ctx['list_living']=list_living
             if page=="sims":
-                conditions=[Record.save_id==save.id,Record.kind=='sim',Record.deleted.is_(False)]
-                if list_q:conditions.append(Record.label.ilike(f'%{list_q}%'))
-                if list_status=='living':conditions.append(usability.living_sql(save))
-                elif list_status=='dead':conditions.append(or_(Record.data['death_global_day'].as_integer()<=save.global_day,Record.data['death_confirmed'].as_boolean().is_(True),Record.data['game_was_dead'].as_boolean().is_(True)))
-                birth_order=func.coalesce(Record.data['birth_global_day'].as_integer(),(Record.data['birth_year'].as_integer()-save.start_year)*save.days_per_year+1)
-                sort=request.query_params.get('sort','birth')
-                ordering=(func.lower(Record.label),Record.id) if sort=='name' else ((birth_order.desc() if sort=='birth-newest' else birth_order.asc()).nullslast(),func.lower(Record.label),Record.id)
-                record_count=session.scalar(select(func.count()).select_from(Record).where(*conditions)) or 0
-                list_pages=max(1,(record_count+list_size-1)//list_size);list_page=min(list_page,list_pages)
-                records=list(session.scalars(select(Record).where(*conditions).order_by(*ordering).offset((list_page-1)*list_size).limit(list_size)))
+                records, directory = sim_directory.page(session, save, request.query_params, list_size)
+                ctx.update(directory)
             else:
                 conditions=[Record.save_id==save.id,Record.kind==kind,Record.deleted.is_(False)]
                 if list_q: conditions.append(Record.label.ilike(f"%{list_q}%"))
@@ -1667,7 +1659,8 @@ def feature_page(request: Request, page: str):
                 if page=="automation": ordering=(Record.created_at.asc(),)
                 else: ordering=(Record.global_day.desc().nullslast(),Record.label)
                 records=list(session.scalars(select(Record).where(*conditions).order_by(*ordering).offset((list_page-1)*list_size).limit(list_size)))
-            ctx.update(list_page=list_page,list_pages=list_pages,list_count=record_count,list_q=list_q,list_status=list_status)
+            if page != "sims":
+                ctx.update(list_page=list_page,list_pages=list_pages,list_count=record_count,list_q=list_q,list_status=list_status)
             if page=="automation": ctx["automation_pending"]=record_count
         view_records = None
         view_kinds = {
@@ -5466,7 +5459,8 @@ def portrait(request: Request, record_id: str, stage: str):
         if stage == "current" and record.kind == "sim":
             raw=str((record.data or {}).get("game_age_stage") or "").replace("Age.","").replace("_","").replace(" ","").casefold()
             stage_map={"baby":"newborn","newborn":"newborn","infant":"infant","toddler":"toddler","child":"child","preteen":"preteen","teen":"teen","youngadult":"youngadult","adult":"adult","elder":"elder"}
-            stage=stage_map.get(raw,insights.life_stage(record,save.global_day,save))
+            preserved_day = int_or_none((record.data or {}).get("infinite_frozen_global_day")) if (record.data or {}).get("infinite_frozen") else None
+            stage=stage_map.get(raw,insights.life_stage(record,preserved_day if preserved_day is not None else save.global_day,save))
         stage_key="".join(character for character in str(stage).casefold() if character.isalpha()) or "default"
         stage_items=list(session.scalars(select(Portrait).where(
             Portrait.record_id == record_id, func.lower(func.replace(Portrait.stage," ","")) == stage_key,

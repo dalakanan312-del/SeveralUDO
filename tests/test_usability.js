@@ -4,6 +4,7 @@ test('private editing fields never become remembered filters',()=>assert.deepEqu
 test('midnight is a real clock value',()=>assert.equal(gameLabel({game_day:0,hour:0,minute:0}),'Sunday · Day 0 · 00:00'));
 test('missing report is not a zero day',()=>assert.equal(gameLabel({game_day:null}),'No report yet'));
 test('multi-select filters keep every selection',()=>assert.deepEqual(cleanFilters(new URLSearchParams('kind=birth&kind=death')),{kind:['birth','death']}));
+test('dynasty branch filters are remembered with life status',()=>assert.deepEqual(cleanFilters(new URLSearchParams('sim_branch=all&record_status=all&sort=birth')),{sim_branch:'all',record_status:'all',sort:'birth'}));
 test('game weekday wraps from Saturday to Sunday at midnight',()=>{
   assert.equal(gameLabel({game_day:34,hour:23,minute:59}),'Saturday · Day 34 · 23:59');
   assert.equal(gameLabel({game_day:35,hour:0,minute:0}),'Sunday · Day 35 · 00:00');
