@@ -1221,14 +1221,16 @@ def sync_generations(session: Session, save: ChronicleSave) -> int:
     share the same generation.  Existing generations without an automatic source
     are treated as intentional manual values and are never overwritten.
     """
-    sims = list(session.scalars(select(Record).where(
+    family = list(session.scalars(select(Record).where(
         Record.save_id == save.id,
         Record.kind == "sim",
-        Record.deleted.is_(False),
     )))
+    # Paused relatives remain valid ancestry references. Read their preserved
+    # generations, but never edit frozen people or resurrect ordinary archives.
+    sims = [sim for sim in family if not sim.deleted and not (sim.data or {}).get("infinite_frozen")]
     if not sims:
         return 0
-    by_id = {sim.id: sim for sim in sims}
+    by_id = {sim.id: sim for sim in family if not sim.deleted or (sim.data or {}).get("infinite_frozen")}
     relationships = list(session.scalars(select(Record).where(
         Record.save_id == save.id,
         Record.kind == "relationship",
@@ -1244,8 +1246,10 @@ def sync_generations(session: Session, save: ChronicleSave) -> int:
             continue
         first, second = str(data.get("partner1_id") or ""), str(data.get("partner2_id") or "")
         if first in by_id and second in by_id and first != second:
-            spouses[first].append(second)
-            spouses[second].append(first)
+            if first in spouses:
+                spouses[first].append(second)
+            if second in spouses:
+                spouses[second].append(first)
 
     changed = 0
     # Several passes allow a parent's or spouse's newly inferred value to feed
@@ -3251,6 +3255,14 @@ def sync_family_plan_from_pregnancy_roll(session: Session, save: ChronicleSave, 
         Record.deleted.is_(False),
         Record.data["source_pregnancy_roll_id"].as_string() == roll.id,
     ).limit(1))
+    sim_data = sim.data or {}
+    death = sim_data.get("death_global_day")
+    deceased = bool(sim_data.get("death_confirmed") or sim_data.get("game_was_dead")) or (
+        death not in (None, "") and int(death) <= save.global_day
+    )
+    # Upkeep revisits old completed count rolls. It must not reopen a plan the
+    # player closed, or keep proposing pregnancies after the parent's death.
+    plan_active = not deceased and (not plan or (plan.data or {}).get("active", True) is not False)
     payload = {
         "sim_id": sim.id,
         "sim_name": sim.label,
@@ -3261,7 +3273,7 @@ def sync_family_plan_from_pregnancy_roll(session: Session, save: ChronicleSave, 
         "source": source,
         "source_pregnancy_roll_id": roll.id,
         "automatic": True,
-        "active": True,
+        "active": plan_active,
         "notes": f"Created automatically from the {year} pregnancy-count roll. Multiple births still use one pregnancy allowance.",
     }
     label = f"{sim.label} family plan · {year}"

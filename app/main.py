@@ -117,7 +117,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.35")
+app = FastAPI(title="Decades Tracker", version="4.6.36")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1742,8 +1742,12 @@ def feature_page(request: Request, page: str):
                        timeline_visual=insights.timeline_visual(timeline_entries,save))
             records = []
         if page == "health" and save:
+            frozen_references = list(session.scalars(select(Record).where(
+                Record.save_id == save.id, Record.kind.in_(("sim", "household")),
+                Record.deleted.is_(True), Record.data["infinite_frozen"].as_boolean().is_(True),
+            )))
             ctx.update(
-                health_report=insights.health_report(view_records, save),
+                health_report=insights.health_report(view_records + frozen_references, save),
                 duplicate_obligations=domain.duplicate_obligation_summary(view_records),
                 duplicate_events=domain.duplicate_event_summary(view_records),
                 health_notice=request.session.pop("health_notice", None),

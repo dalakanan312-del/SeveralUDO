@@ -911,6 +911,8 @@ def timeline_visual(entries: list[dict], save: ChronicleSave) -> dict:
 
 def health_report(records: list[Record], save: ChronicleSave) -> dict:
     active = [item for item in records if not item.deleted]
+    references = {(item.id, item.kind) for item in records
+                  if not item.deleted or (item.data or {}).get("infinite_frozen")}
     sims = {item.id: item for item in active if item.kind == "sim"}
     rules = [item for item in active if item.kind == "roll_rule"]
     issues = []
@@ -922,7 +924,7 @@ def health_report(records: list[Record], save: ChronicleSave) -> dict:
         for field in ("mother_id", "father_id", "current_household_id"):
             target = (sim.data or {}).get(field)
             expected = "household" if field == "current_household_id" else "sim"
-            if target and not any(item.id == target and item.kind == expected for item in active):
+            if target and (target, expected) not in references:
                 issues.append({"level": "error", "area": "Sims", "message": f"{sim.label} has a missing {field.replace('_id','').replace('_',' ')} reference."})
     for number, matches in numbers.items():
         if len(matches) > 1:
