@@ -178,7 +178,17 @@ def branch_banner(session, save):
     branch = session.get(Record, meta.get('active_branch_id')) if meta.get('active_branch_id') else None
     if branch and branch.save_id != save.id: branch = None
     data = infinite_decades.metadata(branch) if branch else {}
+    held_count = 0; goal = None
+    if meta:
+        held_count = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,
+            Record.kind=='dynasty_tool',Record.data['feature'].as_string()=='held_report',Record.data['status'].as_string()=='pending'))
+        if data.get('play_goal') and not infinite_decades.frozen(save):
+            from .dynasty_tools import goal_status
+            rows=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.deleted.is_(False),Record.kind.in_({'sim','relationship'}))))
+            goal=goal_status(save,branch,{'global_day':save.global_day,'member_sim_ids':[r.id for r in rows if r.kind=='sim'],
+                'records':[{'id':r.id,'kind':r.kind,'label':r.label,'global_day':r.global_day,'data':r.data,'deleted':False} for r in rows]})
     return {'save': save.name, 'branch': meta.get('branch_name') or 'Main family line',
+        'held_reports':held_count,'goal':goal,
         'checkpoint': ('Tracker calendar · GD ' + str(save.global_day)) if infinite_decades.tracker_calendar(save) else (data.get('game_save_name') or 'Game checkpoint not recorded'),
         'ready': not meta or meta.get('game_ready') is True, 'enabled': bool(meta)}
 

@@ -51,7 +51,11 @@ def render(request, session, ctx, templates):
         dynasty_birth_data=birth_data,
         dynasty_focus_day=focus_day, dynasty_focus_age=focus_age, dynasty_names={r.id:r.label for r in sims},
         navigation_group=next((g for g in ctx["navigation_groups"] if "infinite-decades" in g["pages"]), None))
-    return templates.TemplateResponse(request, "infinite_decades.html", ctx)
+    from .dynasty_tools_ui import context as tools_context
+    ctx.update(tools_context(session,save,request))
+    response = templates.TemplateResponse(request, "infinite_decades.html", ctx)
+    if ctx.get('queue_sort'): response.set_cookie('dynasty_queue_sort',ctx['queue_sort'],max_age=31536000,samesite='lax')
+    return response
 
 
 def render_tree(request, session, ctx, templates):
@@ -156,17 +160,11 @@ def register(app, db, owned_save):
     @router.post("/infinite/{save_id}/play")
     def play_branch(request: Request,save_id: str,branch_id: str=Form(...),
                     current_game_save_name: str=Form(""),checkpoint_confirmed: str=Form(""),load_confirmed: str=Form("")):
-        def action(session,save):
-            if not dynasty.tracker_calendar(save):
-                if load_confirmed!="yes": raise ValueError("Confirm you will load the selected branch's matching Sims checkpoint.")
-                if dynasty.state(save).get("status")=="active" and checkpoint_confirmed!="yes":
-                    raise ValueError("Save the current family's game checkpoint before switching branches.")
-            target=dynasty.activate_branch(session,save,branch_id,current_game_save_name)
-            request.session["infinite_notice"]=(f"Now playing {target.label} at year {dynasty.year(save)} / GD {save.global_day}. "
-                "Any unfinished previous line is paused with its progress preserved. " +
-                ("Keep playing in the same Sims save. The next clock report anchors to this branch's tracker day; subsequent game days advance it normally."
-                 if dynasty.tracker_calendar(save) else "Load the selected Sims checkpoint, reconnect game reading, and confirm the match below."))
-        return run(request,save_id,action)
+        from .dynasty_tools_ui import preview_response
+        with db() as session:
+            save=owned_save(request,session,save_id)
+            return preview_response(request,session,save,'switch',{'branch_id':branch_id,
+                'current_game_save_name':current_game_save_name,'checkpoint_confirmed':checkpoint_confirmed,'load_confirmed':load_confirmed})
 
     @router.post("/infinite/{save_id}/calendar-mode")
     def calendar_mode(request: Request, save_id: str, clock_mode: str = Form(...)):
@@ -177,3 +175,5 @@ def register(app, db, owned_save):
         return run(request, save_id, action)
 
     app.include_router(router)
+    from .dynasty_tools_ui import register as register_tools
+    register_tools(app,db,owned_save)

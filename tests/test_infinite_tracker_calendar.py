@@ -208,6 +208,10 @@ class TrackerCalendarTests(unittest.TestCase):
             self.assertNotIn('name="load_confirmed"',html)
             epoch=dynasty.state(self.f.save)['epoch']
             response=client.post('/infinite/'+self.f.save.id+'/play?_dynasty_epoch='+epoch,data={'branch_id':child.id},follow_redirects=False)
+            self.assertEqual(response.status_code,200,response.text[:300])
+            import re
+            confirm_path=re.search(r'action="([^"]+/tools/confirm/[^"]+)"',response.text).group(1)
+            response=client.post(confirm_path,headers={'X-Dynasty-Epoch':epoch},follow_redirects=False)
             self.assertEqual(response.status_code,303,response.text[:300])
             stale=client.post('/infinite/'+self.f.save.id+'/play?_dynasty_epoch='+epoch,data={'branch_id':child.id},follow_redirects=False)
             self.assertEqual(stale.status_code,409)

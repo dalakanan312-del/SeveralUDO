@@ -23,7 +23,7 @@ from .models import ChronicleSave, ClockLink, Record, Portrait
 KEY = "infinite_decades"
 KIND = "dynasty_branch"
 FINISHED = {"extinct", "modern"}
-SHADOWS = {KIND, "save_metadata", "clock_state", "clock_protocol_state", "clock_diagnostic", "game_candidate", "portrait_blob"}
+SHADOWS = {KIND, "dynasty_tool", "save_metadata", "clock_state", "clock_protocol_state", "clock_diagnostic", "game_candidate", "portrait_blob"}
 SHARED_ARCHIVES = {"decade_snapshot", "household_portrait"}
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 MARKERS = {"infinite_frozen", "infinite_frozen_global_day", "infinite_branch_id"}
@@ -219,7 +219,7 @@ def _belongs(row, chosen, sims, homes, home_ids):
     return not refs or bool(refs & homes)
 
 
-def snapshot(session, save, chosen=None, *, include_all=False, include_candidates=False):
+def snapshot(session, save, chosen=None, *, include_all=False, include_candidates=False, include_portraits=True):
     rows = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.not_in(SHADOWS | SHARED_ARCHIVES))))
     sims = {r.id for r in rows if r.kind == "sim"}
     chosen = set(chosen) if chosen is not None else {r.id for r in rows if r.kind == "sim" and not r.deleted}
@@ -242,7 +242,7 @@ def snapshot(session, save, chosen=None, *, include_all=False, include_candidate
                  "deleted": bool(r.deleted) and not (r.data or {}).get("infinite_frozen")} for r in selected],
             "portraits": [{"record_id": p.record_id, "stage": p.stage, "mime_type": p.mime_type,
                 "image": base64.b64encode(p.image).decode("ascii")} for p in session.scalars(select(Portrait).where(
-                    Portrait.save_id == save.id, Portrait.record_id.in_(chosen)))]}
+                    Portrait.save_id == save.id, Portrait.record_id.in_(chosen)))] if include_portraits else []}
 
 
 def _new_branch(session, save, label, status, payload, game_save_name, parent=None):
@@ -283,7 +283,7 @@ def _reset_game(session, save, *, preserve_candidates=False, preserve_recovery=F
         link.game_anchor_day = link.tracker_anchor_day = None
         link.last_game_day = link.last_game_hour = link.last_game_minute = None
         link.last_seen_at = None
-    reset_kinds = SHADOWS - {KIND, "save_metadata", "portrait_blob"}
+    reset_kinds = SHADOWS - {KIND, "dynasty_tool", "save_metadata", "portrait_blob"}
     if continuous: reset_kinds.discard("clock_protocol_state")
     if preserve_recovery: reset_kinds.discard("clock_state")
     if preserve_candidates: reset_kinds.discard("game_candidate")

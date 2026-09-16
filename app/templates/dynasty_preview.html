@@ -1,0 +1,11 @@
+{% extends 'base.html' %}{% block body %}
+<section class="panel"><p class="eyebrow">INFINITE DECADES · PREVIEW ONLY</p><h1>{{dynasty_ticket.payload.kind|replace('_',' ')|title}}</h1>
+<p>No proposed changes have been applied.</p><ul>{% for effect in dynasty_ticket.payload.plan.effects %}<li>{{effect}}</li>{% endfor %}</ul>
+{% if dynasty_ticket.payload.plan.get('summary') %}{% set resume=dynasty_ticket.payload.plan.summary %}<h2>Where this family left off</h2><p>{{resume.notes or 'No handover notes recorded.'}}</p>{% for r in resume.history %}<p>GD {{r.global_day}} · {{r.label}}</p>{% endfor %}{% endif %}
+<form action="/infinite/{{save.id}}/tools/confirm/{{dynasty_ticket.id}}" method="post">
+{% if dynasty_ticket.payload.kind in ['switch','undo_switch'] and not tracker_calendar %}
+<label>Outgoing family's game checkpoint<input name="current_game_save_name" maxlength="240" required></label>
+<label><input type="checkbox" name="checkpoint_confirmed" value="yes" required> I saved the outgoing family's game checkpoint.</label>
+<label><input type="checkbox" name="load_confirmed" value="yes" required> I will load the selected family's matching game checkpoint.</label>{% endif %}
+<button class="primary">Confirm these changes</button> <a class="button" href="/p/infinite-decades">Keep unchanged</a></form>
+<small>This preview expires after 30 minutes. If affected data changes, review a fresh preview.</small></section>{% endblock %}

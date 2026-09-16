@@ -1125,9 +1125,18 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
         return {'ok':False, 'status':'retired', 'reason':'sims3_clock_retired',
                 'permanent_rejection':True, 'tracker_global_day':save.global_day,
                 'message':SIMS3_CLOCK_RETIRED_MESSAGE}
-    protocol_state, protocol_prior, protocol_result = _protocol_gate(session, save, report)
+    from . import dynasty_tools
+    reviewed = bool(session.info.get('reviewed_dynasty_report')) and session.info['reviewed_dynasty_report'] == dynasty_tools.digest(report)
+    protocol_state, protocol_prior, protocol_result = (None, None, None) if reviewed else _protocol_gate(session, save, report)
     if protocol_result and "sequence" not in protocol_result:
         return protocol_result
+    hold = dynasty_tools.hold_mismatched_report(session, save, report)
+    if hold:
+        if hold.get('ok') and protocol_result:
+            _commit_protocol_state(session, save, protocol_state, protocol_prior, protocol_result, report)
+            hold.update(report_sequence=protocol_result['sequence'], report_checksum=protocol_result['checksum'])
+        session.flush()
+        return hold
     # Validate the original signed payload first; scoping must not alter its
     # checksum or sequence identity. The original report object stays intact.
     if infinite_decades.state(save):

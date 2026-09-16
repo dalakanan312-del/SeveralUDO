@@ -54,9 +54,11 @@ def render(request,session,ctx,templates):
                 row=session.get(Record,chosen)
                 try: payload=infinite_decades.unpack_snapshot(row.data['snapshot'])
                 except ValueError as error: raise HTTPException(409,str(error)) from error
-            comparisons.append({'branch':branch,'metrics':play.branch_metrics(payload)})
+            from .dynasty_tools import historical_metrics
+            metrics,note=historical_metrics(save,payload,request.query_params.get('year'))
+            comparisons.append({'branch':branch,'metrics':metrics,'historical_note':note})
             del payload
-        ctx.update(compare_options=choices,comparisons=comparisons)
+        ctx.update(compare_options=choices,comparisons=comparisons,compare_year=request.query_params.get('year',''))
         return templates.TemplateResponse(request,'branch_comparison.html',ctx)
     rows=play.active(rows_for(session,save)) if save else []
     people=sorted((r for r in rows if r.kind=='sim'),key=lambda r:r.label.casefold())

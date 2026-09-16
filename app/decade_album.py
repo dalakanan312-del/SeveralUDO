@@ -346,5 +346,7 @@ def page_context(session,save,year=None):
     if active and not active.data.get("album_version"):existing.update(_legacy_members(session,active))
     sims=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False))))
     candidates=sorted([sim for sim in sims if eligible_in_year(sim,save,year) and sim.id not in existing],key=lambda s:s.label.casefold())
-    return {"albums":rows,"album_year":year,"album_selected":active,"album_candidates":candidates,
+    from .dynasty_tools import snapshot_coverage
+    return {"album_coverage":snapshot_coverage(session,save,year,active),
+            "albums":rows,"album_year":year,"album_selected":active,"album_candidates":candidates,
             "album_current_year":current,"album_branch_name":_branch(save)[1]}

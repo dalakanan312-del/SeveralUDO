@@ -2,6 +2,7 @@
 {% block body %}
 <header class="hero compact"><p class="eyebrow">THE FAMILY, TOGETHER</p><h1>Decade Snapshots</h1><p>One growing group portrait for each year. New branches add people to the same image; the people already pictured stay exactly as they were.</p></header>
 {% if decade_notice %}<p class="notice" role="status">{{decade_notice}}</p>{% endif %}
+{% if album_coverage %}<details class="panel"><summary>Dynasty coverage for {{album_year}}</summary><p>Contributions are shared across branches. “No stored portrait” means no portrait is saved in the tracker yet; a Tray scan may still find one.</p>{% for item in album_coverage %}<article><h3>{{item.name}}</h3><p>{{'Contributed' if item.contributed else 'Not yet contributed'}} · {{'Reached this year' if item.reached else 'Not yet reached this year'}} · Played through {{item.year}}</p>{% if item.missing %}<p>Not pictured: {{item.missing|join(', ')}}</p>{% endif %}{% if item.no_photo %}<p>No stored portrait: {{item.no_photo|join(', ')}}</p>{% endif %}</article>{% endfor %}</details>{% endif %}
 <section class="panel">
 <form method="get" action="/p/decade-snapshots" class="row"><label>Snapshot year<input type="number" name="year" value="{{album_year}}" max="{{album_current_year}}" required></label><button>Open year</button></form>
 <p class="muted">Adding from <strong>{{album_branch_name}}</strong>. Only Sims recorded as alive during {{album_year}} are offered. Someone born later belongs in a later snapshot.</p>
