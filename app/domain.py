@@ -5642,6 +5642,8 @@ def _apply_hp_roll_result(session: Session, save: ChronicleSave, roll: Record, a
 def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     if not automation_enabled(save):
         return 0
+    from .birth_multiples import reconcile as reconcile_birth_multiples
+    save.revision += reconcile_birth_multiples(session, save)
     save.revision += apply_due_migrations(session,save)
     rules = [item for item in session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll_rule", Record.deleted.is_(False)

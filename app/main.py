@@ -21,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, advanced, auth, automation, avatar_rules, backup_service, calendar_utils, clock, clock_bundle, core_rulesets, decade_portraits, dice, drama, exports, game_metadata, game_modes, game_of_thrones_rules, harry_potter_rules, historical_life, life_records, names, notifications, occult_rules, portraits, save_a_sims, save_scanner, themes, tray_scanner, sync, storyline, telemetry, university, insights
 from . import domain, drama_randomizer, play_support_ui, usability, usability_ui, heritage, heritage_ui, crash_recovery_ui
-from . import infinite_decades, infinite_decades_ui, birth_dates, portrait_studio, trait_visibility, family_fortunes_ui, decade_album
+from . import infinite_decades, infinite_decades_ui, birth_dates, birth_multiples, portrait_studio, trait_visibility, family_fortunes_ui, decade_album
 from .config import ROOT, settings
 from .db import Base, SessionLocal, engine, ensure_local_query_indexes
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
@@ -117,7 +117,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.36")
+app = FastAPI(title="Decades Tracker", version="4.6.37")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -194,10 +194,10 @@ def birth_circumstance_suggestion(session, save: ChronicleSave, pregnancy: Recor
     day = int_or_none(birth_day) or save.global_day
     pregnancy_data = dict((pregnancy.data if pregnancy else {}) or {})
     tags = ["Live birth"]
-    expected = max(1, int_or_none(pregnancy_data.get("babies_delivered")) or int_or_none(pregnancy_data.get("babies_expected")) or 1)
-    multiple_names = {1: "Singleton", 2: "Twin", 3: "Triplet", 4: "Quadruplet", 5: "Quintuplet"}
-    multiple_status = multiple_names.get(expected, f"{expected}-baby multiple")
-    tags.append(f"{multiple_status} birth")
+    # Missing delivery evidence means unknown, not an assumed singleton.
+    multiple_status = birth_multiples.label(birth_multiples.load(session, save).count(pregnancy) if pregnancy else None)
+    if multiple_status:
+        tags.append(f"{multiple_status} birth")
     due = int_or_none(pregnancy_data.get("actual_due_global_day")) or int_or_none(pregnancy_data.get("due_global_day"))
     conception = int_or_none(pregnancy_data.get("conception_global_day"))
     if due is not None:
@@ -1572,6 +1572,7 @@ def feature_page(request: Request, page: str):
         if save:
             if page in {"sims", "today", "pregnancies", "timeline", "storyline"}:
                 birth_dates.fill_missing(session, save)
+                save.revision += birth_multiples.reconcile(session, save)
             # Add newly shipped Harry Potter entries the first time an existing
             # Harry Potter save opens its library.  This is idempotent and keeps
             # a save's existing on/off choices intact.
@@ -2665,6 +2666,7 @@ def sim_profile(request: Request, sim_id: str):
         if infinite_decades.frozen(save) or (sim.data or {}).get("infinite_frozen"):
             request.session["save_id"] = save.id
             return RedirectResponse(f"/p/infinite-decades?sim_id={sim.id}#dynasty-person", 303)
+        save.revision += birth_multiples.reconcile(session, save)
         if birth_dates.apply_to_record(sim, save):
             base = sim.version; sim.version += 1
             domain.journal(session, sim, "upsert", base); save.revision += 1
@@ -2790,6 +2792,7 @@ async def edit_sim(request: Request, sim_id: str):
             data.pop(key,None)
         data.update(birth_fields)
         birth_dates.retain_edit_provenance(record.data or {}, data, save)
+        birth_multiples.retain_edit_provenance(record.data or {}, data)
         for key in ("death_game_hour","death_game_minute","death_time","historical_death_date","historical_death_date_range","death_date_precision"):
             data.pop(key,None)
         data.update(death_calendar_fields(save,data["death_global_day"],form.get("death_game_hour"),form.get("death_game_minute")))
@@ -3134,6 +3137,7 @@ def edit_pregnancy(request: Request, pregnancy_id: str, mother_id: str = Form(..
         else:
             save.revision+=domain.retire_pregnancy_rolls(session,save,pregnancy.id,"Pregnancy details changed")
         pregnancy.label=f"{mother.label} pregnancy";pregnancy.global_day=due;pregnancy.data=data;pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base);save.revision+=1
+        save.revision += birth_multiples.reconcile(session, save)
         if keeps_maternal:
             save.revision+=domain.preserve_delivery_maternal_rolls(session,save,pregnancy,data.get("actual_delivery_global_day") or due)
         elif str(status).casefold() not in domain.CLOSED_PREGNANCIES and data["maternal_rolls_required"]:
@@ -3668,6 +3672,7 @@ async def accept_automation(request: Request, candidate_id: str):
                 keeps_maternal=domain.pregnancy_keeps_maternal_roll(status) and (pregnancy.data or {}).get("maternal_rolls_required",True)
                 if keeps_maternal: domain.schedule_rolls(session,save)
                 base=pregnancy.version;pregnancy.data={**pregnancy.data,"status":status,"babies_delivered":delivered,"actual_delivery_global_day":delivery,"delivery_global_day":delivery,"outcome":str(value("outcome",status) or status),"complication":str(value("complication") or "") or None,**delivery_details};pregnancy.version+=1;domain.journal(session,pregnancy,"upsert",base)
+                save.revision += birth_multiples.reconcile(session, save)
                 if keeps_maternal:
                     save.revision+=domain.preserve_delivery_maternal_rolls(session,save,pregnancy,delivery)
                 elif domain.pregnancy_retires_maternal_roll(status):

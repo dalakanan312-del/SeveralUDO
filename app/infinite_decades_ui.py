@@ -13,6 +13,7 @@ def _people(session, save):
 
 def render(request, session, ctx, templates):
     from .dynasty_register import context as register_context
+    from .birth_multiples import load as birth_groups
     save = ctx.get("save")
     family = dynasty.branches(session, save)
     family.sort(key=lambda r: (dynasty.metadata(r).get("status") == "archive", -dynasty.metadata(r).get("split_global_day", 1)))
@@ -27,6 +28,7 @@ def render(request, session, ctx, templates):
         history = [r for r in point["records"] if r["kind"] in {"roll", "pregnancy", "illness", "relationship", "death", "story_entry", "game_history", "migration", "note"}]
         history.sort(key=lambda r: (r.get("global_day") or 0, r["label"]), reverse=True)
     focus = next((r for r in sims if r.id == request.query_params.get("sim_id")), None)
+    birth_data = birth_groups(session, save).corrected_data(focus) if focus else {}
     focus_day = int((focus.data or {}).get("infinite_frozen_global_day") or save.global_day) if focus else None
     focus_age = None
     if focus and focus.data.get("birth_global_day") is not None:
@@ -45,6 +47,7 @@ def render(request, session, ctx, templates):
         branch_finish_reason=dynasty.finish_reason(session, save) if save and dynasty.state(save) and not dynasty.frozen(save) else None,
         branch_notice=request.session.pop("infinite_notice", None), viewed_branch=selected, viewed_snapshot=point,
         branch_history=history[:100], branch_history_count=len(history), dynasty_focus=focus,
+        dynasty_birth_data=birth_data,
         dynasty_focus_day=focus_day, dynasty_focus_age=focus_age, dynasty_names={r.id:r.label for r in sims},
         navigation_group=next((g for g in ctx["navigation_groups"] if "infinite-decades" in g["pages"]), None))
     return templates.TemplateResponse(request, "infinite_decades.html", ctx)
