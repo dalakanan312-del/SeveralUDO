@@ -1138,6 +1138,7 @@ def receive(session: Session, link: ClockLink, report: dict) -> dict:
     hour = max(0, min(23, int(report.get("hour", report.get("game_hour", 0)))))
     minute = max(0, min(59, int(report.get("minute", report.get("game_minute", 0)))))
     second = max(0, min(59, int(report.get("second", report.get("game_second", 0)))))
+    infinite_decades.align_tracker_clock(session, save, link, game_day, hour, minute)
     recovery_hold = crash_recovery.gate(session, save, link, report, game_day, hour, minute)
     if recovery_hold:
         if protocol_result:

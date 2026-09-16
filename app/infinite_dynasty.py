@@ -47,6 +47,44 @@ def frozen(save):
     return bool(state(save)) and (not enabled(save) or state(save).get("status") != "active")
 
 
+def tracker_calendar(save):
+    """Branch dates are independent of the continuously running Sims save."""
+    return state(save).get("clock_mode") == "tracker"
+
+
+def set_clock_mode(session, save, mode):
+    _lock(session, save)
+    if not state(save): raise ValueError("Enable Infinite Decades before choosing its calendar mode.")
+    if mode not in {"tracker", "checkpoints"}: raise ValueError("Choose a valid branch calendar mode.")
+    if state(save).get("clock_mode", "checkpoints") == mode: return
+    from .backup_service import create_snapshot
+    with session.begin_nested(), branch_operation(session, save):
+        create_snapshot(session, save, "before-dynasty-calendar-mode", force=True)
+        was_ready = state(save).get("game_ready") is True
+        _set_state(save, clock_mode=mode, game_ready=mode == "tracker" and not frozen(save))
+        # An already connected branch keeps its current date mapping and any
+        # genuine crash-recovery hold. Changing mode is not a recovery decision.
+        if mode == "checkpoints" or not was_ready:
+            _reset_game(session, save, preserve_candidates=True, preserve_recovery=True)
+            if mode == "tracker" and not frozen(save):
+                link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id))
+                if link: link.enabled = True
+
+
+def align_tracker_clock(session, save, link, day, hour, minute):
+    """Bind the first new ordered report to the selected branch's own date."""
+    if not tracker_calendar(save) or not state(save).get("clock_anchor_pending"): return
+    from . import crash_recovery
+    if crash_recovery.held(save): return
+    if link.last_game_day is not None and crash_recovery.tick(day, hour, minute) < crash_recovery.tick(link.last_game_day, link.last_game_hour, link.last_game_minute):
+        return  # A real game rewind is still a rewind, even during a branch switch.
+    with branch_operation(session, save):
+        link.game_anchor_day, link.tracker_anchor_day = day, save.global_day
+        link.last_game_day, link.last_game_hour, link.last_game_minute = day, hour, minute
+        save.settings = {**save.settings, "clock_game_day_high_watermark": day}
+        _set_state(save, clock_anchor_pending=False)
+
+
 def year(save, day=None):
     return int(save.start_year) + (int(save.global_day if day is None else day) - 1) // max(1, int(save.days_per_year))
 
@@ -232,14 +270,22 @@ def _freeze(session, row, day, owner):
         "infinite_frozen_global_day": day, "infinite_branch_id": owner}, deleted=True)
 
 
-def _reset_game(session, save, *, preserve_candidates=False):
+def _reset_game(session, save, *, preserve_candidates=False, preserve_recovery=False):
     link = session.scalar(select(ClockLink).where(ClockLink.save_id == save.id))
-    if link:
+    continuous = tracker_calendar(save)
+    if continuous:
+        # Keep the token, connection, identity binding and sequence watermark.
+        # In particular a duplicate queued report must not become "new" merely
+        # because the tracker switched to another branch.
+        _set_state(save, clock_anchor_pending=True)
+    elif link:
         link.enabled = False
         link.game_anchor_day = link.tracker_anchor_day = None
         link.last_game_day = link.last_game_hour = link.last_game_minute = None
         link.last_seen_at = None
     reset_kinds = SHADOWS - {KIND, "save_metadata", "portrait_blob"}
+    if continuous: reset_kinds.discard("clock_protocol_state")
+    if preserve_recovery: reset_kinds.discard("clock_state")
     if preserve_candidates: reset_kinds.discard("game_candidate")
     for row in session.scalars(select(Record).where(Record.save_id == save.id,
             Record.kind.in_(reset_kinds))):
@@ -278,7 +324,7 @@ def _restore_working_view(session, save, target, payload):
     save.settings = {**payload["settings"], **private, KEY: meta}
     save.global_day, save.pregnancy_days = payload["global_day"], payload["pregnancy_days"]
     _set_state(save, active_branch_id=target.id, branch_name=target.label, status="active",
-        split_global_day=metadata(target)["split_global_day"], game_ready=False, epoch=uuid4().hex)
+        split_global_day=metadata(target)["split_global_day"], game_ready=tracker_calendar(save), epoch=uuid4().hex)
     _reset_game(session, save)
     # Mid-play pauses retain the branch's inbox. Old checkpoints omit this list.
     for entry in payload.get("automation_candidates", []):
@@ -301,11 +347,12 @@ def _selected(session, save, ids):
     return sims, selected
 
 
-def enable(session, save, selected_ids, label, modern_year, game_save_name):
+def enable(session, save, selected_ids, label, modern_year, game_save_name="", clock_mode="checkpoints"):
     _lock(session, save)
     if state(save): raise ValueError("Infinite Decades is already enabled for this dynasty.")
     sims, selected = _selected(session, save, selected_ids)
-    if not label.strip() or not game_save_name.strip(): raise ValueError("Name the branch and its matching in-game Save As checkpoint.")
+    if clock_mode not in {"tracker", "checkpoints"}: raise ValueError("Choose a valid branch calendar mode.")
+    if not label.strip() or (clock_mode == "checkpoints" and not game_save_name.strip()): raise ValueError("Name the branch and its matching in-game Save As checkpoint.")
     if modern_year <= year(save) or modern_year > 9999: raise ValueError("Choose a modern-day target later than the current historical year.")
     with branch_operation(session, save):
         from .backup_service import create_snapshot
@@ -314,7 +361,7 @@ def enable(session, save, selected_ids, label, modern_year, game_save_name):
         root = _new_branch(session, save, "Starting world", "archive", initial, game_save_name)
         payload = snapshot(session, save, {s.id for s in selected})
         first = _new_branch(session, save, label, "active", payload, game_save_name, root.id)
-        _set_state(save, schema_version=2, enabled=True, modern_year=modern_year, starting_branch_id=root.id)
+        _set_state(save, schema_version=2, enabled=True, modern_year=modern_year, starting_branch_id=root.id, clock_mode=clock_mode)
         _restore_working_view(session, save, first, payload)
         for row in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim")):
             if (row.data or {}).get("infinite_frozen"): _touch(session, row, {**row.data, "infinite_branch_id": root.id})
@@ -332,19 +379,19 @@ def set_enabled(session, save, value):
     with branch_operation(session, save):
         if not value and state(save).get("status") == "active":
             _update_branch(session, active_branch(session, save), snapshot(session, save), current_global_day=save.global_day)
-        _set_state(save, enabled=value, game_ready=False, epoch=uuid4().hex)
+        _set_state(save, enabled=value, game_ready=value and tracker_calendar(save), epoch=uuid4().hex)
         # A pause is not a branch change: keep pending inbox decisions.
         _reset_game(session, save, preserve_candidates=True)
 
 
-def capture(session, save, selected_ids, label, game_save_name):
+def capture(session, save, selected_ids, label, game_save_name=""):
     _lock(session, save)
     if frozen(save) or not state(save): raise ValueError("Capture a split while playing an active branch.")
     sims, selected = _selected(session, save, selected_ids)
     if any(not alive(s,save) or (s.data or {}).get("infinite_frozen") for s in selected):
         raise ValueError("Only living Sims in the active branch can depart in a new split. Refresh the selection; deceased Sims remain in dynasty history.")
     selected_ids = {s.id for s in selected}
-    if not label.strip() or not game_save_name.strip(): raise ValueError("Name the branch and record its matching in-game checkpoint.")
+    if not label.strip() or (not tracker_calendar(save) and not game_save_name.strip()): raise ValueError("Name the branch and record its matching in-game checkpoint.")
     if not any(alive(s, save) for s in sims if s.id not in selected_ids): raise ValueError("Leave a living Sim in the current branch. Select only departing family members.")
     with branch_operation(session, save):
         parent = active_branch(session, save)
@@ -361,7 +408,7 @@ def capture(session, save, selected_ids, label, game_save_name):
     return child
 
 
-def capture_starting(session, save, selected_ids, label, game_save_name):
+def capture_starting(session, save, selected_ids, label, game_save_name=""):
     """Register an initially paused household without moving the active clock."""
     _lock(session, save)
     if not enabled(save): raise ValueError("Turn Infinite Decades on before registering another branch.")
@@ -372,7 +419,7 @@ def capture_starting(session, save, selected_ids, label, game_save_name):
     eligible = {r.id for r in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "sim"))
                 if r.id in initial["member_sim_ids"] and (r.data or {}).get("infinite_frozen") and (r.data or {}).get("infinite_branch_id") == root.id}
     if not chosen or not chosen <= eligible: raise ValueError("Choose unplayed starting Sims; already assigned family members cannot be reused.")
-    if not label.strip() or not game_save_name.strip(): raise ValueError("Name the branch and its matching in-game checkpoint.")
+    if not label.strip() or (not tracker_calendar(save) and not game_save_name.strip()): raise ValueError("Name the branch and its matching in-game checkpoint.")
     from types import SimpleNamespace
     rows = [SimpleNamespace(**entry) for entry in initial["records"]]
     selected = [r for r in rows if r.id in chosen]
@@ -434,7 +481,7 @@ def activate_branch(session, save, branch_id, current_game_save_name=""):
     payload=unpack_snapshot(target.data["snapshot"])
     current=active_branch(session,save)
     pause_current=state(save).get("status")=="active"
-    if pause_current and (not current or not str(current_game_save_name).strip()):
+    if pause_current and (not current or (not tracker_calendar(save) and not str(current_game_save_name).strip())):
         raise ValueError("Save the current family in the game and enter its checkpoint name before switching branches.")
     current_payload=snapshot(session,save,include_candidates=True) if pause_current else None
     # Both a corrupt target and a failure during restoration leave everything,
@@ -445,7 +492,7 @@ def activate_branch(session, save, branch_id, current_game_save_name=""):
         if pause_current:
             _update_branch(session,current,current_payload,status="paused",current_global_day=save.global_day,
                 split_game_save_name=metadata(current).get("split_game_save_name") or metadata(current).get("game_save_name"),
-                game_save_name=str(current_game_save_name).strip()[:240])
+                game_save_name=str(current_game_save_name).strip()[:240] or metadata(current).get("game_save_name", ""))
         _restore_working_view(session,save,target,payload)
         _update_branch(session,target,status="active")
     return target
@@ -498,6 +545,8 @@ def filter_members(session, save, members):
         name = str(item.get("name") or item.get("sim_name") or " ".join(str(item.get(k) or "") for k in ("first_name", "last_name"))).casefold().strip()
         home = str(item.get("household_id") or item.get("game_household_id") or "")
         parents = {str(p) for p in item.get("parent_game_sim_ids") or []}
+        if tracker_calendar(save) and item.get("is_baby") and parents.intersection(blocked) and not parents.intersection(ids):
+            continue  # A shared game household does not make another branch's baby ours.
         if gid in ids or name in names or home in houses or parents.intersection(ids): accepted.append(copy.deepcopy(item))
     allowed = {str(i.get("game_sim_id") or "") for i in accepted}
     for item in accepted:

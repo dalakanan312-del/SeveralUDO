@@ -179,7 +179,7 @@ def branch_banner(session, save):
     if branch and branch.save_id != save.id: branch = None
     data = infinite_decades.metadata(branch) if branch else {}
     return {'save': save.name, 'branch': meta.get('branch_name') or 'Main family line',
-        'checkpoint': data.get('game_save_name') or 'Game checkpoint not recorded',
+        'checkpoint': ('Tracker calendar · GD ' + str(save.global_day)) if infinite_decades.tracker_calendar(save) else (data.get('game_save_name') or 'Game checkpoint not recorded'),
         'ready': not meta or meta.get('game_ready') is True, 'enabled': bool(meta)}
 
 

@@ -36,6 +36,7 @@ def render(request, session, ctx, templates):
         years, days = divmod(max(0, end - int(focus.data["birth_global_day"])), max(1, save.days_per_year))
         focus_age = f"{years} years, {days} days at the preserved date"
     ctx.update(page="infinite-decades", title="Infinite Decades", branch_state=dynasty.state(save),
+        tracker_calendar=dynasty.tracker_calendar(save),
         branches=family, branch_meta=dynasty.metadata, branch_year=dynasty.year,
         active_branch=active, next_branch=dynasty.next_branch(family),
         playable_branches=dynasty.playable_branches(family),
@@ -91,11 +92,11 @@ def register(app, db, owned_save):
                 save = owned_save(request, session, save_id)
                 if enabled == "true" and not dynasty.state(save):
                     request.session["save_id"] = save.id
-                    request.session["infinite_notice"] = "Choose the starting family and checkpoint below to turn Infinite Decades on for this save."
+                    request.session["infinite_notice"] = "Choose the starting family and calendar mode below to turn Infinite Decades on for this save."
                     destination = "/p/infinite-decades"
                 else:
                     dynasty.set_enabled(session, save, enabled == "true")
-                    message = (f"Infinite Decades is on for {save.name}. Branches and dates are unchanged. Confirm the matching game checkpoint before receiving reports."
+                    message = (f"Infinite Decades is on for {save.name}. Branches and dates are unchanged. " + ("The existing clock connection will align to this branch's tracker day." if dynasty.tracker_calendar(save) else "Confirm the matching game checkpoint before receiving reports.")
                                if enabled == "true" else f"Infinite Decades is off for {save.name}. " +
                                ("The dynasty is paused; all branches and history are preserved." if dynasty.state(save) else "This is a normal save."))
                     request.session["infinite_notice" if destination == "/p/infinite-decades" else "backup_notice"] = message
@@ -108,18 +109,21 @@ def register(app, db, owned_save):
 
     @router.post("/infinite/{save_id}/enable")
     def enable(request: Request, save_id: str, sim_ids: list[str] = Form(default=[]), label: str = Form(...),
-               modern_year: int = Form(2026), game_save_name: str = Form(...), checkpoint_confirmed: str = Form("")):
-        if checkpoint_confirmed != "yes": raise HTTPException(400, "Save a matching in-game starting checkpoint first.")
+               modern_year: int = Form(2026), game_save_name: str = Form(""), checkpoint_confirmed: str = Form(""),
+               clock_mode: str = Form("checkpoints")):
+        if clock_mode not in {"tracker", "checkpoints"}: raise HTTPException(400, "Choose a valid branch calendar mode.")
+        if clock_mode == "checkpoints" and checkpoint_confirmed != "yes": raise HTTPException(400, "Save a matching in-game starting checkpoint first.")
         def action(session, save):
-            dynasty.enable(session, save, sim_ids, label, modern_year, game_save_name)
+            dynasty.enable(session, save, sim_ids, label, modern_year, game_save_name, clock_mode)
             request.session["infinite_notice"] = "Infinite Decades enabled in this same dynasty save. Sim IDs and family links are unchanged; the starting world is preserved."
         return run(request, save_id, action)
 
     @router.post("/infinite/{save_id}/capture")
     def capture(request: Request, save_id: str, sim_ids: list[str] = Form(default=[]), label: str = Form(...),
-                game_save_name: str = Form(...), checkpoint_confirmed: str = Form(""), from_start: str = Form("")):
-        if checkpoint_confirmed != "yes": raise HTTPException(400, "Save the matching in-game split checkpoint first.")
+                game_save_name: str = Form(""), checkpoint_confirmed: str = Form(""), from_start: str = Form("")):
         def action(session, save):
+            if not dynasty.tracker_calendar(save) and checkpoint_confirmed != "yes":
+                raise ValueError("Save the matching in-game split checkpoint first.")
             method = dynasty.capture_starting if from_start == "yes" else dynasty.capture
             child = method(session, save, sim_ids, label, game_save_name)
             request.session["infinite_notice"] = f"{child.label} is waiting at year {dynasty.metadata(child)['split_year']}. It stays inside this dynasty save; the active branch's day is unchanged."
@@ -134,10 +138,11 @@ def register(app, db, owned_save):
 
     @router.post("/infinite/{save_id}/next")
     def next_branch(request: Request, save_id: str, load_confirmed: str = Form("")):
-        if load_confirmed != "yes": raise HTTPException(400, "Confirm you will load the next branch's matching Sims checkpoint.")
         def action(session, save):
+            if not dynasty.tracker_calendar(save) and load_confirmed != "yes":
+                raise ValueError("Confirm you will load the next branch's matching Sims checkpoint.")
             target = dynasty.activate_next(session, save)
-            request.session["infinite_notice"] = f"Now playing {target.label} at year {dynasty.year(save)} in this same dynasty save. Load its Sims checkpoint, reconnect game reading, and confirm below."
+            request.session["infinite_notice"] = f"Now playing {target.label} at year {dynasty.year(save)} in this same dynasty save. " + ("Keep the same Sims save and clock connection; only the tracker calendar changes." if dynasty.tracker_calendar(save) else "Load its Sims checkpoint, reconnect game reading, and confirm below.")
         return run(request, save_id, action)
 
     @router.post("/infinite/{save_id}/confirm-game")
@@ -145,19 +150,30 @@ def register(app, db, owned_save):
         if confirmed != "yes": raise HTTPException(400, "Confirm the game checkpoint and reader connection match this branch.")
         def action(session, save):
             dynasty.confirm_game(session, save)
-            request.session["infinite_notice"] = "Matching game checkpoint confirmed. New reports can update only the active family line."
+            request.session["infinite_notice"] = ("Game connection confirmed. Keep the same Sims save. " if dynasty.tracker_calendar(save) else "Matching game checkpoint confirmed. ") + "New reports can update only the active family line."
         return run(request, save_id, action)
 
     @router.post("/infinite/{save_id}/play")
     def play_branch(request: Request,save_id: str,branch_id: str=Form(...),
                     current_game_save_name: str=Form(""),checkpoint_confirmed: str=Form(""),load_confirmed: str=Form("")):
-        if load_confirmed!="yes": raise HTTPException(400,"Confirm you will load the selected branch's matching Sims checkpoint.")
         def action(session,save):
-            if dynasty.state(save).get("status")=="active" and checkpoint_confirmed!="yes":
-                raise ValueError("Save the current family's game checkpoint before switching branches.")
+            if not dynasty.tracker_calendar(save):
+                if load_confirmed!="yes": raise ValueError("Confirm you will load the selected branch's matching Sims checkpoint.")
+                if dynasty.state(save).get("status")=="active" and checkpoint_confirmed!="yes":
+                    raise ValueError("Save the current family's game checkpoint before switching branches.")
             target=dynasty.activate_branch(session,save,branch_id,current_game_save_name)
             request.session["infinite_notice"]=(f"Now playing {target.label} at year {dynasty.year(save)} / GD {save.global_day}. "
-                "Any unfinished previous line is paused with its progress preserved. Load the selected Sims checkpoint, reconnect game reading, and confirm the match below.")
+                "Any unfinished previous line is paused with its progress preserved. " +
+                ("Keep playing in the same Sims save. The next clock report anchors to this branch's tracker day; subsequent game days advance it normally."
+                 if dynasty.tracker_calendar(save) else "Load the selected Sims checkpoint, reconnect game reading, and confirm the match below."))
         return run(request,save_id,action)
+
+    @router.post("/infinite/{save_id}/calendar-mode")
+    def calendar_mode(request: Request, save_id: str, clock_mode: str = Form(...)):
+        def action(session, save):
+            dynasty.set_clock_mode(session, save, clock_mode)
+            request.session["infinite_notice"] = ("Tracker calendar mode is on. Branches keep their own Global Days; the Sims game can keep moving forward. Existing history and the current day are unchanged. Any pending crash recovery still needs review."
+                if clock_mode == "tracker" else "Separate game checkpoints mode is on. Confirm the matching game checkpoint before receiving reports.")
+        return run(request, save_id, action)
 
     app.include_router(router)
