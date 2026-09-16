@@ -82,11 +82,12 @@ def expected_stage(save,payload,entry):
     starts=dict(life_stages(save))
     aliases={key.replace(' ','').casefold():key for key in starts}
     aliases.update({'beingborn':'Newborn','birth':'Newborn','baby':'Newborn','elderdeath-agerng':'Elder'})
+    rule_save=SimpleNamespace(settings=payload.get('settings',save.settings))
     birth=integer(entry['data'].get('birth_global_day'))
     for rule in payload['records']:
         if rule['kind']!='roll_rule' or rule.get('deleted') or not rule['data'].get('active',True): continue
         obj=SimpleNamespace(**rule)
-        if not applies_to_selected_core(save,obj): continue
+        if not applies_to_selected_core(rule_save,obj): continue
         age=lifecycle_rule_age(save,obj);label=aliases.get(rule['label'].replace(' ','').casefold())
         if age is None or label is None:continue
         due_year=d.year(save,birth+age)
@@ -195,7 +196,12 @@ def correction_plan(session, save, args):
         if field in {'first_name','last_name'}:
             after['label']=' '.join(str(after['data'].get(k) or '').strip() for k in ('title','first_name','last_name','suffix')).strip()
             if not after['label']: raise ValueError('The Sim must still have a name.')
-        if before!=after: changes.append({'sim_id':sim.id,'branch_id':branch_id,'where':where,'before':before,'after':after})
+        if before!=after:
+            keys={key for key in before['data'].keys()|after['data'].keys() if (key in before['data'],before['data'].get(key))!=(key in after['data'],after['data'].get(key))}
+            # Store/revalidate only reviewed fields, not unrelated game telemetry.
+            before['data']={key:before['data'][key] for key in keys if key in before['data']}
+            after['data']={key:after['data'][key] for key in keys if key in after['data']}
+            changes.append({'sim_id':sim.id,'branch_id':branch_id,'where':where,'before':before,'after':after})
     add(sim.data,sim.label,'Current dynasty record')
     for row in d.branches(session,save):
         checkpoint=d.unpack_snapshot(row.data['snapshot'])
@@ -260,7 +266,7 @@ def switch_plan(session,save,args):
              f"{summary['pending']} pending rolls; {len(summary['pregnancies'])} open pregnancies. Completed history and shared albums are preserved."]
     for issue in summary['mismatches']: effects.append(f"Age check — {issue['name']}: tracker {issue['expected']}, last recorded game stage {issue['actual']}. Birth dates will not be rewritten.")
     return {'branch_id':target.id,'effects':effects,'summary':summary,'from_id':current.id if current else None,
-            'from_day':save.global_day,'to_day':summary['day'],'progress_stamp':progress_stamp(session,save)}
+            'from_day':save.global_day,'to_day':summary['day']}
 
 
 def transfer_plan(session,save,args):

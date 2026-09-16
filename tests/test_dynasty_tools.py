@@ -55,6 +55,19 @@ class DynastyToolsTests(unittest.TestCase):
         ticket.created_at=datetime.now(timezone.utc)-timedelta(hours=1);self.s.commit()
         with self.assertRaisesRegex(ValueError,'expired'):t.confirm(self.s,self.save,ticket)
 
+    def test_unrelated_telemetry_does_not_block_switch_confirmation(self):
+        child=self.child();ticket=self.preview('switch',branch_id=child.id)
+        sim=self.f.people[0];sim.data={**sim.data,'game_age_progress_percentage':25};sim.version+=1;self.s.commit()
+        t.confirm(self.s,self.save,ticket);self.s.commit()
+        preserved=d.unpack_snapshot(self.root.data['snapshot'])
+        self.assertEqual(next(r for r in preserved['records'] if r['id']==sim.id)['data']['game_age_progress_percentage'],25)
+
+    def test_unrelated_telemetry_does_not_block_identity_correction(self):
+        sim=self.f.people[0];ticket=self.preview('correction',sim_id=sim.id,field='birthplace',value='England')
+        sim.data={**sim.data,'game_age_progress_percentage':25};sim.version+=1;self.s.commit()
+        t.confirm(self.s,self.save,ticket);self.s.commit()
+        self.assertEqual(sim.data['birthplace'],'England');self.assertEqual(sim.data['game_age_progress_percentage'],25)
+
     def test_undo_switch_keeps_new_progress(self):
         child=self.child();self.apply('switch',branch_id=child.id)
         clean=t.make_plan(self.s,self.save,'undo_switch',{})
