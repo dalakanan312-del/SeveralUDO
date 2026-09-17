@@ -255,7 +255,8 @@ class DynastyHistoryTests(unittest.TestCase):
         self.assertEqual(h.visible_history(self.save,[entry]),[])
 
     def test_decade_default_follows_challenge_start_not_civil_decade(self):
-        self.save.start_year=979;self.s.commit()
+        with d.branch_operation(self.s,self.save):self.save.start_year=979
+        self.s.commit()
         with patch.object(main,'SessionLocal',self.f.sessions):
             client=TestClient(main.app);client.post('/saves/select',data={'save_id':self.save.id})
             response=client.get(f'/infinite/{self.save.id}/history?section=decade')
