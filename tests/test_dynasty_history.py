@@ -254,5 +254,16 @@ class DynastyHistoryTests(unittest.TestCase):
         entry={'id':'old','kind':'pregnancy','global_day':80,'label':'Delivered later','data':{'delivery_global_day':200,'status':'Delivered'}}
         self.assertEqual(h.visible_history(self.save,[entry]),[])
 
+    def test_decade_default_follows_challenge_start_not_civil_decade(self):
+        self.save.start_year=979;self.s.commit()
+        with patch.object(main,'SessionLocal',self.f.sessions):
+            client=TestClient(main.app);client.post('/saves/select',data={'save_id':self.save.id})
+            response=client.get(f'/infinite/{self.save.id}/history?section=decade')
+            self.assertEqual(response.status_code,200);self.assertIn('value="999"',response.text)
+
+    def test_ownership_and_visits_not_before_branch_foundation(self):
+        with self.assertRaisesRegex(ValueError,'founded'):self.preview('visit',branch_id=self.child.id,sim_id=self.f.people[2].id,day=103,label='Visit')
+        with self.assertRaisesRegex(ValueError,'founded'):self.preview('heirloom',branch_id=self.child.id,sim_id=self.f.people[2].id,day=103,label='Ring')
+
 
 if __name__=='__main__':unittest.main()

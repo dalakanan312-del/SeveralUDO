@@ -42,7 +42,10 @@ def register(app,db,owned_save):
                     if chain:albums.append({'record':row,'history':chain,'owner':chain[-1]})
                 ctx.update(heirlooms=albums,tracked_heirlooms=[r for r in t.records(session,save,{'heirloom'}) if not r.deleted or r.data.get('infinite_frozen')])
             elif section=='decade':
-                year=t.integer(request.query_params.get('year'),d.year(save)//10*10)
+                # Snapshots count decades from the challenge's starting year,
+                # e.g. 979 → 989 → 999, not necessarily civil-year multiples of ten.
+                latest=save.start_year+max(0,(d.year(save)-save.start_year)//10)*10
+                year=t.integer(request.query_params.get('year'),latest)
                 if not -9999<=year<=9999:raise HTTPException(400,'Choose a valid year.')
                 if h.spoiler_free(save) and year>d.year(save):year=d.year(save)
                 ctx.update(check_year=year,decade_checks=h.checklist(session,save,year,views))

@@ -150,6 +150,8 @@ def plan(session, save, action, args):
     if action == 'visit':
         day=dated(save,args); source=t.branch(session,save,args.get('branch_id'))
         if source.id==active.id: raise ValueError('Choose a visitor from another branch.')
+        if day<max(d.metadata(source).get('split_global_day',1),d.metadata(active).get('split_global_day',1)):
+            raise ValueError('A visit must occur after both branches were founded.')
         person=entry_person(t.point(session,save,source),text(args,'sim_id'),day)
         return {'day':day,'source_id':source.id,'branch_id':active.id,'sim_id':person['id'],
                 'label':text(args,'label',200,True),'notes':text(args,'notes'),
@@ -168,6 +170,7 @@ def plan(session, save, action, args):
                            'This can supply optional drama prompts. It never changes game relationships or source-rule odds.']}
     if action == 'heirloom':
         day=dated(save,args); owner=t.branch(session,save,args.get('branch_id'))
+        if day<d.metadata(owner).get('split_global_day',1):raise ValueError('Choose an ownership date after this branch was founded.')
         person=entry_person(t.point(session,save,owner),text(args,'sim_id'),day)
         rid=text(args,'row_id'); previous=ledger_row(session,save,rid,'heirloom_history') if rid else None
         source_id=text(args,'heirloom_id'); source=None

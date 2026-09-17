@@ -1,5 +1,6 @@
 {% extends 'base.html' %}{% block body %}
-<section class="panel"><p class="eyebrow">INFINITE DECADES · PREVIEW ONLY</p><h1>{{dynasty_ticket.payload.kind|replace('_',' ')|title}}</h1>
+{% set history_titles={'history_world':'Shared world decision','history_visit':'Record a visit','history_end_visit':'End this visit','history_relation':'Branch relationship','history_heirloom':'Heirloom ownership','history_park':'Park or resume a branch','history_send':'Send a dynasty handover','history_receive':'Receive a dynasty handover'} %}
+<section class="panel"><p class="eyebrow">INFINITE DECADES · PREVIEW ONLY</p><h1>{{history_titles.get(dynasty_ticket.payload.kind,dynasty_ticket.payload.kind|replace('_',' ')|title)}}</h1>
 <p>No proposed changes have been applied.</p><ul>{% for effect in dynasty_ticket.payload.plan.effects %}<li>{{effect}}</li>{% endfor %}</ul>
 {% if dynasty_ticket.payload.plan.get('summary') %}{% set resume=dynasty_ticket.payload.plan.summary %}<h2>Where this family left off</h2><p>{{resume.notes or 'No handover notes recorded.'}}</p>{% for r in resume.history %}<p>GD {{r.global_day}} · {{r.label}}</p>{% endfor %}{% endif %}
 <form action="/infinite/{{save.id}}/tools/confirm/{{dynasty_ticket.id}}" method="post">
