@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Storyline · Decades Tracker{% endblock %}
 {% block body %}
+{% if branch_banner and branch_banner.spoiler_free %}<p class="notice">Spoiler-free history · through GD {{save.global_day}}.</p>{% endif %}
+{% if story.dynasty_world %}<details class="panel"><summary>Shared dynasty world decisions · {{story.dynasty_world|length}}</summary>{% for decision in story.dynasty_world %}<p><strong>{{decision.label}} · GD {{decision.data.day}}</strong><br>{{decision.data.outcome}}</p>{% endfor %}<a href="/infinite/{{save.id}}/history">Open shared history</a></details>{% endif %}
 <header class="storyline-hero">
   <div class="storyline-hero-copy">
     <p class="eyebrow">THE LIVING CHRONICLE · REVISION {{story.revision}}</p>

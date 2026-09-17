@@ -13,6 +13,7 @@
 <div class="sim-profile-shell {% if hogwarts_profile_theme %}hogwarts-profile {{hogwarts_profile_theme.css_class}}{% endif %}"{% if hogwarts_profile_theme %} data-hogwarts-house="{{hogwarts_profile_theme.label|lower}}"{% endif %}>
 <a class="profile-back" href="/p/sims">← All Sims</a>
 <a class="profile-back" href="/records/{{sim.id}}/why">Why / recorded game evidence</a>
+{% if infinite_meta %}<a class="profile-back" href="/infinite/{{save.id}}/history?section=journey&sim_id={{sim.id}}">Branch journey</a>{% endif %}
 
 <header class="sim-dossier-hero {{'is-deceased' if deceased else 'is-living'}}">
   <div class="dossier-portrait {{'deceased-portrait' if deceased else ''}}">

@@ -118,7 +118,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.42")
+app = FastAPI(title="Decades Tracker", version="4.6.43")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -1720,9 +1720,12 @@ def feature_page(request: Request, page: str):
         if page == "households" and save:
             ctx["household_census"] = insights.household_census(view_records, save)
         if page == "timeline" and save:
+            from .dynasty_history import history_records, spoiler_free
+            view_records=history_records(save,view_records)
             requested_kinds = {value for value in request.query_params.getlist("kind") if value}
             start_year = int_or_none(request.query_params.get("start_year")); end_year = int_or_none(request.query_params.get("end_year"))
             timeline_entries=insights.timeline(view_records, save, kinds=requested_kinds or None, start_year=start_year, end_year=end_year, query=request.query_params.get("q", ""))
+            if spoiler_free(save):timeline_entries=[entry for entry in timeline_entries if entry['day']<=save.global_day]
             # A stable local anchor lets the visual map jump directly into the
             # detailed ledger without a second lookup or client-side state.
             for index, entry in enumerate(timeline_entries):
@@ -2223,6 +2226,8 @@ def feature_page(request: Request, page: str):
             )
             records=[]
         if page == "drama" and save:
+            from .dynasty_history import drama_prompts
+            ctx['dynasty_drama_prompts']=drama_prompts(session,save)
             drama_rows = view_records or []
             drama_sims = sorted_sims((item for item in drama_rows if item.kind == "sim" and _living_sim(item, save)), save)
             drama_households = sorted((item for item in drama_rows if item.kind == "household"), key=lambda item: item.label.casefold())

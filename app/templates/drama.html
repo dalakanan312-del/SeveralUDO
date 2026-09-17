@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Drama Deck · Decades Tracker{% endblock %}
 {% block body %}
+{% if dynasty_drama_prompts %}<details class="panel" open><summary>From your dynasty’s relationships &amp; visits</summary>{% for prompt in dynasty_drama_prompts %}<h3>{{prompt.label}}</h3><p>{{prompt.prompt}}</p><p>{{prompt.notes}}</p>{% endfor %}<p class="muted">Optional scene framing for the card you draw. No rule odds or game relationships are changed.</p><a href="/infinite/{{save.id}}/history?section=relations">Manage dynasty drama prompts</a></details>{% endif %}
 <header class="drama-hero">
   <div>
     <p class="eyebrow">OPTIONAL PLAY AID · PLAYER-CHOSEN CONSEQUENCES</p>

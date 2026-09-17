@@ -237,6 +237,8 @@ def _annual_paragraph(save: ChronicleSave, year: int, entries: list[Record], sim
 def build(session: Session, save: ChronicleSave) -> dict:
     story_kinds={"sim","household","relationship","pregnancy","illness","roll","event","death","migration","game_history","story_entry","session_journal","university_enrollment","university_term","university_performance","drama_scene"}
     records = list(session.scalars(select(Record).where(Record.save_id == save.id, Record.kind.in_(story_kinds), Record.deleted.is_(False))))
+    from .dynasty_history import history_records, world_context
+    records=history_records(save,records)
     ignored_event_ids={item.id for item in records if item.kind=="event" and event_is_ignored(item)}
     records=[item for item in records if item.id not in ignored_event_ids and str((item.data or {}).get("event_id") or "") not in ignored_event_ids]
     by_kind = defaultdict(list)
@@ -322,7 +324,7 @@ def build(session: Session, save: ChronicleSave) -> dict:
     for roll in failed_rolls[-4:]:
         arcs.append({"kind":"consequence","title":roll.label,"status":"consequence due","stakes":"whether the family can absorb what the failed roll set in motion","record_id":roll.id})
     return {
-        "revision": save.revision, "year": year_for(save, save.global_day),
+        "revision": save.revision, "year": year_for(save, save.global_day), "dynasty_world":world_context(session,save),
         "living": len(living), "deceased": len(deceased), "households": len(households),
         "active_events": len(active_events), "pregnancies": len(pregnancies), "illnesses": len(illnesses),
         "dominant_lines": surname_counts.most_common(5), "hooks": hooks[:10],
@@ -341,6 +343,8 @@ def _story_facts(session: Session, save: ChronicleSave) -> tuple[list[Record], l
     ).order_by(Record.global_day.desc(),Record.updated_at.desc()).limit(80)))
     current=[item for item in rows if (item.global_day is None or int(item.global_day)<=save.global_day)
              and not (item.kind=="roll" and bool((item.data or {}).get("occult_roll")) and not bool((item.data or {}).get("completed")))]
+    from .dynasty_history import history_records
+    current=history_records(save,current)
     facts=[]
     for item in current[:30]:
         data=item.data or {}

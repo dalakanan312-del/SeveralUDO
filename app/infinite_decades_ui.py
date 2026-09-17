@@ -27,6 +27,8 @@ def render(request, session, ctx, templates):
         point = dynasty.snapshot(session, save) if selected == active and not dynasty.frozen(save) else dynasty.unpack_snapshot(selected.data["snapshot"])
         history = [r for r in point["records"] if r["kind"] in {"roll", "pregnancy", "illness", "relationship", "death", "story_entry", "game_history", "migration", "note"}]
         history.sort(key=lambda r: (r.get("global_day") or 0, r["label"]), reverse=True)
+        from .dynasty_history import visible_history
+        history=visible_history(save,history)
     focus = next((r for r in sims if r.id == request.query_params.get("sim_id")), None)
     birth_data = birth_groups(session, save).corrected_data(focus) if focus else {}
     focus_day = int((focus.data or {}).get("infinite_frozen_global_day") or save.global_day) if focus else None

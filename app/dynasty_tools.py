@@ -60,11 +60,11 @@ def tool_record(session, save, feature, **data):
     return row
 
 
-def queue(session, save, order='oldest'):
+def queue(session, save, order='oldest', include_parked=False):
     result = []
     for row in d.branches(session, save):
         meta = d.metadata(row)
-        if meta.get('status') == 'archive': continue
+        if meta.get('status') == 'archive' or (meta.get('parked') and not include_parked): continue
         day = save.global_day if row.id == d.state(save).get('active_branch_id') else meta.get('current_global_day', 1)
         names = meta.get('seed_names') or [row.label]
         result.append({'branch': row, 'meta': meta, 'day': day, 'year': d.year(save, day),
@@ -255,7 +255,7 @@ def progress_stamp(session, save):
 
 def switch_plan(session,save,args):
     target=branch(session,save,args.get('branch_id')); current=d.active_branch(session,save)
-    if target.id==d.state(save).get('active_branch_id') or d.metadata(target).get('status') not in {'waiting','paused'}:
+    if target.id==d.state(save).get('active_branch_id') or d.metadata(target).get('status') not in {'waiting','paused'} or d.metadata(target).get('parked'):
         raise ValueError('Choose a waiting or paused branch.')
     if not d.enabled(save): raise ValueError('Turn Infinite Decades on before switching branches.')
     summary=resume_summary(session,save,target)
@@ -352,6 +352,9 @@ def prepare(session,save,user_id,operation,args):
 
 
 def make_plan(session,save,operation,args):
+    if operation.startswith('history_'):
+        from .dynasty_history import plan
+        return plan(session,save,operation.removeprefix('history_'),args)
     if operation=='switch': return switch_plan(session,save,args)
     if operation=='correction': return correction_plan(session,save,args)
     if operation=='transfer': return transfer_plan(session,save,args)
@@ -400,6 +403,11 @@ def confirm(session,save,ticket):
             row=session.get(Record,plan['audit_id']); d._touch(session,row,{**row.data,'undone':True})
         elif body['kind']=='transfer':
             create_snapshot(session,save,'before-dynasty-transfer',force=True); apply_transfer(session,save,plan)
+        elif body['kind'].startswith('history_'):
+            from .dynasty_history import apply
+            if body['kind'] in {'history_send','history_receive'}:
+                create_snapshot(session,save,'before-dynasty-delivery',force=True)
+            apply(session,save,body['kind'].removeprefix('history_'),plan)
         save.revision+=1; ticket.consumed=True
     return plan
 
@@ -527,6 +535,8 @@ def historical_metrics(save,payload,requested_year):
 def snapshot_coverage(session,save,year,album):
     if not d.state(save): return []
     start=(int(year)-save.start_year)*save.days_per_year+1; end=start+save.days_per_year-1
+    from .dynasty_history import spoiler_free
+    if spoiler_free(save):end=min(end,save.global_day)
     included=set((album.data or {}).get('member_ids',[])) if album else set()
     contributions=(album.data or {}).get('contributions',{}) if album else {}
     photoids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id)))
@@ -537,7 +547,7 @@ def snapshot_coverage(session,save,year,album):
         eligible=[r for r in members(payload) if integer(r['data'].get('birth_global_day'),end+1)<=end and integer(r['data'].get('death_global_day'),end+1)>start]
         missing=[r for r in eligible if r['id'] not in included]
         reached=payload['global_day']>=start
-        result.append({'name':row.label,'reached':reached,'contributed':row.id in contributions,
+        result.append({'branch_id':row.id,'name':row.label,'reached':reached,'contributed':row.id in contributions,
             'missing':[r['label'] for r in missing] if reached else [],
             'no_photo':[r['label'] for r in missing if r['id'] not in photoids] if reached else [],
             'year':d.year(save,payload['global_day'])})

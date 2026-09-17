@@ -460,13 +460,13 @@ def finish(session, save):
 
 
 def next_branch(family):
-    waiting = [r for r in family if metadata(r).get("status") == "waiting"]
+    waiting = [r for r in family if metadata(r).get("status") == "waiting" and not metadata(r).get('parked')]
     return max(waiting, key=lambda r: (metadata(r)["split_year"], metadata(r)["split_global_day"],
                metadata(r)["created_at"], r.id), default=None)
 
 
 def playable_branches(family):
-    return [row for row in family if metadata(row).get("status") in {"waiting","paused"}]
+    return [row for row in family if metadata(row).get("status") in {"waiting","paused"} and not metadata(row).get('parked')]
 
 
 def activate_branch(session, save, branch_id, current_game_save_name=""):
@@ -476,7 +476,7 @@ def activate_branch(session, save, branch_id, current_game_save_name=""):
     target=session.get(Record,branch_id)
     if (not target or target.save_id!=save.id or target.kind!=KIND
             or target.id==state(save).get("active_branch_id")
-            or metadata(target).get("status") not in {"waiting","paused"}):
+            or metadata(target).get("status") not in {"waiting","paused"} or metadata(target).get('parked')):
         raise ValueError("Choose a waiting or paused branch from this dynasty. Completed branches remain read-only.")
     payload=unpack_snapshot(target.data["snapshot"])
     current=active_branch(session,save)

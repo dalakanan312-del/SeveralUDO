@@ -64,7 +64,7 @@ def register(app,db,owned_save):
                 request.session['infinite_notice']='Reviewed dynasty changes applied. Family history and completed roll results are preserved.'
                 request.session.pop('today_undo',None);request.session.pop('last_roll',None)
         except ValueError as exc: raise HTTPException(409,str(exc)) from exc
-        return RedirectResponse('/p/infinite-decades',303)
+        return RedirectResponse(f'/infinite/{save_id}/history' if ticket.payload['kind'].startswith('history_') else '/p/infinite-decades',303)
 
     @router.post('/infinite/{save_id}/tools/preferences')
     async def preferences(request:Request,save_id:str):
@@ -91,3 +91,5 @@ def register(app,db,owned_save):
         return RedirectResponse('/p/infinite-decades#held-reports',303)
 
     app.include_router(router)
+    from .dynasty_history_ui import register as register_history
+    register_history(app,db,owned_save)

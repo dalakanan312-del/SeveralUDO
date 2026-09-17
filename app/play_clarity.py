@@ -75,6 +75,11 @@ def roll_presentation(save, row, person=None):
             calculation=f"{d.get('roll_type') or 'Aging'} · GD {row.global_day} · Birth day or source age is missing; calculation cannot be verified."
     evidence = d.get('why_evidence') or {}
     event_context = d.get('rule_context') or d.get('historical_context') or ''
+    if session and d.get('event_id'):
+        from .dynasty_history import world_context
+        shared=world_context(session,save,d['event_id'])
+        if shared:
+            event_context+='\nShared world decision (personal checks still apply): '+'; '.join(f"GD {r.data['day']}: {r.data['outcome']}" for r in shared)
     # Context only belongs on the roll if an actual event supplied it.
     return {'title': title, 'calculation': calculation, 'warning': warning,
             'context': event_context if d.get('event_id') or d.get('event_rule_id') else '',
@@ -178,8 +183,17 @@ def branch_banner(session, save):
     branch = session.get(Record, meta.get('active_branch_id')) if meta.get('active_branch_id') else None
     if branch and branch.save_id != save.id: branch = None
     data = infinite_decades.metadata(branch) if branch else {}
-    held_count = 0; goal = None
+    held_count = 0; goal = None; deliveries = 0; park_reminders = []
     if meta:
+        deliveries = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,
+            Record.kind=='dynasty_tool',Record.deleted.is_(False),Record.data['feature'].as_string()=='parcel',
+            Record.data['status'].as_string()=='pending',Record.data['branch_id'].as_string()==meta.get('active_branch_id'),
+            Record.data['day'].as_integer()<=save.global_day))
+        # Read metadata only; branch checkpoints can contain large portraits.
+        parked_rows=session.execute(select(Record.label,Record.data['meta']).where(Record.save_id==save.id,
+            Record.kind=='dynasty_branch',Record.data['meta']['parked'].as_boolean().is_(True)))
+        for label,pm in parked_rows:
+            if pm.get('park_reminder_year') is not None and pm['park_reminder_year']<=infinite_decades.year(save):park_reminders.append(label)
         held_count = session.scalar(select(func.count()).select_from(Record).where(Record.save_id==save.id,
             Record.kind=='dynasty_tool',Record.data['feature'].as_string()=='held_report',Record.data['status'].as_string()=='pending'))
         if data.get('play_goal') and not infinite_decades.frozen(save):
@@ -188,7 +202,7 @@ def branch_banner(session, save):
             goal=goal_status(save,branch,{'global_day':save.global_day,'member_sim_ids':[r.id for r in rows if r.kind=='sim'],
                 'records':[{'id':r.id,'kind':r.kind,'label':r.label,'global_day':r.global_day,'data':r.data,'deleted':False} for r in rows]})
     return {'save': save.name, 'branch': meta.get('branch_name') or 'Main family line',
-        'held_reports':held_count,'goal':goal,
+        'held_reports':held_count,'goal':goal,'deliveries':deliveries,'park_reminders':park_reminders,'spoiler_free':meta.get('spoiler_free',False),
         'checkpoint': ('Tracker calendar · GD ' + str(save.global_day)) if infinite_decades.tracker_calendar(save) else (data.get('game_save_name') or 'Game checkpoint not recorded'),
         'ready': not meta or meta.get('game_ready') is True, 'enabled': bool(meta)}
 
