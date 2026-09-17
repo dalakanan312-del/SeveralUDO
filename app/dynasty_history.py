@@ -17,6 +17,7 @@ RELATIONS = {'Allied', 'Rival', 'Estranged', 'Feuding', 'Neutral'}
 def logs(session, save, feature=None):
     query = select(Record).where(Record.save_id == save.id, Record.kind == t.KIND, Record.deleted.is_(False))
     if feature: query = query.where(Record.data['feature'].as_string() == feature)
+    else: query = query.where(Record.data['feature'].as_string().in_(FEATURES | {'transfer'}))
     return list(session.scalars(query))
 
 

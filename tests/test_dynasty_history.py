@@ -266,5 +266,9 @@ class DynastyHistoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'founded'):self.preview('visit',branch_id=self.child.id,sim_id=self.f.people[2].id,day=103,label='Visit')
         with self.assertRaisesRegex(ValueError,'founded'):self.preview('heirloom',branch_id=self.child.id,sim_id=self.f.people[2].id,day=103,label='Ring')
 
+    def test_history_ledger_does_not_load_unrelated_held_game_reports(self):
+        with d.branch_operation(self.s,self.save):t.tool_record(self.s,self.save,'held_report',payload='unrelated report',status='pending')
+        self.s.commit();self.assertEqual(h.logs(self.s,self.save),[])
+
 
 if __name__=='__main__':unittest.main()
