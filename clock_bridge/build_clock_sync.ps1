@@ -14,7 +14,7 @@ $compilerCandidates = @(
 )
 $compiler = $compilerCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
 $output = Join-Path $bridgeRoot "SeveralUDOClockSync.ts4script"
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) "severaludo_clock_sync_2212"
+$staging = Join-Path ([System.IO.Path]::GetTempPath()) "severaludo_clock_sync_2213"
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $resolvedStaging = [System.IO.Path]::GetFullPath($staging)
 
@@ -79,6 +79,10 @@ $nameSource = Join-Path $bridgeRoot "mod_source\severaludo_clock_sync\names.py"
 $nameCompiled = Join-Path $module.FullName "names.pyc"
 & $compiler -c "import py_compile; py_compile.compile(r'$nameSource', cfile=r'$nameCompiled', doraise=True)"
 if ($LASTEXITCODE -ne 0) { throw "Clock Sync name resolver compilation failed." }
+$birthSource = Join-Path $bridgeRoot "mod_source\severaludo_clock_sync\birth_certificates.py"
+$birthCompiled = Join-Path $module.FullName "birth_certificates.pyc"
+& $compiler -c "import py_compile; py_compile.compile(r'$birthSource', cfile=r'$birthCompiled', doraise=True)"
+if ($LASTEXITCODE -ne 0) { throw "Clock Sync birth certificate reader compilation failed." }
 # A compact public dictionary ships INSIDE the script archive, so the single
 # .ts4script download works without a separate dependency or personal files.
 Copy-Item -LiteralPath (Join-Path $repoRoot "app\game_localization_fallbacks.json") -Destination (Join-Path $module.FullName "game_names.json")

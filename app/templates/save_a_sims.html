@@ -6,7 +6,7 @@
 <section class="metric-strip four save-a-sim-metrics" aria-label="Save-a-Sim balance">
   <article class="save-a-sim-balance"><span>Available now</span><strong>{{save_a_sim.balance}}</strong><small>Save-a-Sim credit{{'' if save_a_sim.balance==1 else 's'}}</small></article>
   <article><span>Earned</span><strong>{{save_a_sim.earned + save_a_sim.opening_allowance}}</strong><small>{{save_a_sim.opening_allowance}} opening · {{save_a_sim.earned}} tracked</small></article>
-  <article><span>Used</span><strong>{{save_a_sim.spent}}</strong><small>Withdrawn scheduled deaths</small></article>
+  <article><span>Used</span><strong>{{save_a_sim.spent}}</strong><small>Withdrawn scheduled deaths{% if save_a_sim.refunded %} · {{save_a_sim.refunded}} undone{% endif %}</small></article>
   <article><span>Next death milestone</span><strong>{{save_a_sim.next_milestone}}</strong><small>{{save_a_sim.deaths_until_next}} confirmed death{{'' if save_a_sim.deaths_until_next==1 else 's'}} away</small></article>
 </section>
 
@@ -62,5 +62,28 @@
   </div>
 </section>
 
-<section class="panel save-a-sim-ledger" id="ledger"><div class="section-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>Credit ledger</h2><p>All credit changes sync with the save and remain visible after a condition or death record is archived.</p></div></div><div class="save-a-sim-ledger-list">{% for entry in save_a_sim.entries %}{% set data=entry.data or {} %}<article class="list-row"><span><strong>{{entry.label}}</strong><small>GD {{entry.global_day}} · {{data.get('award_reason') or data.get('spent_reason') or data.get('entry_type','Recorded')}}</small>{% if data.get('sim_name') %}<small>Sim: {{data.get('sim_name')}}</small>{% endif %}</span><b class="save-a-sim-amount {{'earned' if data.get('amount',0)>0 else 'spent'}}">{{'+' if data.get('amount',0)>0 else ''}}{{data.get('amount',0)}}</b></article>{% else %}<div class="empty"><h3>Your ledger is ready.</h3><p>Opening credits, earned milestones, custom conditions, and rescues will appear here.</p></div>{% endfor %}</div></section>
+<section class="panel save-a-sim-ledger" id="ledger">
+  <div class="section-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>Credit ledger</h2>
+    <p>Used a credit by mistake? Undo returns it and restores the original unconfirmed death schedule, including rolls retired by that death. Later changes are protected; no in-game actions are performed.</p>
+    <p class="context-line">Both the original use and its refund stay in the ledger. Older uses can be undone when their original history is available.</p>
+  </div></div>
+  <div class="save-a-sim-ledger-list">
+    {% for entry in save_a_sim.entries %}{% set data=entry.data or {} %}
+    <article class="list-row" id="credit-{{entry.id}}">
+      <div><strong>{{entry.label}}</strong><small>GD {{entry.global_day}} · {{data.get('award_reason') or data.get('spent_reason') or data.get('entry_type','Recorded')}}</small>
+        {% if data.get('sim_name') %}<small>Sim: {{data.get('sim_name')}}</small>{% endif %}
+        {% if data.get('undo_credit_id') %}<small>Undone on GD {{data.get('undone_global_day')}} · 1 credit returned</small>
+        {% elif data.get('amount') == -1 and data.get('sim_id') %}
+        <form action="/api/save-a-sims/{{entry.id}}/undo" method="post" onsubmit="return confirm('Undo this Save-a-Sim? One credit will be returned and the original scheduled death restored. This does not confirm a death or change your Sims game.')">
+          <input type="hidden" name="save_id" value="{{save.id}}">
+          <button>Undo Save-a-Sim</button>
+          <small>Restores death scheduled for GD {{data.get('withdrawn_death_global_day')}}.</small>
+        </form>
+        {% endif %}
+      </div>
+      <b class="save-a-sim-amount {{'earned' if data.get('amount',0)>0 else 'spent'}}">{{'+' if data.get('amount',0)>0 else ''}}{{data.get('amount',0)}}</b>
+    </article>
+    {% else %}<div class="empty"><h3>Your ledger is ready.</h3><p>Opening credits, earned milestones, custom conditions, and rescues will appear here.</p></div>{% endfor %}
+  </div>
+</section>
 {% endblock %}

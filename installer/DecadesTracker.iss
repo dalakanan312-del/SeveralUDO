@@ -1,5 +1,5 @@
 #define MyAppName "Decades Tracker"
-#define MyAppVersion "4.6.43"
+#define MyAppVersion "4.6.44"
 #define MyAppPublisher "SeveralUDO"
 #define MyAppExeName "Decades Tracker.exe"
 
@@ -7,14 +7,14 @@
 AppId={{9D9EFDB8-CE10-46C0-B42E-42237C7896E4}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} 4.6.43
+AppVerName={#MyAppName} 4.6.44
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\DecadesTracker
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\release
-OutputBaseFilename=Decades-Tracker-4.6.43-Setup
+OutputBaseFilename=Decades-Tracker-4.6.44-Setup
 SetupIconFile=..\assets\decades-app-icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
@@ -23,11 +23,11 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 CloseApplications=yes
 RestartApplications=no
-VersionInfoVersion=4.6.43.0
+VersionInfoVersion=4.6.44.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} installer
 VersionInfoProductName={#MyAppName}
-VersionInfoProductVersion=4.6.43.0
+VersionInfoProductVersion=4.6.44.0
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

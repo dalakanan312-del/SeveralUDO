@@ -1,5 +1,22 @@
 """Read-only wayfinding: existing pages, section anchors and related tasks."""
 
+# One home for each related workflow; URLs and specialist editors stay intact.
+COLLECTIONS = (
+    {'id':'planning','label':'Household planning','home':'play-next',
+     'pages':('play-next','planner','family-projects','seasonal-routines','story-threads'),
+     'description':'Choose the next household, then manage its rotation, family plans, projects and unfinished stories.'},
+    {'id':'legacy','label':'Inheritance & family legacy','home':'historical-life',
+     'pages':('historical-life','titles-estates','life-records','challenge'),
+     'description':'Household finances and heirlooms, property and titles, family obligations, succession and campaigns.'},
+    {'id':'writing','label':'History & writing','home':'storyline',
+     'pages':('storyline','timeline','writers-room','family-chronicle','notes'),
+     'description':'Storyline records what happened. Timeline orders it by date. Writers’ Room creates optional narration; the chronicle shares it, and Notes keeps your own text.'},
+)
+
+
+def collection_for(page):
+    return next((group for group in COLLECTIONS if page in group['pages']),None)
+
 RELATED_TASKS = {
     'decade-snapshots': (('Individual portraits','/p/portrait-studio'),('Dynasty branches','/p/infinite-decades'),('Family history','/p/storyline')),
     'family-fortunes': (('Planned marriages','/p/relationships'),('Dowries & promises','/p/life-records#dowries'),('Estate plans','/p/historical-life#estate'),('Exact endings','/p/storyline')),

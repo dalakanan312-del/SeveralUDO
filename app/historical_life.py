@@ -253,9 +253,24 @@ def cemetery_summary(grouped: dict[str, list[Record]], save: ChronicleSave) -> d
     return {"people": rows}
 
 
-def heirloom_summary(grouped: dict[str, list[Record]]) -> dict:
+def heirloom_summary(grouped: dict[str, list[Record]], save=None) -> dict:
+    from types import SimpleNamespace
+    # The dated dynasty ledger is authoritative when present, including older
+    # branches. Project copies for presentation; opening a page never rewrites it.
+    ownership = {}
+    linked_histories = {}
+    historic_holders = {}
+    for row in grouped.get('dynasty_tool', []):
+        if row.data.get('feature') == 'heirloom_history' and row.data.get('heirloom_id'):
+            linked_histories[row.data['heirloom_id']] = row.id
+            history = [entry for entry in row.data.get('history', []) if save is None or entry['day'] <= save.global_day]
+            ownership[row.data['heirloom_id']] = max(history,key=lambda entry:entry['day'])['sim_id'] if history else None
+            for entry in history:
+                historic_holders[entry['sim_id']] = SimpleNamespace(id=entry['sim_id'],label=entry.get('name') or 'Recorded owner')
     sims_by_id = {item.id: item for item in grouped.get("sim", [])}
-    tracked = grouped.get("heirloom", [])
+    sims_by_id = {**historic_holders, **sims_by_id}
+    tracked = [SimpleNamespace(id=item.id,label=item.label,data={**item.data,'current_holder_sim_id':ownership[item.id],'dynasty_ownership_history_id':linked_histories[item.id]})
+               if item.id in ownership else item for item in grouped.get('heirloom', [])]
     tracked_by_key = {
         _text((item.data or {}).get("definition_id") or (item.data or {}).get("item_name") or item.label).casefold(): item
         for item in tracked
@@ -265,7 +280,7 @@ def heirloom_summary(grouped: dict[str, list[Record]]) -> dict:
     detected_keys = set()
     transfers = []
     heirloom_words = ("portrait", "painting", "photo", "urn", "jewel", "ring", "necklace", "medal", "trophy", "relic", "antique", "heirloom", "keepsake")
-    for sim in sims_by_id.values():
+    for sim in grouped.get('sim', []):
         for item in (sim.data or {}).get("game_inventory_items") or []:
             if not isinstance(item, dict):
                 continue
@@ -363,7 +378,7 @@ def build(records: Iterable[Record], save: ChronicleSave) -> dict:
         "military": military_summary(grouped, save),
         "migration": migration_summary(grouped, save),
         "cemetery": cemetery_summary(grouped, save),
-        "heirlooms": heirloom_summary(grouped),
+        "heirlooms": heirloom_summary(grouped,save),
         "marriage": marriage_market(grouped, save),
         "demographics": demographic_summary(grouped, save),
         "writing_prompt": writing_prompt(grouped, save),

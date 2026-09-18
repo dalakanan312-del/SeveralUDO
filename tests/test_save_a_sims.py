@@ -92,6 +92,28 @@ class SaveASimTests(unittest.TestCase):
                 self.assertEqual(page.status_code, 200)
                 self.assertIn("Save-a-Sims", page.text)
                 self.assertIn("RULE-SPECIFIC CONDITIONS", page.text)
+                with SessionLocal() as session:
+                    save = session.get(ChronicleSave, save_id)
+                    save.settings = {**save.settings, "free_save_a_sims": 1}
+                    sim = Record(save_id=save_id, kind="sim", label="Undo test Sim",
+                                 data={"birth_global_day": 1, "death_global_day": 50})
+                    session.add(sim)
+                    session.commit()
+                    sim_id = sim.id
+                spent = client.post("/api/save-a-sims/spend", data={"sim_id": sim_id}, follow_redirects=False)
+                self.assertEqual(spent.status_code, 303)
+                page = client.get("/p/save-a-sims")
+                self.assertIn("Undo Save-a-Sim</button>", page.text)
+                with SessionLocal() as session:
+                    entry = session.scalar(select(Record).where(Record.save_id == save_id,
+                        Record.kind == save_a_sims.CREDIT_KIND, Record.data["amount"].as_integer() == -1))
+                    entry_id = entry.id
+                undo = client.post(f"/api/save-a-sims/{entry_id}/undo", data={"save_id": save_id}, follow_redirects=False)
+                self.assertEqual(undo.status_code, 303)
+                page = client.get("/p/save-a-sims")
+                self.assertIn("One credit was returned", page.text)
+                self.assertIn("Undone on GD", page.text)
+                self.assertNotIn("Undo Save-a-Sim</button>", page.text)
             finally:
                 client.post(f"/saves/{save_id}/delete", data={"confirm": name}, follow_redirects=False)
 

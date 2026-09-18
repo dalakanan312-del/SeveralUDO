@@ -27,7 +27,7 @@ from .db import Base, SessionLocal, engine, ensure_local_query_indexes
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
 from .security import hash_secret, token
 from .session_policy import REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware, set_session_mode
-from . import birth_legitimacy
+from . import birth_legitimacy, birth_measurements, labor, hp_bloodlines
 from .workflow import related_tasks, page_sections
 
 
@@ -118,8 +118,10 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.43")
+app = FastAPI(title="Decades Tracker", version="4.6.44")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
+from .request_safety import RequestSafetyMiddleware
+app.add_middleware(RequestSafetyMiddleware, settings=settings)
 app.add_middleware(StaySignedInMiddleware, persistent_max_age=REMEMBER_DEVICE_SECONDS)
 app.mount("/static", CachedStaticFiles(directory=ROOT / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=ROOT / "app" / "templates")
@@ -513,10 +515,8 @@ def structured_form_data(form) -> dict:
 
 
 def sim_is_deceased(record: Record, save: ChronicleSave) -> bool:
-    data = record.data or {}
-    death = int_or_none(data.get("death_global_day"))
-    observed_day = int_or_none(data.get("infinite_frozen_global_day")) if data.get("infinite_frozen") else None
-    return bool(data.get("game_was_dead") or data.get("death_confirmed") or (death is not None and death <= (observed_day if observed_day is not None else save.global_day)))
+    from .record_state import deceased
+    return deceased(record, save.global_day)
 
 
 def sim_status(record: Record, save: ChronicleSave) -> str:
@@ -587,8 +587,8 @@ def navigation_counts(session, save: ChronicleSave) -> dict[str, int]:
 
 
 def _living_sim(sim: Record, save: ChronicleSave) -> bool:
-    data = sim.data or {}; birth = int_or_none(data.get("birth_global_day", sim.global_day))
-    return not sim_is_deceased(sim, save) and (birth is None or birth <= save.global_day)
+    from .record_state import living
+    return living(sim, save.global_day)
 
 
 def _ancestor_ids(sim_id: str, by_id: dict[str, Record], limit: int = 3) -> dict[str, int]:
@@ -686,6 +686,12 @@ def planner_analysis(sims: list[Record], pregnancies: list[Record], plans: list[
 
 
 templates.env.globals.update(
+    birth_measurement_display=birth_measurements.display,
+    labor_summary=labor.summary,
+    labor_clock_label=labor.clock_label,
+    labor_token=labor.fingerprint,
+    birth_measurement_token=birth_measurements.fingerprint,
+    birth_measurements_from_report=birth_measurements.from_report,
     sim_status=sim_status,
     detected_labels=detected_labels,
     trait_labels=game_metadata.readable_trait_labels,
@@ -714,6 +720,8 @@ def db():
 
 @app.on_event("startup")
 def startup() -> None:
+    if not settings.local_mode and settings.session_secret in {'', 'development-only-change-me'}:
+        raise RuntimeError('Configure SESSION_SECRET or OWNER_ACCESS_KEY before starting the hosted tracker.')
     Base.metadata.create_all(engine)
     if settings.local_mode:
         ensure_local_query_indexes(engine)
@@ -754,6 +762,10 @@ def signed_in(request: Request, session):
 
 
 def context(request: Request, session, **extra):
+    from .background_status import snapshot as background_snapshot
+    from .workflow import collection_for
+    extra['background_status'] = background_snapshot()
+    extra['workflow_collection'] = collection_for(extra.get('page'))
     user = signed_in(request, session)
     saves = []
     active = None
@@ -1387,8 +1399,8 @@ def remap_payload(value, mapping):
 
 
 def public_save_settings(values: dict) -> dict:
-    blocked=("token","secret","password","database_url","api_key","connection")
-    return {key:value for key,value in dict(values or {}).items() if not any(part in key.casefold() for part in blocked)}
+    from .public_settings import public_settings
+    return public_settings(values)
 
 
 @app.post("/saves/{save_id}/rename")
@@ -1436,7 +1448,9 @@ def export_save(request: Request, save_id: str):
 
 @app.post("/saves/import")
 async def import_save(request: Request, package: UploadFile):
-    raw=await package.read()
+    raw=await package.read(backup_service.MAX_PACKAGE_BYTES+1)
+    if len(raw)>backup_service.MAX_PACKAGE_BYTES:
+        raise HTTPException(400,'Save package is too large.')
     try:
         with db() as session:
             user=signed_in(request,session)
@@ -1667,7 +1681,6 @@ def feature_page(request: Request, page: str):
         view_records = None
         view_kinds = {
             "family-tree":{"sim","relationship","household"},
-            "statistics":{"sim","household","relationship","pregnancy","illness","event","death","roll"},
             "pregnancies":{"sim","pregnancy","roll"}, "illnesses":{"illness","sim"},
             "university":{"sim","university_enrollment","university_term","university_performance","game_history"},
             "households":{"household","sim","game_history","pregnancy","illness"},
@@ -1703,7 +1716,8 @@ def feature_page(request: Request, page: str):
                        set(session.scalars(select(Portrait.record_id).where(Portrait.save_id == save.id)))))
             records = []
         if page == "statistics" and save:
-            ctx["statistics"] = insights.statistics(view_records, save); records = []
+            from .statistics_dashboard import context as statistics_context
+            ctx.update(statistics_context(session, save, request.query_params)); records = []
         if page == "pregnancies" and save:
             ctx["pregnancy_dashboard"] = insights.pregnancy_dashboard(view_records, save)
         if page == "illnesses" and save:
@@ -1815,6 +1829,8 @@ def feature_page(request: Request, page: str):
             rule_records=view_records or []
             ctx.update(save_settings=dict(save.settings or {}),core_ruleset=core_rulesets.current_catalog_entry(save))
             if page == "roll-tables":
+                from .maternal_rules import TABLE as maternal_followup_table
+                ctx['maternal_followup_table'] = maternal_followup_table
                 ctx.update(roll_rules=sorted((item for item in rule_records if item.kind=="roll_rule" and visible_core(item)),key=lambda item:(int_or_none((item.data or {}).get("start_year")) or -9999,int_or_none((item.data or {}).get("age_days")) if int_or_none((item.data or {}).get("age_days")) is not None else 10**9,item.label)),
                            planner_rules=sorted((item for item in rule_records if item.kind=="planner_rule" and visible_core(item)),key=lambda item:(item.label,int_or_none((item.data or {}).get("start_year")) or -9999)),
                            multiple_birth_rules=sorted((item for item in rule_records if item.kind=="multiple_birth_rule"),key=lambda item:int_or_none((item.data or {}).get("start_year")) or -9999))
@@ -1847,6 +1863,8 @@ def feature_page(request: Request, page: str):
             plan_analysis,dynasty_analysis=planner_analysis(sims,pregnancies,plans,save)
             ctx.update(planner_recommendations=recommendations,rotation_records=sorted(rotations,key=lambda item:item.global_day or 0,reverse=True),family_plans=plans,family_plan_analysis=plan_analysis,dynasty_analysis=dynasty_analysis,all_sims=sorted_sims(sims,save),all_households=sorted(households,key=lambda item:item.label.casefold()));records=[]
         if page == "historical-life" and save:
+            from .dynasty_history import logs as dynasty_logs
+            view_records = list(view_records or []) + dynasty_logs(session,save,'heirloom_history')
             ctx.update(historical_life=historical_life.build(view_records or [], save),
                        historical_life_notice=request.session.pop("historical_life_notice", None))
             records=[]
@@ -1907,6 +1925,8 @@ def feature_page(request: Request, page: str):
             current_year=insights.current_year(save)
             ctx.update(avatar_pack_enabled=avatar_rules.PACK_ID in selected,avatar_modules=modules,avatar_timeline=[{"start":start,"end":end,"label":label,"text":text,"range":avatar_rules.range_label(start,end)} for start,end,label,text in avatar_rules.TIMELINE],avatar_current_year=current_year,avatar_current_label=avatar_rules.date_label(current_year),avatar_canon_mode=bool(settings_data.get("avatar_canon_timeline_mode")),all_sims=sorted_sims((item for item in view_records if item.kind=="sim"),save),avatar_notice=request.session.pop("avatar_notice",None));records=[]
         if page == "harry-potter" and save:
+            hp_people = hp_bloodlines.people(session, save)
+            ctx['hp_ancestry'] = {sid: hp_bloodlines.classify(person, hp_people) for sid, person in hp_people.items()}
             settings_data=dict(save.settings or {});selected=set(settings_data.get("selected_rule_packs") or [])
             rules=sorted((item for item in view_records if item.kind=="addon_rule" and (item.data or {}).get("rule_pack_id")==harry_potter_rules.PACK_ID),key=lambda item:str((item.data or {}).get("code") or item.label))
             ctx.update(hp_pack_enabled=harry_potter_rules.PACK_ID in selected,hp_modules=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-") and not str((item.data or {}).get("code") or "").startswith(("HP-T","HP-E"))],hp_event_tables=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-T")],hp_canon_events=[item for item in rules if str((item.data or {}).get("code") or "").startswith("HP-E")],hp_timeline=[{"start":start,"end":end,"label":label,"text":text,"range":harry_potter_rules.range_label(start,end)} for start,end,label,text in harry_potter_rules.TIMELINE],hp_timeline_modes=harry_potter_rules.TIMELINE_MODES,hp_timeline_mode=str(settings_data.get("harry_potter_timeline_mode") or "alternate"),hp_current_year=insights.current_year(save),hp_current_label=harry_potter_rules.year_label(insights.current_year(save)),all_sims=sorted_sims((item for item in view_records if item.kind=="sim"),save),all_households=sorted((item for item in view_records if item.kind=="household"),key=lambda item:item.label.casefold()),hp_notice=request.session.pop("hp_notice",None));records=[]
@@ -1917,14 +1937,7 @@ def feature_page(request: Request, page: str):
             # Scheduling is idempotent. Remember the check in process instead
             # of rewriting the save's large settings JSON on every new day.
             # This keeps an ordinary GET read-only when there are no new rolls.
-            schedule_marker=(save.global_day,6)
-            if _TODAY_SCHEDULE_CHECKED.get(save.id) != schedule_marker:
-                save.revision += domain.retire_prechallenge_rolls(session,save)
-                domain.schedule_marriage_rolls(session,save)
-                save.revision += domain.schedule_occult_rolls(session,save)
-                save.revision += domain.schedule_event_rolls(session,save)
-                save.revision += domain.schedule_campaign_rolls(session,save)
-                _TODAY_SCHEDULE_CHECKED[save.id]=schedule_marker
+            usability_ui.schedule(__import__(__name__, fromlist=['app']), session, save)
             g = save.global_day
             params = request.query_params
             due_scope = params.get("due") or request.session.get("today_due", "due")
@@ -2247,7 +2260,8 @@ def feature_page(request: Request, page: str):
             )
             records=[]
         if page == "saves" and save:
-            backup_rows = list(session.scalars(select(BackupSnapshot).where(
+            from sqlalchemy.orm import defer
+            backup_rows = list(session.scalars(select(BackupSnapshot).options(defer(BackupSnapshot.package)).where(
                 BackupSnapshot.save_id.in_([item.id for item in ctx["saves"]]),
             ).order_by(BackupSnapshot.created_at.desc()).limit(100))) if ctx["saves"] else []
             ctx["backup_rows_by_save"] = {item.id: [row for row in backup_rows if row.save_id == item.id] for item in ctx["saves"]}
@@ -2732,6 +2746,7 @@ def sim_profile(request: Request, sim_id: str):
         from .play_clarity import life_schedule
         ctx['life_schedule']=life_schedule(session,save,sim)
         ctx['studio_profile_rows']=studio_profile_rows
+        ctx['hp_ancestry'] = hp_bloodlines.classify(sim, hp_bloodlines.people(session, save)) if hp_bloodlines.enabled(save) else None
         return templates.TemplateResponse(request, "sim_profile.html", ctx)
 
 
@@ -2761,6 +2776,34 @@ async def add_sim(request: Request):
         session.add(record); session.flush(); birth_dates.apply_to_record(record, save)
         session.add(record); session.flush(); session.add(Change(save_id=save.id, device_id="local" if settings.local_mode else "web", record_id=record.id, kind="sim", operation="upsert", base_version=0, new_version=1, payload=sync.serialize(record))); save.revision += 1+domain.sync_generations(session,save); domain.schedule_rolls(session, save); domain.auto_pass_lifecycle_rolls_for_added_sim(session,save,record)
         return RedirectResponse(f"/sims/{record.id}", status_code=303)
+
+
+@app.post("/sims/{sim_id}/birth-measurements")
+async def edit_birth_measurements(request: Request, sim_id: str):
+    form = await request.form()
+    with db() as session:
+        record = session.get(Record, sim_id)
+        if not record or record.kind != "sim" or record.deleted:
+            raise HTTPException(404)
+        save = owned_save(request, session, record.save_id)
+        if infinite_decades.frozen(save) or (record.data or {}).get("infinite_frozen"):
+            raise HTTPException(409, "Frozen family history cannot be changed.")
+        if form.get("measurement_token") != birth_measurements.fingerprint(record.data):
+            raise HTTPException(409, "These birth measurements changed. Refresh before saving them.")
+        try:
+            values = birth_measurements.manual(form)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
+        if form.get("allow_certificate_updates") == "on":
+            values["manual"] = False
+        if values != (record.data or {}).get("birth_measurements"):
+            base = record.version
+            record.data = {**record.data, "birth_measurements": values}
+            record.version += 1
+            domain.journal(session, record, "upsert", base)
+            save.revision += 1
+            session.commit()
+    return RedirectResponse(f"/sims/{sim_id}#birth-measurements", 303)
 
 
 @app.post("/sims/{sim_id}")
@@ -3124,6 +3167,30 @@ def pregnancy_profile(request: Request, pregnancy_id: str):
         ctx=context(request,session,pregnancy=pregnancy,all_sims=sims,children=children,pregnancy_progress=progress,progress_history=progress_history[:30],birth_circumstance=birth_circumstance,suggested_birth_location=suggested_birth_location,photo_record_ids=set(session.scalars(select(Portrait.record_id).where(Portrait.save_id==save.id))),title=pregnancy.label,page="pregnancies")
         ctx['birth_legitimacy_suggestion']=birth_legitimacy.suggestion(session,save,(pregnancy.data or {}).get('mother_id'),(pregnancy.data or {}).get('father_id'),suggested_birth_day)
         return templates.TemplateResponse(request,"pregnancy_profile.html",ctx)
+
+
+@app.post("/pregnancies/{pregnancy_id}/labor")
+async def edit_labor_duration(request: Request, pregnancy_id: str):
+    form = await request.form()
+    with db() as session:
+        pregnancy = session.get(Record, pregnancy_id)
+        if not pregnancy or pregnancy.kind != "pregnancy" or pregnancy.deleted:
+            raise HTTPException(404)
+        save = owned_save(request, session, pregnancy.save_id)
+        from . import crash_recovery
+        crash_recovery.lock(session, save)
+        session.refresh(pregnancy)
+        if infinite_decades.frozen(save) or pregnancy.data.get("infinite_frozen"):
+            raise HTTPException(409, "Frozen family history cannot be changed.")
+        if form.get("labor_token") != labor.fingerprint(pregnancy.data):
+            raise HTTPException(409, "Labor details changed. Refresh before saving.")
+        try:
+            value = labor.manual(form)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
+        labor._write(session, save, pregnancy, {"labor_duration_manual": value})
+        session.commit()
+    return RedirectResponse(f"/pregnancies/{pregnancy_id}#labor", 303)
 
 
 @app.post("/pregnancies/{pregnancy_id}")
@@ -3667,12 +3734,16 @@ async def accept_automation(request: Request, candidate_id: str):
                 except ValueError as exc: raise HTTPException(400,str(exc)) from exc
                 discovered_hour=int_or_none(payload.get("detected_game_hour"));discovered_minute=int_or_none(payload.get("detected_game_minute"));discovered_second=int_or_none(payload.get("detected_game_second"))
                 pregnancy_data={"mother_id":sim.id,"mother_name":sim.label,"father_id":father.id if father else None,"father_name":father.label if father else "","conception_global_day":conception,"due_global_day":due,"babies_expected":expected,"babies_delivered":0,"status":"Active","maternal_rolls_required":checked("maternal_rolls_required",True),"birth_newborn_rolls_required":checked("birth_newborn_rolls_required",True),"source":"game","game_pregnancy_sequence":sim.data.get("game_pregnancy_sequence"),"discovered_global_day":int_or_none(payload.get("detected_tracker_global_day")) or save.global_day,"discovered_game_hour":discovered_hour,"discovered_game_minute":discovered_minute,"discovered_game_second":discovered_second}
+                pregnancy_data["game_pregnancy_sequence"] = payload.get("game_pregnancy_sequence", sim.data.get("game_pregnancy_sequence"))
+                pregnancy_data["labor_identity_unverified"] = payload.get("game_pregnancy_sequence") is None
                 if discovered_hour is not None and discovered_minute is not None: pregnancy_data["discovered_game_time"]=(f"{discovered_hour:02d}:{discovered_minute:02d}:{discovered_second:02d}" if discovered_second is not None else f"{discovered_hour:02d}:{discovered_minute:02d}")
                 pregnancy=Record(save_id=save.id,kind="pregnancy",label=f"{sim.label} pregnancy",global_day=due,data=pregnancy_data);session.add(pregnancy);session.flush();domain.journal(session,pregnancy,"upsert",0);domain.schedule_rolls(session,save)
+                labor.attach(session, save, sim, pregnancy)
         elif action=="pregnancy_outcome" and sim:
             pregnancy=session.get(Record,str(payload.get("pregnancy_id") or "")) if payload.get("pregnancy_id") else None
             if not pregnancy or pregnancy.kind!="pregnancy" or pregnancy.save_id!=save.id: pregnancy=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=="pregnancy",Record.deleted.is_(False),Record.data["mother_id"].as_string()==sim.id).order_by(Record.global_day.desc()))
             if pregnancy:
+                labor.attach(session, save, sim, pregnancy)
                 status=str(value("status","Delivered") or "Delivered");delivery=int_or_none(value("delivery_global_day")) or save.global_day;detected=int_or_none(value("babies_delivered",payload.get("babies_delivered")));delivered=max(0,detected if detected is not None else (int_or_none(pregnancy.data.get("babies_expected")) or 1))
                 if status.casefold() in {"miscarriage","cancelled","canceled"} and "babies_delivered" not in form: delivered=0
                 delivery_hour=int_or_none(value("delivery_game_hour",payload.get("detected_game_hour")));delivery_minute=int_or_none(value("delivery_game_minute",payload.get("detected_game_minute")));delivery_second=int_or_none(value("delivery_game_second",payload.get("detected_game_second")));delivery_exact=calendar_utils.exact_historical_label(delivery,delivery_hour,delivery_minute,save.start_year,save.days_per_year) if delivery_hour is not None and delivery_minute is not None else ""
@@ -3885,6 +3956,10 @@ async def edit_structured_record(request: Request, record_id: str):
         record=session.get(Record,record_id)
         if not record: raise HTTPException(404)
         save=owned_save(request,session,record.save_id);base=record.version;data={**(record.data or {}),**structured_form_data(form)}
+        if record.kind=='heirloom' and data.get('current_holder_sim_id') != record.data.get('current_holder_sim_id'):
+            from .dynasty_history import logs as dynasty_logs
+            if any(row.data.get('heirloom_id')==record.id for row in dynasty_logs(session,save,'heirloom_history')):
+                raise HTTPException(409,'This heirloom has a dated dynasty ownership history. Use Dynasty History → Heirlooms to review a handover so both ledgers stay consistent.')
         if record.kind in {"event","campaign"}:
             if "die" in form: data["configured_die"]=str(form.get("die") or "").strip()
             if "bad_results" in form: data["configured_bad_results"]=str(form.get("bad_results") or "").strip()
@@ -4275,7 +4350,24 @@ async def update_hp_sim(sim_id: str, request: Request):
     with db() as session:
         ctx=context(request,session);save=ctx.get("save");sim=session.get(Record,sim_id)
         if not save or not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"Sim not found.")
-        data=dict(sim.data or {});base=sim.version;data.update({"hp_magical_ability":str(form.get("magical_ability") or "").strip(),"hp_blood_status":str(form.get("blood_status") or "").strip(),"hp_hidden_squib":str(form.get("hidden_squib") or "").casefold() in {"1","true","on","yes"},"hp_public_magical_status":str(form.get("public_magical_status") or "").strip(),"hp_magical_school":str(form.get("magical_school") or "").strip(),"hp_hogwarts_house":str(form.get("hogwarts_house") or "").strip(),"hp_obscurial_status":str(form.get("obscurial_status") or "").strip(),"hp_quidditch_status":str(form.get("quidditch_status") or "").strip(),"hp_war_allegiance":str(form.get("war_allegiance") or "").strip(),"hp_death_eater_status":str(form.get("death_eater_status") or "").strip(),"hp_resistance_status":str(form.get("resistance_status") or "").strip(),"hp_prisoner_missing_status":str(form.get("prisoner_missing_status") or "").strip(),"hp_secrecy_violation_count":max(0,int_or_none(form.get("secrecy_violation_count")) or 0)});sim.data=data;sim.version+=1;domain.journal(session,sim,"upsert",base);save.revision+=1;domain.schedule_rolls(session,save);request.session["hp_notice"]=f"Saved Wizarding fields for {sim.label}."
+        try:
+            blood_values = hp_bloodlines.form_updates(form.get("blood_status"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        ancestry = hp_bloodlines.people(session, save)
+        data = dict(sim.data or {}); base = sim.version
+        for field in ("magical_ability", "public_magical_status", "magical_school", "hogwarts_house",
+                      "obscurial_status", "quidditch_status", "war_allegiance", "death_eater_status",
+                      "resistance_status", "prisoner_missing_status"):
+            data["hp_" + field] = str(form.get(field) or "").strip()
+        data.update(blood_values)
+        data["hp_hidden_squib"] = str(form.get("hidden_squib") or "").casefold() in {"1", "true", "on", "yes"}
+        data["hp_secrecy_violation_count"] = max(0, int_or_none(form.get("secrecy_violation_count")) or 0)
+        sim.data = data
+        sim.data = {**data, **hp_bloodlines.updates(sim, ancestry)}
+        sim.version += 1; domain.journal(session, sim, "upsert", base); save.revision += 1
+        domain.schedule_rolls(session, save)
+        request.session["hp_notice"] = f"Saved Wizarding fields for {sim.label}."
     return RedirectResponse("/p/harry-potter#people",status_code=303)
 
 
@@ -4506,6 +4598,21 @@ def toggle_master_automation(request: Request, enabled: str = Form(""), return_t
     if not destination.startswith("/") or destination.startswith("//"):
         destination = "/p/today"
     return RedirectResponse(destination, status_code=303)
+
+
+@app.post('/api/health/compact-history')
+def compact_history(request: Request, cursor: int = Form(0), save_id: str = Form('')):
+    from .change_storage import compact_batch
+    with db() as session:
+        ctx=context(request,session);save=ctx.get('save')
+        if not save: raise HTTPException(400,'Open a save first.')
+        if save_id and save_id != save.id: raise HTTPException(409,'The open save changed. Reopen History storage.')
+        result=compact_batch(session,save.id,max(0,cursor))
+        request.session['history_compaction']={'save_id':save.id,**result}
+        request.session['health_notice']=f"Checked {result['scanned']} history entries; compressed {result['compressed']}. Every entry, version and sync cursor was retained. Freed space can be reused by the database."
+    if 'application/json' in request.headers.get('accept',''):
+        return {'save_id':save.id,**result}
+    return RedirectResponse('/p/health',status_code=303)
 
 
 @app.post("/api/rolls/refresh")
@@ -4924,6 +5031,28 @@ def spend_save_a_sim(request: Request, sim_id: str = Form(...), reason: str = Fo
     return RedirectResponse("/p/save-a-sims",status_code=303)
 
 
+@app.post("/api/save-a-sims/{credit_id}/undo")
+def undo_save_a_sim(request: Request, credit_id: str, save_id: str = Form(...)):
+    with db() as session:
+        ctx = context(request, session)
+        save = ctx.get("save")
+        if not save or save.id != save_id:
+            raise HTTPException(409, "The active save changed. Reopen Save-a-Sims before undoing.")
+        entry = session.get(Record, credit_id)
+        if not entry or entry.save_id != save.id or entry.kind != save_a_sims.CREDIT_KIND:
+            raise HTTPException(404)
+        try:
+            with session.begin_nested():
+                result = save_a_sims.undo_spend(session, save, entry)
+            request.session["save_a_sim_notice"] = (
+                "This use was already undone. No extra credit was added." if result["already_undone"] else
+                f"Save-a-Sim undone for {result['sim_name']}. One credit was returned and the death scheduled for GD {result['death_global_day']} restored. The death is still unconfirmed."
+            )
+        except ValueError as exc:
+            request.session["save_a_sim_notice"] = f"Could not undo: {exc}"
+    return RedirectResponse("/p/save-a-sims#ledger", status_code=303)
+
+
 @app.post("/api/rolls/{roll_id}/complete")
 def complete_roll(request: Request, roll_id: str, actual: int = Form(...), outcome: str = Form("")):
     from . import action_previews
@@ -4961,9 +5090,15 @@ def reopen_roll(request: Request, roll_id: str):
         auto_deaths=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["source_roll_id"].as_string()==roll.id)))
         related.extend(auto_deaths)
         conditional_followups=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),Record.data["origin_roll_id"].as_string()==roll.id,Record.data["automatic_followup"].as_boolean().is_(True))))
+        if any(item.data.get("maternal_followup") and item.data.get("completed") for item in conditional_followups):
+            raise HTTPException(409,"Reopen the completed maternal complication follow-up first, so its death or infertility result is not silently discarded.")
         related.extend(conditional_followups)
         if sim: related.append(sim)
         set_today_undo(request,f"Reopened {roll.label}",related)
+        if roll.data.get("maternal_followup") and sim:
+            from . import maternal_rules
+            try: maternal_rules.reopen_infertility(session, sim, roll)
+            except ValueError as exc: raise HTTPException(409,str(exc)) from exc
         for death in auto_deaths:
             base=death.version;data=dict(death.data or {});prior=int_or_none(data.get("rescheduled_from_global_day"));prior_cause=data.get("rescheduled_from_cause")
             if prior is None:
@@ -5045,6 +5180,8 @@ async def resolve_sync_conflict(request: Request, conflict_id: str):
         if not conflict or conflict.status!="open": raise HTTPException(404)
         save=owned_save(request,session,conflict.save_id)
         incoming=dict(conflict.local_change or {});record=session.get(Record,conflict.record_id)
+        if record and record.save_id != save.id:
+            raise HTTPException(409,'This conflict references a different save. Nothing was changed.')
         if keep=="desktop": payload=dict(incoming.get("payload") or {});operation=str(incoming.get("operation") or "upsert")
         elif keep=="merge": payload=sync.merged_conflict_payload(conflict,set(str(value) for value in form.getlist("desktop_field")));operation="delete" if payload.get("deleted") else "upsert"
         else:
@@ -5065,9 +5202,9 @@ def run_sync_now(request: Request):
     if not settings.local_mode: raise HTTPException(400,"Manual sync runs from the desktop edition.")
     try:
         from .sync_client import cycle
-        result=cycle();request.session["sync_notice"]=f"Sync complete: {result.get('pushed',0)} sent, {result.get('pulled',0)} received, {result.get('conflicts',0)} conflicts."
+        result=cycle();request.session["sync_notice"]=result.get('message') or f"Sync {result['status']}: {result.get('pushed',0)} sent, {result.get('pulled',0)} received, {result.get('conflicts',0)} conflicts."
     except Exception as exc:
-        request.session["sync_notice"]=f"Sync could not connect: {str(exc)[:180]}"
+        request.session["sync_notice"]="Sync stopped safely. Verify the address, token and selected save. Unsent changes were kept; see the service status below."
     return RedirectResponse("/p/sync",status_code=303)
 
 
@@ -5095,8 +5232,13 @@ async def sync_push(request: Request, authorization: str | None = Header(None)):
     with db() as session:
         device = token_device(session, authorization)
         save = session.get(ChronicleSave, device.save_id)
-        results = [sync.apply_change(session, save, device, item) for item in body.get("changes", [])]
-        return {"results": results, **sync.pull(session, save.id, int(body.get("after", 0)))}
+        if body.get('save_id') and body['save_id'] != save.id:
+            raise HTTPException(409, 'This token belongs to a different hosted save.')
+        try:
+            results = [sync.apply_change(session, save, device, item) for item in body.get("changes", [])]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(409, 'Sync batch rejected. Verify record types and the connected save; no changes in this batch were applied.') from exc
+        return {"save_id": save.id, "results": results, **sync.pull(session, save.id, int(body.get("after", 0)))}
 
 
 def rotate_clock_link(session, save_id: str) -> str:

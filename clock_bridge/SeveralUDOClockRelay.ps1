@@ -31,7 +31,7 @@ function Write-RelayHealth {
     $queued = if ([System.IO.Directory]::Exists($queuePath)) { [System.IO.Directory]::GetFiles($queuePath, "report-*.json").Length } else { 0 }
     $quarantined = if ([System.IO.Directory]::Exists($quarantinePath)) { [System.IO.Directory]::GetFiles($quarantinePath, "*.json").Length } else { 0 }
     $value = @{
-        relay_version = "2.2.12"
+        relay_version = "2.2.13"
         state = $State
         message = $Message
         queue_depth = $queued

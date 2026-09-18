@@ -244,7 +244,7 @@ def receive_plan(session,save,active,args):
     if save.global_day<data['day']:raise ValueError(f"This delivery unlocks on GD {data['day']}. Keep playing this branch first.")
     result={'row_id':row.id,'version':row.version,'day':data['day'],'mode':data['mode']}
     if data['mode']=='people':
-        payload=d.unpack_snapshot(data['payload']); ids=set(data['sim_ids'])
+        payload=validated_delivery(session,save,data); ids=set(data['sim_ids'])
         for sid in ids:
             current=known_person(session,save,sid)
             if not current.data.get('infinite_frozen') or current.data.get('infinite_branch_id')!=active.id:
@@ -265,6 +265,27 @@ def receive_plan(session,save,active,args):
         result['household_id']=home.id
         result['effects']=[f"Record §{data['amount']:,} received by {home.label}, effective GD {data['day']}. The game balance is unchanged; this is the tracker ledger."]
     return result
+
+
+def validated_delivery(session, save, data):
+    payload = d.unpack_snapshot(data['payload'])
+    ids = set(data['sim_ids'])
+    if set(payload['member_sim_ids']) != ids:
+        raise ValueError('Transfer identities do not match this save. Export a fresh copy from the original dynasty.')
+    entries = {entry['id']: entry for entry in payload['records']}
+    if len(entries) != len(payload['records']) or not ids <= set(entries):
+        raise ValueError('Transfer records are incomplete or duplicated.')
+    for entry in entries.values():
+        current = session.get(Record, entry['id'])
+        if current and (current.save_id != save.id or current.kind != entry['kind']):
+            raise ValueError('A transfer record does not belong to this save and type. Nothing was changed.')
+        if current and current.data.get('infinite_frozen') and current.data.get('infinite_branch_id') != data['branch_id']:
+            raise ValueError('A transfer record belongs to another branch. Nothing was changed.')
+    for photo in payload.get('portraits', []):
+        owner = session.get(Record, photo['record_id'])
+        if photo['record_id'] not in entries or (owner and owner.save_id != save.id):
+            raise ValueError('A transfer portrait has an invalid owner.')
+    return payload
 
 
 def write_entry(session,save,kind,label,day,data):
@@ -288,6 +309,14 @@ def apply(session,save,action,p):
             row=ledger_row(session,save,p['row_id'],'heirloom_history');d._touch(session,row,{**row.data,**data})
         else:
             row=t.tool_record(session,save,'heirloom_history',**data);row.label=p['label'];d._touch(session,row)
+        source = session.get(Record,p.get('heirloom_id')) if p.get('heirloom_id') else None
+        if source:
+            if source.save_id != save.id or source.kind != 'heirloom':
+                raise ValueError('Heirloom belongs to another save or type')
+            # Keep the editable base ledger in step. History projections below
+            # remain date-aware when another branch is playing an earlier year.
+            d._touch(session,source,{**source.data,'current_holder_sim_id':p['history'][-1]['sim_id'],
+                                     'dynasty_ownership_history_id':row.id})
         return
     if action=='send':
         data={k:v for k,v in p.items() if k not in {'effects','stamp'}}
@@ -306,8 +335,10 @@ def apply(session,save,action,p):
         return
     if action=='receive':
         row=ledger_row(session,save,p['row_id'],'parcel');data=row.data
+        if data.get('status') != 'pending' or data['branch_id'] != d.active_branch(session,save).id or save.global_day < data['day']:
+            raise ValueError('This transfer is not ready to receive in the active branch.')
         if p['mode']=='people':
-            payload=d.unpack_snapshot(data['payload'])
+            payload=validated_delivery(session,save,data)
             for entry in payload['records']:
                 current=session.get(Record,entry['id'])
                 if current and not current.data.get('infinite_frozen'):continue

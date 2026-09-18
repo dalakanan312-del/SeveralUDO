@@ -1,0 +1,25 @@
+.page-statistics .statistics-scope { margin-bottom: 2rem; }
+.statistics-scope-controls { display: flex; gap: .75rem; align-items: end; }
+.statistics-scope-controls select { flex: 1; min-width: 0; }
+.statistics-scope-controls button { width: auto; flex-shrink: 0; }
+.statistics-table-wrap { overflow-x: auto; }
+.statistics-branch-table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+.statistics-branch-table th, .statistics-branch-table td { padding: .8rem; text-align: left; border-bottom: 1px solid var(--line); }
+.statistics-branch-table thead th { color: var(--muted); white-space: nowrap; }
+.statistics-branch-table small { display: block; color: var(--muted); font-weight: normal; }
+.statistics-branch-table tr[aria-current] { background: var(--bg); }
+.page-statistics .statistics-nav { background: var(--panel); border-color: var(--line); }
+.page-statistics .statistics-nav a { color: var(--text); }
+.page-statistics .large-number, .page-statistics .mini-stat-grid strong,
+.page-statistics .generation-stat strong { color: var(--gold); }
+.page-statistics .current-year-panel { background: var(--panel); }
+.page-statistics .mini-stat-grid > div, .page-statistics .generation-stat { background: var(--bg); border-color: var(--line); }
+.page-statistics .mini-stat-grid span, .page-statistics .generation-stat span { color: var(--muted); }
+/* Never hide ledger data on narrow screens: wrap it under the year instead. */
+.page-statistics .year-ledger-row > span { display: block; color: var(--muted); }
+.page-statistics .year-ledger-row > strong { color: var(--gold); }
+@media (max-width: 800px) {
+  .statistics-scope-controls { flex-direction: column; align-items: stretch; }
+  .page-statistics .year-ledger-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .page-statistics .year-ledger-row > strong { grid-column: 1 / -1; }
+}

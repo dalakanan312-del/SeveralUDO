@@ -7,6 +7,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Larg
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
+from .change_storage import JournalJSON
 
 
 def uid() -> str:
@@ -204,7 +205,7 @@ class Change(Base):
     operation: Mapped[str] = mapped_column(String(12))
     base_version: Mapped[int] = mapped_column(Integer, default=0)
     new_version: Mapped[int] = mapped_column(Integer)
-    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    payload: Mapped[dict] = mapped_column(JournalJSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

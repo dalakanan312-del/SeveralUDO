@@ -17,7 +17,7 @@ from .domain import (
     schedule_rolls,
     sync_generations,
 )
-from . import game_metadata, telemetry, trait_visibility
+from . import game_metadata, telemetry, trait_visibility, birth_measurements, labor
 
 
 def _key(action: str, sim_id: str, value: str) -> str:
@@ -132,9 +132,9 @@ _CONSUMED_SIM_TELEMETRY = {
     "child_game_sim_ids", "siblings", "sibling_game_sim_ids", "grandparents",
     "grandparent_game_sim_ids", "grandchildren", "grandchild_game_sim_ids",
     "relationships", "significant_other_game_id", "is_pregnant",
-    "inventory_items",
+    "inventory_items", "birth_certificates",
     "pregnancy_stage", "pregnancy_progress", "pregnancy_progress_percentage",
-    "pregnancy_hours_remaining", "is_in_labor", "babies_expected",
+    "pregnancy_hours_remaining", "is_in_labor", "labor_scan_supported", "labor_signal", "babies_expected",
     "pregnancy_offspring_count", "offspring_count", "baby_count",
     "babies_delivered", "pregnancy_outcome", "pregnancy_partner_game_sim_id",
     "other_parent_game_sim_id", "responsible_pregnancy_states",
@@ -1052,6 +1052,7 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
     if telemetry_version >= 6 and snapshot.get("inventory_scan_supported") is True:
         clearable.update({"game_inventory_items", "game_inventory_scan_supported"})
     updates = {key: value for key, value in telemetry_values.items() if value not in (None, "", []) or key in clearable}
+    updates.update(birth_measurements.updates(data, snapshot))
     if snapshot.get("traits_scan_supported") is False:
         updates.pop("game_traits", None)
         updates.pop("game_trait_details", None)
@@ -1340,6 +1341,7 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
                 pass
         pregnancy_payload = {
             **snapshot, "babies_expected": reported_count or 1,
+            "game_pregnancy_sequence": sequence,
             "conception_global_day": conception_estimate,
             "due_global_day": due_estimate,
             "pregnancy_date_estimate": True,
@@ -1381,6 +1383,7 @@ def reconcile_sim(session: Session, save: ChronicleSave, sim: Record, snapshot: 
     if has_pregnancy_state and was_pregnant != is_pregnant:
         base = sim.version; sim.data = {**sim.data, **data, "game_was_pregnant": is_pregnant}; sim.version += 1; journal(session, sim, "upsert", base)
     history_entries.extend(telemetry.capture_pregnancy_progress(session, save, sim, snapshot))
+    labor.capture(session, save, sim, snapshot)
     history_entries.extend(telemetry.capture_responsible_pregnancy(session, save, sim, snapshot))
     snapshot["_history_entries"] = history_entries
     return made

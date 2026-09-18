@@ -1,8 +1,36 @@
-SEVERALUDO CLOCK SYNC 2.2.12
+SEVERALUDO CLOCK SYNC 2.2.13
 Complete Windows installation guide
 ===================================
 
+OPTIONAL PANDASAMA BIRTH MEASUREMENTS (2.2.13)
+- No childbirth mod is required. When PandaSama Realistic Childbirth is present,
+  Clock Sync can read the saved description on its birth certificates.
+- In game, click Edit Birth Certificate, save the birth details, and keep the
+  certificate on the loaded lot or in a Sim's inventory. Example formats:
+  Born 20 inches and 7.5 lbs. / Weight 3.4 kg; length 50.8 cm / 7 lb 8 oz.
+- Hospital certificates link by their stored baby ID when available. For an
+  unlinked home-birth certificate, enter the baby's exact full name. Ambiguous
+  names or conflicting certificates are not automatically assigned. Twins need
+  their own certificates; the mother's inventory is never treated as the baby.
+- Open the baby's profile > Birth weight & length. Newborn reviews and Today's
+  grouped birth checks also show detected measurements. You can add/correct
+  measurements manually there, in metric or imperial units.
+- These are saved certificate entries (which the mod/player may customize),
+  not independently confirmed physical measurements. No values are invented.
+  Unedited certificates or missing/unloaded objects may provide no measurements.
+  Manual corrections stay protected unless you enable future certificate updates.
+- Requires BOTH tracker 4.6.44+ and script 2.2.13+. Install the script only with
+  The Sims 4 closed, then restart and load the household for a fresh report.
+
 WHAT THIS KIT DOES
+Labor duration: Clock Sync 2.2.13 also recognizes PandaSama's maternal labor
+and contraction buffs. Tracker 4.6.44 records the first labor report and first
+report showing the pregnancy ended, using in-game hours/minutes. This is an
+estimate, not an exact mod stopwatch. Missing reports can miss the real onset
+or delivery. See Pregnancy > Labor length to enter/correct the full duration.
+Twins share one labor interval; manual overrides are protected. Reload/branch
+clock changes interrupt timing rather than combining different timelines.
+
 Clock Sync reads supported information from the active or played Sims 4 household and sends a report to one selected Decades Tracker save. The tracker never edits your Sims 4 save. New Sims and uncertain changes are placed in Automation Inbox for review.
 
 THE INCLUDED TOOLS

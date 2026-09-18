@@ -1,0 +1,3 @@
+{% if background_status %}<section class="panel" aria-label="Background services"><h2>Background services</h2>
+{% for service in background_status %}<div class="list-row"><div><strong>{{service.name}} · {{service.state}}</strong><p>{{service.message}}</p><small>Last check: {{service.checked_at}}</small></div></div>{% endfor %}
+</section>{% endif %}

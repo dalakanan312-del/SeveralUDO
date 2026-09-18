@@ -94,10 +94,8 @@ def household_id(sim):
 
 
 def alive(sim, save):
-    data = sim.data or {}
-    if sim.deleted or data.get("death_confirmed") or data.get("game_was_dead"): return False
-    birth, death = data.get("birth_global_day"), data.get("death_global_day")
-    return (birth is None or int(birth) <= save.global_day) and (death is None or int(death) > save.global_day)
+    from .record_state import living
+    return living(sim, save.global_day)
 
 
 def remap(value, mapping):
@@ -149,6 +147,8 @@ def copy_record_data(kind, data, mapping):
     result = remap(copy.deepcopy(data or {}), mapping)
     if kind == KIND:
         result["snapshot"] = pack_snapshot(remap(unpack_snapshot(data["snapshot"]), mapping))
+    if kind == 'dynasty_tool' and data.get('feature') == 'parcel' and data.get('mode') == 'people':
+        result['payload'] = pack_snapshot(remap(unpack_snapshot(data['payload']), mapping))
     return result
 
 

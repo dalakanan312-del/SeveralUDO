@@ -42,6 +42,10 @@ def roll_presentation(save, row, person=None):
         # Indexed delivery order is stable; never infer a twin by name/age alone.
         if child is None and index <= len(children): child = children[index-1]
         title = f"{who}'s childbirth survival — delivering {child.label if child else 'baby '+str(index)}"
+        if d.get('maternal_followup'):
+            title = f"{who}'s maternal complication — death or infertility · {child.label if child else 'baby '+str(index)}"
+            calculation = ("Coin flip (d2): 1 = heads / death; 2 = tails / survival with infertility."
+                           if d.get('coin_flip') else f"{d.get('die')}: 1 = death; all other results = survival with infertility.")
     elif str(d.get('source') or '').startswith('aging:') or d.get('lifecycle_age_days') is not None or str(d.get('roll_type') or '').casefold() in domain.AGING_STAGE_OFFSETS:
         birth = number((person.data or {}).get('birth_global_day', person.global_day)) if person else None
         offset = number(d.get('lifecycle_age_days'))
@@ -171,7 +175,7 @@ def birth_panels(session, save, rows, section='decisions', window='today'):
         # Every section removes its constituent birth rows, but only one shows
         # the delivery panel; this also keeps roll IDs unique in the document.
         if section==home:
-            panels.append({'id':pid,'day':day,'title':', '.join(c.label for c in children) or pregnancy.label,
+            panels.append({'id':pid,'pregnancy':pregnancy,'day':day,'title':', '.join(c.label for c in children) or pregnancy.label,
                 'mother':mother,'checks':checks,'by_id':by_id,'unassigned':unassigned,'pending_candidates':[r for r in rows if r.kind=='game_candidate' and r.id in matching]})
         # Never hide a detected baby that still needs a review action.
         consumed.update(r.id for r in rows if r.id in matching and (r.kind!='game_candidate' or section==home))

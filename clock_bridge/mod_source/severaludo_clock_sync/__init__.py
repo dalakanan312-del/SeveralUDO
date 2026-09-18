@@ -1,4 +1,4 @@
-"""Clock Sync 2.2.12 named life-history telemetry and game trait types."""
+"""Clock Sync 2.2.13 named telemetry and optional PandaSama certificates."""
 
 import base64
 import hashlib
@@ -11,9 +11,10 @@ import time
 
 from . import compat_201 as _compat
 from . import names as _names
+from . import birth_certificates as _birth_certificates
 
 
-VERSION = "2.2.12"
+VERSION = "2.2.13"
 _core = _compat._core
 _core.VERSION = VERSION
 _compat.VERSION = VERSION
@@ -518,7 +519,7 @@ def _pregnancy_details(sim_info):
     ))
     if progress is not None and progress <= 1:
         progress = round(progress * 100, 2)
-    labor = bool(_safe_value(tracker, ("is_in_labor", "in_labor", "is_giving_birth"), False))
+    labor, labor_supported, labor_signal = _labor_status(sim_info, tracker)
     expected = _safe_value(tracker, (
         "offspring_count", "pregnancy_offspring_count", "expected_offspring_count",
     ), None)
@@ -531,9 +532,31 @@ def _pregnancy_details(sim_info):
         "pregnancy_progress_percentage": progress,
         "pregnancy_hours_remaining": remaining,
         "is_in_labor": labor,
+        "labor_scan_supported": labor_supported,
+        "labor_signal": labor_signal,
         "babies_expected": expected,
         "pregnancy_scan_supported": True,
     }, True
+
+
+def _labor_status(sim_info, tracker):
+    """Use actual maternal signals, never partner/prelabor/mood-name guesses."""
+    direct = _safe_value(tracker, ("is_in_labor", "in_labor", "is_giving_birth"), None)
+    if direct is True:
+        return True, True, "Game labor flag"
+    # PandaSama Childbirth 1.965: InLabor, preterm InLabor, contraction pains.
+    # Optional read-only compatibility; no mod import and no dilation/remaining-
+    # time statistic is misrepresented as elapsed labor time.
+    known = {"10572499629228462418", "16083709106694612917"}
+    known.update(str(value) for value in range(17015997312466460657, 17015997312466460662))
+    markers, _ = _active_buff_trait_markers(sim_info)
+    for value, kind in markers:
+        if kind != "active_buff":
+            continue
+        tuning = getattr(value, "buff_type", None) or getattr(value, "tuning", None) or value
+        if _tuning_id(tuning) in known:
+            return True, True, "PandaSama maternal labor buff " + str(_tuning_id(tuning))
+    return bool(direct), direct is not None, "Game labor flag" if direct is not None else None
 
 
 def _genealogy_details(sim_info):
@@ -1692,6 +1715,7 @@ def _played_population_snapshot():
     active, households, supported = _played_households()
     if not households:
         name, members = _previous_household_snapshot()
+        _birth_certificates.attach(members, _services_api())
         return name, members, False, []
     members = []
     summaries = []
@@ -1714,6 +1738,7 @@ def _played_population_snapshot():
             except Exception as error:
                 _core.LOGGER.warn("Played Sim snapshot skipped safely: {}", error)
     active_name = str(_safe_value(active, ("name",), "") or "") if active is not None else ""
+    _birth_certificates.attach(members, _services_api())
     return active_name, members, bool(supported), summaries
 
 
@@ -1914,6 +1939,7 @@ def _poll_clock_v22(_alarm_handle=None):
             return
         game_day, game_hour, game_minute, _now = clock
         active_name, active_members = _previous_household_snapshot()
+        _birth_certificates.attach(active_members, _services_api())
         life_marker = _active_life_marker()
         life_changed = life_marker != _last_active_life_marker
         active_signature = hashlib.sha256(json.dumps(_json_safe([

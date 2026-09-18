@@ -30,13 +30,11 @@ SYNC_KINDS = {
     "save_a_sim_credit", "save_a_sim_rule", "drama_scene",
 }
 
-SECRET_MARKERS = ("password", "secret", "token", "api_key", "apikey", "database_url", "connection_string", "oauth")
-LOCAL_SETTINGS_KEYS = {'clock_recovery', 'clock_recovery_epoch'}
+from .public_settings import SECRET_MARKERS, LOCAL_SETTINGS_KEYS, public_settings
 
 
 def _public_settings(values: dict | None) -> dict:
-    return {str(key): value for key, value in dict(values or {}).items()
-            if key not in LOCAL_SETTINGS_KEYS and not any(marker in str(key).casefold() for marker in SECRET_MARKERS)}
+    return public_settings(dict(values or {}))
 
 
 def _device_name(device_id: str | None = None) -> str:
@@ -244,17 +242,26 @@ def apply_change(session: Session, save: ChronicleSave, device: Device, incoming
     payload_data = (incoming.get("payload") or {}).get("data") or {}
     if state(save) or incoming.get("kind") == KIND or (incoming.get("kind") == "save_metadata" and (payload_data.get("settings") or {}).get(KEY)):
         raise BranchFrozenError("Infinite Decades must be transferred as a whole dynasty export/import; partial record sync cannot safely switch branches.")
+    if getattr(device,'save_id',None) != save.id:
+        raise ValueError('Device does not belong to this save')
     if incoming.get("kind") not in SYNC_KINDS:
         raise ValueError("Unsupported record kind")
     change_id = str(incoming["change_id"])
     prior = session.scalar(select(Change).where(Change.id == change_id))
     if prior:
-        return {"status": "duplicate", "record": serialize(session.get(Record, prior.record_id))}
+        if prior.save_id != save.id or prior.record_id != str(incoming['record_id']):
+            raise ValueError('Change identifier is already in use')
+        existing = session.get(Record, prior.record_id)
+        if not existing or existing.save_id != save.id:
+            raise ValueError('Change record is unavailable')
+        return {"status": "duplicate", "record": serialize(existing)}
     record_id = str(incoming["record_id"])
     record = session.get(Record, record_id)
     base_version = int(incoming.get("base_version") or 0)
     if record and record.save_id != save.id:
         raise ValueError("Record belongs to a different save")
+    if record and record.kind != incoming['kind']:
+        raise ValueError('Record type cannot change through sync')
     if record and record.version != base_version:
         conflict = Conflict(
             save_id=save.id, record_id=record_id,

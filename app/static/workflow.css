@@ -29,3 +29,7 @@
 @media(max-width:1150px){.session-steps{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.session-steps{grid-template-columns:1fr}.session-steps>article{padding:1rem}.dashboard-directory>summary{align-items:flex-start;flex-direction:column;gap:.3rem}.workflow-tools nav{display:grid;grid-template-columns:1fr}.session-hub .section-heading{align-items:flex-start;gap:.65rem}}
 @media print{.session-hub,.workflow-tools,.page-contents{display:none}}
+.nav-collection{margin:.25rem 0;border-left:2px solid var(--line);padding-left:.55rem;min-width:0}
+.nav-collection>summary{cursor:pointer;padding:.65rem .25rem;font-weight:700;overflow-wrap:anywhere}
+.workflow-collection nav{display:flex;flex-wrap:wrap;gap:.4rem}
+.workflow-collection a[aria-current="page"]{border-color:var(--accent);font-weight:700}

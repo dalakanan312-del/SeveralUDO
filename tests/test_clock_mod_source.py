@@ -41,7 +41,28 @@ class ClockModSourceTests(unittest.TestCase):
         self.addCleanup(sys.modules.pop, package_name, None)
         self.addCleanup(sys.modules.pop, compat.__name__, None)
         self.addCleanup(sys.modules.pop, package_name + ".names", None)
+        self.addCleanup(sys.modules.pop, package_name + ".birth_certificates", None)
         return module
+
+    def test_pandasama_maternal_labor_buffs_without_tracker_labor_api(self):
+        mod=self.load_module()
+        for ident in (10572499629228462418,16083709106694612917,17015997312466460657):
+            buff=types.SimpleNamespace(guid64=ident)
+            sim=types.SimpleNamespace(pregnancy_tracker=types.SimpleNamespace(),
+                Buffs=types.SimpleNamespace(get_active_buff_types=lambda:(buff,)))
+            result,supported=mod._pregnancy_details(sim)
+            self.assertTrue(result['is_in_labor'])
+            self.assertTrue(result['labor_scan_supported'])
+            self.assertIn('PandaSama',result['labor_signal'])
+
+    def test_partner_and_prelabor_buffs_do_not_start_maternal_timer(self):
+        mod=self.load_module()
+        for ident in (12260884681230661883,15631959864928069600,17587990947092375690):
+            sim=types.SimpleNamespace(pregnancy_tracker=types.SimpleNamespace(),
+                Buffs=types.SimpleNamespace(get_active_buff_types=lambda:(types.SimpleNamespace(guid64=ident),)))
+            result,_=mod._pregnancy_details(sim)
+            self.assertFalse(result['is_in_labor'])
+            self.assertFalse(result['labor_scan_supported'])
 
     def test_current_skill_and_milestone_apis_are_reported(self):
         module = self.load_module()
@@ -203,7 +224,7 @@ class ClockModSourceTests(unittest.TestCase):
         )
         result = module._extended_snapshot(sim, None)
         self.assertEqual(result["telemetry_version"], 6)
-        self.assertEqual(result["clock_sync_version"], "2.2.12")
+        self.assertEqual(result["clock_sync_version"], "2.2.13")
         self.assertEqual(result["child_game_sim_ids"], ["22"])
         self.assertEqual(result["relationships"][0]["category"], "Marriage")
         self.assertEqual(result["babies_expected"], 2)
@@ -387,6 +408,7 @@ class ClockModSourceTests(unittest.TestCase):
             self.assertIn("severaludo_clock_sync/compat_201.pyc", names)
             self.assertIn("severaludo_clock_sync/core.pyc", names)
             self.assertIn("severaludo_clock_sync/names.pyc", names)
+            self.assertIn("severaludo_clock_sync/birth_certificates.pyc", names)
             self.assertIn("severaludo_clock_sync/game_names.json", names)
             dictionary = json.loads(archive.read("severaludo_clock_sync/game_names.json"))
             self.assertEqual(dictionary["names"]["66466717"], "Good")

@@ -6,10 +6,12 @@ import json
 import threading
 import time
 import zipfile
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, delete
+from sqlalchemy.orm import defer
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
@@ -18,18 +20,19 @@ from . import sync
 
 
 MAX_PACKAGE_BYTES = 150_000_000
+MAX_UNPACKED_BYTES = 150_000_000
+MAX_MANIFEST_BYTES = 2_000_000
+MAX_ENTRIES = 20000
 _started = False
 
 
 def public_settings(values: dict | None) -> dict:
-    blocked = ("token", "secret", "password", "database_url", "api_key", "connection", "webhook")
-    return {key: value for key, value in dict(values or {}).items()
-            if key not in sync.LOCAL_SETTINGS_KEYS and not any(part in str(key).casefold() for part in blocked)}
+    from .public_settings import public_settings as clean
+    return clean(dict(values or {}))
 
 
 def build_package(session: Session, save: ChronicleSave) -> bytes:
-    records = list(session.scalars(select(Record).where(Record.save_id == save.id)))
-    portraits = list(session.scalars(select(Portrait).where(Portrait.save_id == save.id)))
+    records = session.scalars(select(Record).where(Record.save_id == save.id).execution_options(yield_per=100))
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         archive.writestr("manifest.json", json.dumps({
@@ -43,9 +46,14 @@ def build_package(session: Session, save: ChronicleSave) -> bytes:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "settings": public_settings(save.settings),
         }, indent=2))
-        archive.writestr("records.json", json.dumps([sync.serialize(item) for item in records], indent=2))
+        with archive.open('records.json', 'w') as output:
+            output.write(b'[')
+            for index, item in enumerate(records):
+                if index: output.write(b',')
+                output.write(json.dumps(sync.serialize(item),ensure_ascii=False).encode('utf-8'))
+            output.write(b']')
         portrait_manifest = []
-        for item in portraits:
+        for item in session.scalars(select(Portrait).where(Portrait.save_id == save.id).execution_options(yield_per=10)):
             extension = "webp" if item.mime_type == "image/webp" else "png" if item.mime_type == "image/png" else "jpg"
             filename = f"portraits/{item.record_id}-{item.stage}.{extension}"
             archive.writestr(filename, item.image)
@@ -64,12 +72,29 @@ def inspect_package(raw: bytes) -> tuple[dict, list[dict], list[dict], zipfile.Z
         raise ValueError("Save package is too large")
     stream = io.BytesIO(raw)
     archive = zipfile.ZipFile(stream)
-    manifest = json.loads(archive.read("manifest.json"))
-    rows = json.loads(archive.read("records.json"))
-    portraits = json.loads(archive.read("portraits.json")) if "portraits.json" in archive.namelist() else []
-    if manifest.get("format") != "decades-save-v4":
+    try:
+        entries = archive.infolist()
+        names = [item.filename for item in entries]
+        if len(entries) > MAX_ENTRIES or len(set(names)) != len(names):
+            raise ValueError('Too many or duplicate package entries')
+        if sum(item.file_size for item in entries) > MAX_UNPACKED_BYTES:
+            raise ValueError('Unpacked save package is too large')
+        for item in entries:
+            if item.filename in {'manifest.json', 'portraits.json'} and item.file_size > MAX_MANIFEST_BYTES:
+                raise ValueError('Save manifest is too large')
+        manifest = json.loads(archive.read("manifest.json"))
+        rows = json.loads(archive.read("records.json"))
+        portraits = json.loads(archive.read("portraits.json")) if "portraits.json" in names else []
+        if not isinstance(manifest,dict) or manifest.get('format') != 'decades-save-v4':
+            raise ValueError('Unsupported save format')
+        if not isinstance(rows,list) or not isinstance(portraits,list) or len(rows)>250000:
+            raise ValueError('Invalid save records')
+        ids = [str(row['id']) for row in rows]
+        if len(set(ids)) != len(ids) or any(not isinstance(row.get('data',{}),dict) for row in rows):
+            raise ValueError('Duplicate or invalid save records')
+    except Exception:
         archive.close()
-        raise ValueError("Unsupported save format")
+        raise
     return manifest, rows, portraits, archive, stream
 
 
@@ -141,7 +166,7 @@ def restore_as_copy(session: Session, workspace_id: str, raw: bytes,
 
 def create_snapshot(session: Session, save: ChronicleSave, reason: str = "automatic",
                     force: bool = False) -> BackupSnapshot | None:
-    latest = session.scalar(select(BackupSnapshot).where(
+    latest = session.scalar(select(BackupSnapshot).options(defer(BackupSnapshot.package)).where(
         BackupSnapshot.save_id == save.id,
     ).order_by(BackupSnapshot.created_at.desc()).limit(1))
     if latest and latest.revision == save.revision and not force:
@@ -160,12 +185,15 @@ def create_snapshot(session: Session, save: ChronicleSave, reason: str = "automa
     )
     session.add(row)
     session.flush()
-    history = list(session.scalars(select(BackupSnapshot).where(
+    history = list(session.execute(select(BackupSnapshot.id, BackupSnapshot.reason).where(
         BackupSnapshot.save_id == save.id,
-    ).order_by(BackupSnapshot.created_at.desc())))
+    ).order_by(BackupSnapshot.created_at.desc(), BackupSnapshot.id.desc())))
     ordinary_history = [old for old in history if not old.reason.startswith("infinite:")]
-    for old in ordinary_history[14:]:
-        session.delete(old)
+    # Keep the original pre-enable safety point; bound other dynasty snapshots.
+    dynasty_history = [old for old in history if old.reason.startswith('infinite:') and old.reason != 'infinite:before-enable']
+    retired = [old.id for old in ordinary_history[14:] + dynasty_history[14:]]
+    if retired:
+        session.execute(delete(BackupSnapshot).where(BackupSnapshot.id.in_(retired)))
     return row
 
 
@@ -174,7 +202,7 @@ def maybe_create_daily_snapshots() -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     with SessionLocal() as session:
         for save in session.scalars(select(ChronicleSave)):
-            latest = session.scalar(select(BackupSnapshot).where(
+            latest = session.scalar(select(BackupSnapshot).options(defer(BackupSnapshot.package)).where(
                 BackupSnapshot.save_id == save.id,
             ).order_by(BackupSnapshot.created_at.desc()).limit(1))
             latest_at = latest.created_at if latest else None
@@ -193,8 +221,12 @@ def _loop() -> None:
     while True:
         try:
             maybe_create_daily_snapshots()
-        except Exception:
-            pass
+            from .background_status import record
+            record('Backups', 'ok', 'Automatic backup check completed.')
+        except Exception as exc:
+            logging.getLogger(__name__).error('Automatic backup check failed (%s)', type(exc).__name__)
+            from .background_status import record
+            record('Backups', 'error', 'Automatic backup failed. Existing backups were kept. Check storage space and database access, then try a manual backup.')
         time.sleep(60 * 60)
 
 

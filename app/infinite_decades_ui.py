@@ -30,6 +30,8 @@ def render(request, session, ctx, templates):
         from .dynasty_history import visible_history
         history=visible_history(save,history)
     focus = next((r for r in sims if r.id == request.query_params.get("sim_id")), None)
+    from . import hp_bloodlines
+    ctx['dynasty_hp_ancestry'] = hp_bloodlines.classify(focus, {r.id:r for r in sims}) if focus and hp_bloodlines.enabled(save) else None
     birth_data = birth_groups(session, save).corrected_data(focus) if focus else {}
     focus_day = int((focus.data or {}).get("infinite_frozen_global_day") or save.global_day) if focus else None
     focus_age = None

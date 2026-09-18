@@ -182,7 +182,7 @@ def describe(plan,kind):
                 effects.append(text+'; '+str(d.get('cause_of_death') or 'cause not specified'))
                 if d.get('death_global_day') is not None and d['death_global_day']>plan['after_save']['global_day']:
                     effects.append('Active illnesses remain open now and close when the scheduled death occurs.')
-            for key,label in [('hp_hogwarts_house','Hogwarts house'),('species_occult','Occult status'),('occult_alignment','Occult alignment'),('pregnancy_allowance_count','Pregnancy allowance')]:
+            for key,label in [('hp_hogwarts_house','Hogwarts house'),('species_occult','Occult status'),('occult_alignment','Occult alignment'),('pregnancy_allowance_count','Pregnancy allowance'),('fertility_status','Fertility status')]:
                 if d.get(key)!=before.get(key):effects.append(f"{row['label']} — {label}: {before.get(key,'not recorded')} → {d.get(key,'not recorded')}")
         elif row['kind']=='illness' and (d.get('end_global_day')!=before.get('end_global_day') or d.get('status')!=before.get('status')):
             effects.append(f"{row['label']}: {d.get('status','updated')} · ends GD {d.get('end_global_day','not recorded')}")

@@ -1,6 +1,19 @@
 {% extends "base.html" %}{% block title %}Roll Tables · Decades Tracker{% endblock %}{% block body %}
 <header class="hero compact"><p class="eyebrow">RULE CENTER · AUTOMATIC OUTCOMES</p><h1>Roll tables</h1><p>Everything that determines which die appears and what its result means, grouped by purpose instead of record type.</p></header>
 {% include "_rule_center_nav.html" %}
+{% if core_ruleset.id in ['severaludo','morbid_ultimate'] %}
+<details class="panel" id="maternal-followups"><summary>Maternal complications — the second roll</summary>
+  <p>A failed maternal check schedules a separate death-or-infertility follow-up for that baby. Death is not scheduled until that second roll gives a lethal result.</p>
+  {% if core_ruleset.id == 'morbid_ultimate' %}
+  <p>Morbid's tables use the Young Adult additional roll at every age: <strong>coin flip (d2), 1 = heads / death; 2 = tails / survival with infertility.</strong></p>
+  {% else %}
+  <div class="table-scroll"><table><thead><tr><th>Maternal age table</th><th>Additional roll</th><th>Death</th><th>Survival with infertility</th></tr></thead><tbody>
+    {% for stage,sides in maternal_followup_table.items() %}<tr><td>{{stage}}</td><td>{{'Coin flip (d2)' if sides==2 else 'd'~sides}}</td><td>{{'1 — heads' if sides==2 else '1'}}</td><td>{{'2 — tails' if sides==2 else '2–'~sides}}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% endif %}
+  <small>Source: SeveralUDO Maternal Mortality additional-roll rules. Infertility is a challenge result, not a diagnosis or a change made inside the game.</small>
+</details>
+{% endif %}
 <section class="panel"><div class="section-heading"><div><p class="eyebrow">ACTIVE CORE RULESET</p><h2>{{core_ruleset.name}} lifecycle rolls</h2><p>Aging and maternal obligations use these tables.</p></div><form action="/defaults/install" method="post"><button>Restore missing defaults</button></form></div>
 {% for item in roll_rules %}<details class="rule-row"><summary><strong>{{item.label}}</strong><span>{% if item.data.get('start_year') is not none %}{{item.data.get('start_year')}}–{{item.data.get('end_year')}} · {% endif %}{{item.data.get('die') or '—'}} · bad {{item.data.get('bad_results') or ('death-age result' if item.data.get('death_age_rng') else 'none')}}</span></summary><form action="/records/{{item.id}}/edit" method="post" class="form-grid"><input type="hidden" name="return_to" value="/p/roll-tables"><label>Name<input name="label" value="{{item.label}}"></label><label>Age in challenge days<input name="age_days" type="number" value="{{item.data.get('age_days','')}}"></label><label>Die<input name="die" value="{{item.data.get('die','')}}"></label><label>Bad results<input name="bad_results" value="{{item.data.get('bad_results','')}}"></label><input name="active" type="hidden" value="false"><label><input name="active" type="checkbox" value="true" {% if item.data.get('active',True) %}checked{% endif %}> Active</label><label>Notes<input name="notes" value="{{item.data.get('notes','')}}"></label><button class="primary">Save lifecycle rule</button></form></details>{% endfor %}
 <details><summary>Add a custom lifecycle roll</summary><form action="/records/roll_rule/structured" method="post" class="form-grid"><input type="hidden" name="return_to" value="/p/roll-tables"><label>Name<input name="label" required></label><label>Age days<input name="age_days" type="number"></label><label>Die<input name="die" value="d20"></label><label>Bad results<input name="bad_results"></label><input name="active" type="hidden" value="false"><label><input name="active" type="checkbox" value="true" checked> Active with every core ruleset</label><button class="primary">Add lifecycle rule</button></form></details></section>

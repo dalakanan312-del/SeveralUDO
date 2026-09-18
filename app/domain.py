@@ -3137,6 +3137,8 @@ def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Reco
     """Create one editable-rule pregnancy allowance for a Sim in the current historical year."""
     if sim.kind != "sim" or sim.deleted or sim.save_id != save.id:
         raise ValueError("Choose a Sim from the active save.")
+    if (sim.data or {}).get("infertile"):
+        raise ValueError("This Sim is recorded as infertile. Review their fertility result before planning more pregnancies.")
     death_day = (sim.data or {}).get("death_global_day")
     if bool((sim.data or {}).get("game_was_dead")) or (death_day not in (None, "") and int(death_day) <= save.global_day):
         raise ValueError("Pregnancy-count rolls are only available for living Sims.")
@@ -5294,13 +5296,10 @@ def _schedule_hogwarts_sorting_rolls(session: Session, save: ChronicleSave,
 
 def _hp_magical(sim: Record | None) -> bool:
     """Use the most reliable magical identity available without changing game data."""
-    if not sim or sim.deleted:
+    if not sim or (sim.deleted and not (sim.data or {}).get("infinite_frozen")):
         return False
-    data = sim.data or {}
-    ability = str(data.get("hp_magical_ability") or "").casefold()
-    if ability in {"witch", "wizard", "magical", "muggle-born"}:
-        return True
-    return "Spellcaster" in occult_rules.sim_occult_types(data)
+    from .hp_bloodlines import spellcaster
+    return spellcaster(sim) is True
 
 
 def _hp_witch_or_wizard(data: dict) -> str:
@@ -5362,6 +5361,9 @@ def _schedule_harry_potter_rolls(session: Session, save: ChronicleSave,
 
     if harry_potter_rules.PACK_ID not in set((save.settings or {}).get("selected_rule_packs") or []):
         return 0
+    from . import hp_bloodlines
+    ancestry = hp_bloodlines.people(session, save)
+    save.revision += hp_bloodlines.refresh(session, save, ancestry)
     rules = {
         str((item.data or {}).get("code") or "").upper(): item
         for item in session.scalars(select(Record).where(
@@ -5375,7 +5377,7 @@ def _schedule_harry_potter_rolls(session: Session, save: ChronicleSave,
     days = max(1, int(save.days_per_year))
     current_year = save.start_year + (save.global_day - 1) // days
     year_start = max(1, (current_year - save.start_year) * days + 1)
-    by_id = {sim.id: sim for sim in sims}
+    by_id = ancestry
     households = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "household", Record.deleted.is_(False),
     )))
@@ -5588,25 +5590,29 @@ def _apply_hp_roll_result(session: Session, save: ChronicleSave, roll: Record, a
     if code == "HP-05" and sim and not sim.deleted:
         sim_data = dict(sim.data or {}); magical_parent = data.get("hp_birth_branch") == "magical-parent"
         if magical_parent and actual == 1:
-            parents = [session.get(Record, parent_id) for parent_id in data.get("hp_parent_ids") or []]
-            magical_count = sum(_hp_magical(parent) for parent in parents)
             updates = {"hp_magical_ability": "Squib", "hp_hidden_squib": True,
-                       "hp_blood_status": "Pureblood" if magical_count >= 2 else "Half-Blood" if magical_count else "Magical ancestry",
                        "hp_birth_roll_id": roll.id, "hp_birth_roll_global_day": int(roll.global_day or save.global_day)}
         elif magical_parent:
-            parents = [session.get(Record, parent_id) for parent_id in data.get("hp_parent_ids") or []]
-            magical_count = sum(_hp_magical(parent) for parent in parents)
             updates = {"hp_magical_ability": _hp_witch_or_wizard(sim_data), "hp_hidden_squib": False,
-                       "hp_blood_status": "Pureblood" if magical_count >= 2 else "Half-Blood",
                        "hp_birth_roll_id": roll.id, "hp_birth_roll_global_day": int(roll.global_day or save.global_day)}
         elif actual == 1:
             updates = {"hp_magical_ability": _hp_witch_or_wizard(sim_data), "hp_hidden_squib": False,
-                       "hp_blood_status": "Muggle-Born", "hp_birth_roll_id": roll.id,
+                       "hp_birth_roll_id": roll.id,
                        "hp_birth_roll_global_day": int(roll.global_day or save.global_day)}
         else:
             updates = {"hp_magical_ability": "Muggle", "hp_hidden_squib": False,
-                       "hp_blood_status": "Muggle", "hp_birth_roll_id": roll.id,
+                       "hp_birth_roll_id": roll.id,
                        "hp_birth_roll_global_day": int(roll.global_day or save.global_day)}
+        from . import hp_bloodlines
+        from types import SimpleNamespace
+        # Derive blood status separately from magical ability; two magical
+        # parents are no longer sufficient evidence for Pureblood.
+        derived = SimpleNamespace(id=sim.id, save_id=sim.save_id, kind="sim", deleted=False,
+                                  data={**sim_data, **updates})
+        if hp_bloodlines.manual(sim_data):
+            derived.data["hp_blood_status_mode"] = "manual"
+        if hp_bloodlines.automatic_enabled(session, save):
+            updates.update(hp_bloodlines.updates(derived, hp_bloodlines.people(session, save)))
         if any(sim_data.get(key) != value for key, value in updates.items()):
             base = sim.version; sim.data = {**sim_data, **updates}; sim.version += 1; journal(session, sim, "upsert", base); changed += 1
     elif code == "HP-06" and sim and not sim.deleted:
@@ -5654,6 +5660,8 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     save.revision += retire_occult_exempt_aging_rolls(session, save, sims)
     save.revision += retire_invalid_lifecycle_rolls(session, save, rules)
     created = 0
+    from . import maternal_rules
+    created += maternal_rules.resume_pending(session, save)
     for sim in sims:
         created += _schedule_sim_lifecycle_rolls(session, save, sim, rules)
     created += _schedule_hogwarts_sorting_rolls(session, save, sims)
@@ -5868,13 +5876,32 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     automate = automation_enabled(save)
     base = roll.version
     pregnancy_count = None
+    from . import maternal_rules
+    maternal_spec = maternal_rules.table_for(session, save, roll)
+    maternal_changed = 0
     death_age_rng = bool(roll.data.get("death_age_rng"))
     if death_age_rng:
         is_bad = False
         automatic_outcome = f"Old-age death scheduled during historical age {actual}"
     elif bool(roll.data.get("pregnancy_count_roll")):
+        pregnancy_sim = session.get(Record, roll.data.get("sim_id")) if roll.data.get("sim_id") else None
+        if pregnancy_sim and pregnancy_sim.save_id == save.id and pregnancy_sim.data.get("infertile"):
+            raise ValueError("This Sim is recorded as infertile. Review their fertility result before planning more pregnancies.")
         pregnancy_count, automatic_outcome = pregnancy_count_result(actual, str(roll.data.get("result_rules") or ""), str(roll.data.get("zero_results") or ""))
         is_bad = False
+    elif roll.data.get("maternal_followup"):
+        origin = session.get(Record, roll.data.get("origin_roll_id"))
+        if not origin or origin.kind != "roll" or origin.save_id != save.id or origin.deleted or not origin.data.get("completed") or not origin.data.get("maternal_followup_required") or origin.data.get("sim_id") != roll.data.get("sim_id"):
+            raise ValueError("Complete the original failed maternal check before its complication follow-up.")
+        mother = session.get(Record, roll.data.get("sim_id"))
+        if not mother or mother.save_id != save.id or mother.deleted or any(mother.data.get(key) for key in ("death_confirmed", "game_was_dead", "infinite_frozen")):
+            raise ValueError("This mother is no longer available for a maternal complication roll.")
+        sides = int(str(roll.data.get("die") or "d2").lower().removeprefix("d"))
+        if not 1 <= actual <= sides:
+            raise ValueError("That result is outside the maternal follow-up die range.")
+        is_bad = actual == 1
+        automatic_outcome = ("Heads — dies in labor" if is_bad else "Tails — survives traumatic birth; infertile") if sides == 2 else ("Dies in labor" if is_bad else "Survives traumatic birth; infertile")
+        roll.data = {**roll.data, "nonlethal": not is_bad}
     elif _marriage_roll(roll):
         automatic_outcome = marriage_roll_result(actual, str(roll.data.get("result_rules") or ""), str(roll.data.get("bad_results") or ""))
         is_bad = automatic_outcome in {"Does not marry", "Does not remarry"}
@@ -5891,6 +5918,11 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             # Mixed event tables can contain both lethal and nonlethal failures.
             # The actual result controls death automation, not the event as a whole.
             roll.data = {**roll.data, "nonlethal": not _lethal_outcome(mapped_outcome) if mapped_outcome else not bool(roll.data.get("failure_is_lethal"))}
+    if maternal_spec:
+        roll.data = {**roll.data, "nonlethal": True, "maternal_followup_required": bool(is_bad),
+                     "maternal_followup_table": maternal_spec}
+        if is_bad:
+            automatic_outcome = "Maternal complication — death or infertility follow-up required"
     rule_trigger_results=str(roll.data.get("trigger_results") or "")
     rule_triggered = bool(rule_trigger_results) and bool(roll.data.get("occult_roll") or roll.data.get("rule_generated")) and failed(actual,rule_trigger_results)
     roll.data = {**roll.data, "actual": actual, "outcome": outcome_override.strip() or automatic_outcome or ("Failed" if is_bad else "Passed"), "completed": True, "completed_global_day": save.global_day,
@@ -5977,6 +6009,9 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     ) if hp_changed else 0
     if automate:
         automatic_followups += _schedule_event_followup(session, save, roll, actual)
+        automatic_followups += maternal_rules.schedule(session, save, roll)
+        if roll.data.get("maternal_followup") and not is_bad:
+            maternal_changed = maternal_rules.apply_infertility(session, save, roll)
     service_changed = _record_campaign_service(session, save, roll) if automate else False
     roll.version += 1; journal(session, roll, "upsert", base)
     death = None
@@ -6086,7 +6121,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     automatic_save_a_sims = save_a_sims.sync_automatic_awards(session, save)
     rule_save_a_sims = save_a_sims.award_matching_roll_rules(session, save, roll)
     save_a_sim_awards = len(automatic_save_a_sims["created"]) + len(rule_save_a_sims)
-    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(hogwarts_house_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + occult_scheduled + hp_changed + hp_scheduled + automatic_followups
+    save.revision += 1 + int(death_changed) + int(allowance_changed) + int(hogwarts_house_changed) + int(family_plan_changed) + int(service_changed) + occult_changed + occult_scheduled + hp_changed + hp_scheduled + automatic_followups + maternal_changed
     return {
         "outcome": roll.data["outcome"], "death": sync.serialize(death) if death else None,
         "death_created": death_created, "death_changed": death_changed, "pregnancy_count":pregnancy_count,

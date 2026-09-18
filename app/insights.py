@@ -326,7 +326,16 @@ def family_view(records: list[Record], focus_id: str | None, mode: str = "family
     }
 
 
+def statistics_day(row, save):
+    """Each retained branch stops at its own last observed date."""
+    day = integer(getattr(row, "statistics_day", None))
+    if day is None and (row.data or {}).get("infinite_frozen"):
+        day = integer(row.data.get("infinite_frozen_global_day"))
+    return save.global_day if day is None else day
+
+
 def statistics(records: list[Record], save: ChronicleSave) -> dict:
+    from .record_state import deceased as is_deceased
     current = save.global_day
     sims = [item for item in records if item.kind == "sim" and not item.deleted]
     sims_by_id = {item.id: item for item in sims}
@@ -354,6 +363,7 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
 
     for sim in sims:
         data = sim.data or {}
+        observed = statistics_day(sim, save)
         birth = integer(data.get("birth_global_day", sim.global_day))
         death = integer(data.get("death_global_day"))
         if birth is None:
@@ -362,16 +372,16 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
             missing_generation += 1
         if not data.get("current_household_id"):
             missing_household += 1
-        if birth is not None and birth > current:
+        if birth is not None and birth > observed:
             future.append(sim)
             continue
 
-        dead_now = death is not None and death <= current
+        dead_now = is_deceased(sim, observed)
         if dead_now:
             deceased.append(sim)
             if not str(data.get("cause_of_death") or "").strip():
                 missing_death_cause += 1
-            if birth is not None:
+            if birth is not None and death is not None and birth <= death <= observed:
                 lifespan = max(0, death - birth)
                 death_ages.append(lifespan)
                 completed_lifespans.append((lifespan, sim.label, sim.id))
@@ -380,16 +390,16 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
                     if lifespan >= minimum:
                         stage_at_death = label
                 death_stages[stage_at_death] += 1
-            year = historical_year(save, death)
+            year = historical_year(save, death) if death is not None and death <= observed else None
             if year is not None:
                 deaths[year] += 1
-            if 1 <= death <= current:
+            if death is not None and 1 <= death <= observed:
                 challenge_deaths += 1
             causes[str(data.get("cause_of_death") or "Unknown").strip() or "Unknown"] += 1
         else:
             living.append(sim)
             if birth is not None:
-                age = max(0, current - birth)
+                age = max(0, observed - birth)
                 ages.append(age)
                 living_ages.append((age, sim.label, sim.id))
 
@@ -397,14 +407,15 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
             year = historical_year(save, birth)
             if year is not None:
                 births[year] += 1
-            if 1 <= birth <= current:
+            if 1 <= birth <= observed:
                 challenge_births += 1
         generation_key = str(data.get("generation") if data.get("generation") not in (None, "") else "Unknown")
         generations[generation_key] += 1
         generation_survival[generation_key]["deceased" if dead_now else "living"] += 1
         generation_survival[generation_key]["total"] += 1
         sexes[str(data.get("sex") or "Unspecified")] += 1
-        stages[life_stage(sim, current, save)] += 1
+        if not dead_now:
+            stages[life_stage(sim, observed, save)] += 1
         occult_types = data.get("game_occult_types")
         if isinstance(occult_types, (list, tuple, set)) and occult_types:
             species_label = " / ".join(str(value) for value in occult_types if value)
@@ -422,17 +433,21 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
     for values in generation_survival.values():
         values["survival_rate"] = round(values["living"] * 100 / values["total"], 1) if values["total"] else 0.0
 
-    adulthood = 72
-    survived = died_young = pending = 0
+    adulthood = domain.lifecycle_age_days(save, 72)
+    survived = died_young = pending = unknown_survival = 0
     for child in sims:
         data = child.data or {}
         birth = integer(data.get("birth_global_day", child.global_day))
         death = integer(data.get("death_global_day"))
-        if birth is None or birth > current:
+        observed = statistics_day(child, save)
+        if birth is None or birth > observed:
             continue
-        if death is not None and death < birth + adulthood:
+        dead_now = is_deceased(child, observed)
+        if dead_now and (death is None or not birth <= death <= observed):
+            unknown_survival += 1
+        elif dead_now and death < birth + adulthood:
             died_young += 1
-        elif current < birth + adulthood and death is None:
+        elif observed < birth + adulthood:
             pending += 1
         else:
             survived += 1
@@ -442,6 +457,7 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
     marriage_durations: list[int] = []; active_marriages = ended_marriages = 0
     for relationship in relationships:
         data = relationship.data or {}
+        observed = statistics_day(relationship, save)
         relationship_type = str(data.get("type") or "Relationship")
         status = str(data.get("status") or "Active")
         folded_status = status.casefold()
@@ -460,29 +476,34 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
             year = historical_year(save, start)
             if year is not None:
                 marriage_years[year] += 1
-            marriage_durations.append(max(0, min(end, current) - start) if end is not None else max(0, current - start))
+            if start <= observed:
+                marriage_durations.append(max(0, min(end, observed) - start) if end is not None else max(0, observed - start))
 
     pregnancy_statuses = Counter(); pregnancy_years = Counter(); pregnancy_by_mother = Counter()
     active_pregnancies = delivered_pregnancies = losses = expected_babies = delivered_babies = multiple_births = 0
-    closed_pregnancy_statuses = {"delivered", "miscarriage", "stillbirth", "cancelled", "canceled", "ended", "closed", "complete"}
+    closed_pregnancy_statuses = {"delivered", "miscarriage", "stillbirth", "cancelled", "canceled", "ended", "closed", "complete", "completed"}
+    linked_babies = defaultdict(set)
+    for sim in living + deceased:
+        if (sim.data or {}).get("pregnancy_id"):
+            linked_babies[str(sim.data["pregnancy_id"])].add(sim.id)
     for pregnancy in pregnancies:
         data = pregnancy.data or {}
         status = str(data.get("status") or "Active")
         folded_status = status.casefold()
         pregnancy_statuses[status] += 1
         active_pregnancies += folded_status not in closed_pregnancy_statuses
-        delivered_pregnancies += folded_status in {"delivered", "complete"}
+        delivered_pregnancies += folded_status in {"delivered", "complete", "completed"}
         losses += folded_status in {"miscarriage", "stillbirth"}
         expected = max(0, integer(data.get("babies_expected"), 0) or 0)
-        delivered_count = max(0, integer(data.get("babies_delivered"), 0) or 0)
+        delivered_count = max(0, integer(data.get("babies_delivered"), 0) or 0, len(linked_babies[pregnancy.id]))
         expected_babies += expected
         delivered_babies += delivered_count
-        multiple_births += max(expected, delivered_count) > 1
+        multiple_births += delivered_count > 1
         if data.get("mother_id"):
             pregnancy_by_mother[str(data["mother_id"])] += 1
-        outcome_day = integer(data.get("end_global_day") or data.get("due_global_day") or pregnancy.global_day)
+        outcome_day = integer(data.get("actual_delivery_global_day") or data.get("delivery_global_day") or data.get("end_global_day") or data.get("conception_global_day") or pregnancy.global_day)
         year = historical_year(save, outcome_day)
-        if year is not None:
+        if year is not None and outcome_day <= statistics_day(pregnancy, save):
             pregnancy_years[year] += 1
 
     completed_rolls: list[Record] = []
@@ -505,7 +526,8 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
         if data.get("event_id") or roll_type.casefold().startswith("event"):
             event_rolls += 1
         if not completed:
-            if integer(roll.global_day, current) <= current:
+            observed = statistics_day(roll, save)
+            if integer(roll.global_day, observed) <= observed:
                 pending_due += 1
             else:
                 pending_future += 1
@@ -545,9 +567,10 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
     event_states = Counter(); event_categories = Counter(); event_locations = Counter(); event_roll_required = 0
     for event in events:
         data = event.data or {}
+        observed = statistics_day(event, save)
         start = integer(data.get("start_global_day", event.global_day))
         end = integer(data.get("end_global_day", start), start)
-        state = "Upcoming" if start is not None and start > current else "Past" if end is not None and end < current else "Active"
+        state = "Upcoming" if start is not None and start > observed else "Past" if end is not None and end < observed else "Active"
         event_states[state] += 1
         event_categories[str(data.get("category") or data.get("event_type") or "Other")] += 1
         event_locations[str(data.get("location") or data.get("country") or "All locations")] += 1
@@ -600,7 +623,7 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
         "year": current_year_value, "births": 0, "deaths": 0, "net": 0,
         "marriages": 0, "pregnancies": 0, "illnesses": 0, "rolls": 0,
     })
-    child_total = survived + died_young + pending
+    child_total = survived + died_young + pending + unknown_survival
     resolved_children = survived + died_young
     quality_items = [
         ("Sims missing birth dates", missing_birth),
@@ -627,6 +650,7 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
         "stages": stages.most_common(), "sexes": sexes.most_common(), "species": species.most_common(),
         "children": {
             "total": child_total, "survived": survived, "died_young": died_young, "pending": pending,
+            "unknown": unknown_survival, "adulthood_days": adulthood,
             "survival_rate": round(survived * 100 / resolved_children, 1) if resolved_children else None,
         },
         "rolls": {

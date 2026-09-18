@@ -1,0 +1,22 @@
+{% set observed=pregnancy.data.get('labor_tracking') or {} %}
+{% set manual_labor=pregnancy.data.get('labor_duration_manual') %}
+<section class="panel" id="labor">
+  <h2>Labor length</h2><p><strong>{{labor_summary(pregnancy.data)}}</strong></p>
+  {% if observed %}<dl class="fact-grid">
+    <div><dt>First labor report</dt><dd>{{labor_clock_label(observed.get('start'))}}</dd></div>
+    <div><dt>First report pregnancy ended</dt><dd>{{labor_clock_label(observed.get('end'))}}</dd></div>
+  </dl>{% endif %}
+  <p class="muted">Clock Sync estimates the interval between its first maternal labor report and its first report that the pregnancy ended. It can miss the true start or delivery time. Duration uses in-game hours and minutes—not real time or challenge-year length. Twins share one labor record.</p>
+  {% if pregnancy.data.get('labor_identity_unverified') %}<p class="muted">This older pregnancy detection did not identify its pregnancy cycle. Enter labor length manually to avoid assigning timing from a different pregnancy.</p>{% endif %}
+  {% if observed.get('restarted') or observed.get('status')=='interrupted' %}<p class="notice">The game clock or dynasty branch changed. Timing from before and after the change has not been combined; review or enter the full duration manually.</p>{% endif %}
+  <details><summary>Add or correct labor length</summary>
+    <form method="post" action="/pregnancies/{{pregnancy.id}}/labor" class="form-grid">
+      <input type="hidden" name="labor_token" value="{{labor_token(pregnancy.data)}}">
+      <label>Use<select name="labor_mode"><option value="manual">Player-entered duration</option><option value="automatic">Observed estimate (remove manual override)</option></select></label>
+      <label>In-game hours<input name="labor_hours" type="number" min="0" max="8760" step="1" value="{{manual_labor.minutes//60 if manual_labor else ''}}" placeholder="Unknown"></label>
+      <label>Additional minutes<input name="labor_minutes" type="number" min="0" max="59" step="1" value="{{manual_labor.minutes%60 if manual_labor else ''}}" placeholder="0–59"></label>
+      <small class="wide">Manual durations are protected from new reports. Existing observed timestamps remain available as evidence. Leave unknown historical durations unrecorded.</small>
+      <button class="primary">Save labor length</button>
+    </form>
+  </details>
+</section>

@@ -154,4 +154,13 @@ OPTIONAL_PAGES={'avatar':'avatar_decades','harry-potter':'harry_potter_decades',
 
 def visible_navigation(save):
     enabled=set((save.settings or {}).get('selected_rule_packs') or []) if save else set()
-    return [{**group,'pages':tuple(page for page in group['pages'] if page not in OPTIONAL_PAGES or OPTIONAL_PAGES[page] in enabled)} for group in NAVIGATION_GROUPS]
+    from .workflow import COLLECTIONS
+    nested={page for collection in COLLECTIONS for page in collection['pages'] if page!=collection['home']}
+    result=[]
+    for group in NAVIGATION_GROUPS:
+        pages=[page for page in group['pages'] if page not in nested and (page not in OPTIONAL_PAGES or OPTIONAL_PAGES[page] in enabled)]
+        collections=[collection for collection in COLLECTIONS if collection['home'] in pages]
+        # pages includes nested destinations for active-group detection and search.
+        result.append({**group,'primary_pages':tuple(pages),'collections':collections,
+                       'pages':tuple(pages+[p for c in collections for p in c['pages'] if p!=c['home']])})
+    return result

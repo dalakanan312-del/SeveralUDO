@@ -138,14 +138,17 @@ class BranchChoiceTests(unittest.TestCase):
             choices=page.text.split('id="choose-branch"',1)[1].split('</section>',1)[0]
             for branch in [self.older,self.newer]:self.assertIn('value="'+branch.id+'"',choices)
             self.assertNotIn('value="'+self.parent.id+'"',choices)
-            self.assertIn('Play selected branch',choices);self.assertIn('current_game_save_name',choices)
+            self.assertIn('/infinite/'+self.save.id+'/play',choices);self.assertIn('Play…',choices)
             url='/infinite/'+self.save.id+'/play';epoch=dynasty.state(self.save)['epoch']
             data={'branch_id':self.older.id,'load_confirmed':'yes','current_game_save_name':'Parent day 108'}
             headers={'X-Dynasty-Epoch':epoch}
-            response=client.post(url,data=data,headers=headers);self.assertEqual(response.status_code,409)
+            response=client.post(url,data=data,headers=headers);self.assertEqual(response.status_code,200)
+            import re
+            confirm_url=re.search(r'action="([^"]+/tools/confirm/[^"]+)"',response.text).group(1)
+            self.assertEqual(client.post(confirm_url,data=data,headers=headers).status_code,409)
             data['checkpoint_confirmed']='yes'
-            response=client.post(url,data=data,headers=headers);self.assertEqual(response.status_code,200,response.text[:500])
-            self.assertIn('Now playing Cara line',response.text)
+            response=client.post(confirm_url,data=data,headers=headers);self.assertEqual(response.status_code,200,response.text[:500])
+            self.assertIn('Reviewed dynasty changes applied',response.text)
             self.s.expire_all();self.assertEqual(dynasty.state(self.save)['active_branch_id'],self.older.id)
             self.assertEqual(client.post(url,data=data,headers=headers).status_code,409)
             client.close()

@@ -30,10 +30,8 @@ def year_for(save: ChronicleSave, day) -> int | None:
 
 
 def living(sim: Record, day: int) -> bool:
-    data = sim.data or {}
-    birth = _int(data.get("birth_global_day"), _int(sim.global_day, 1))
-    death = _int(data.get("death_global_day"))
-    return (birth is None or birth <= day) and (death is None or death > day) and not bool(data.get("game_was_dead") and death is None)
+    from .record_state import living as is_living
+    return is_living(sim, day)
 
 
 def migrations_for(records: Iterable[Record]) -> list[Record]:
@@ -67,8 +65,9 @@ def world_snapshot(records: Iterable[Record], save: ChronicleSave, year: int | N
     selected_year = min(max(save.start_year, _int(year, year_for(save, save.global_day))), year_for(save, save.global_day))
     day = min(save.global_day, max(1, (selected_year - save.start_year + 1) * max(1, save.days_per_year)))
     countries: dict[str, list[Record]] = defaultdict(list)
+    from .record_state import living as living_at
     for sim in sims:
-        if living(sim, day):
+        if living_at(sim, day, historical=day < save.global_day):
             countries[location_at(sim, day, moves)].append(sim)
     flows = Counter()
     for move in moves:

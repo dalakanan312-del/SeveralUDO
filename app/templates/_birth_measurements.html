@@ -1,0 +1,27 @@
+{% set measures=sim.data.get('birth_measurements') or {} %}
+<section class="profile-section" id="birth-measurements">
+  {% if sim.data.get('pregnancy_id') %}<p><a href="/pregnancies/{{sim.data.pregnancy_id}}#labor">View this birth's labor length and pregnancy record →</a></p>{% endif %}
+  <details {% if measures.get('weight') or measures.get('length') %}open{% endif %}>
+    <summary>Birth weight & length</summary>
+    <dl class="fact-grid">
+      <div><dt>Birth weight</dt><dd>{{birth_measurement_display(sim.data,'weight')}}</dd></div>
+      <div><dt>Birth length</dt><dd>{{birth_measurement_display(sim.data,'length')}}</dd></div>
+    </dl>
+    {% if measures.get('source') %}<p class="muted">{{measures.source}} · {{measures.get('evidence','Recorded')}}{% if measures.get('match')=='unique_full_name' %} · Matched by unique full name{% endif %}</p>{% endif %}
+    {% if measures.get('text') %}<details><summary>Original certificate text</summary><p>{{measures.text}}</p></details>{% endif %}
+    <p class="muted">Optional PandaSama Realistic Childbirth support. In game, edit the baby’s birth certificate and save its birth details. Keep it on the loaded lot or in a Sim’s inventory. Clock Sync reads the saved text; it never invents measurements. For home births, enter the baby’s exact full name on the certificate.</p>
+    <details><summary>Add or correct measurements</summary>
+      <form action="/sims/{{sim.id}}/birth-measurements" method="post" class="form-grid">
+        <input type="hidden" name="measurement_token" value="{{birth_measurement_token(sim.data)}}">
+        {% for kind,label,units in [('weight','Birth weight',[('g','Grams'),('kg','Kilograms'),('lb','Pounds (decimal)'),('oz','Ounces (total)')]),('length','Birth length',[('cm','Centimeters'),('in','Inches')])] %}
+        {% set measure=measures.get(kind) or {} %}
+        <label>{{label}}<input type="number" step="any" min="0.001" name="birth_{{kind}}" value="{{measure.get('value','')}}" placeholder="Unknown"></label>
+        <label>{{label}} unit<select name="birth_{{kind}}_unit">{% for value,text in units %}<option value="{{value}}" {% if measure.get('unit')==value %}selected{% endif %}>{{text}}</option>{% endfor %}</select></label>
+        {% endfor %}
+        <label class="wide"><input type="checkbox" name="allow_certificate_updates"> Allow future certificates to update these values</label>
+        <small class="wide">Leave unknown values blank. Manual corrections are protected from Clock Sync unless you enable updates. For 7 lb 8 oz, enter 7.5 pounds or 120 ounces. These records do not change survival rolls.</small>
+        <button class="primary">Save birth measurements</button>
+      </form>
+    </details>
+  </details>
+</section>

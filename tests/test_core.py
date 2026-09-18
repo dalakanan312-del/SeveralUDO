@@ -42,6 +42,27 @@ from starlette.middleware.sessions import SessionMiddleware
 
 
 class CoreSmokeTests(unittest.TestCase):
+    def reviewed_post(self, client, path, data=None):
+        """Exercise the real preview and confirmation flow, including stale-tab guards."""
+        headers={'Accept':'application/json'}
+        if path.startswith('/api/rolls/'):
+            with SessionLocal() as session:
+                row=session.get(Record,path.split('/')[3]);save=session.get(ChronicleSave,row.save_id)
+                headers.update({'X-UI-Save':save.id,'X-Record-Version':str(row.version)})
+                from app.infinite_dynasty import state
+                if state(save):headers['X-Dynasty-Epoch']=state(save)['epoch']
+            client.post('/saves/select',data={'save_id':save.id})
+        response=client.post(path,data=data or {},headers=headers,follow_redirects=False)
+        self.assertEqual(response.status_code,200,response.text[:500])
+        import re
+        if 'application/json' in response.headers.get('content-type',''):
+            token=response.json()['preview']['token']
+        else:
+            match=re.search(r'/api/previews/([a-f0-9]+)/confirm',response.text)
+            self.assertIsNotNone(match,response.text[:500]);token=match.group(1)
+        headers['Accept']='text/html'
+        return client.post('/api/previews/'+token+'/confirm',headers=headers,follow_redirects=False)
+
     def test_birth_circumstances_use_pregnancy_maternal_and_event_facts(self):
         with SessionLocal() as session:
             workspace=Workspace(name="Birth circumstances");session.add(workspace);session.flush()
@@ -207,7 +228,7 @@ class CoreSmokeTests(unittest.TestCase):
         marker=uuid.uuid4().hex[:10]
         with TestClient(app) as client:
             client.post("/saves",data={"name":f"Westeros {marker}","start_year":"-1","days_per_year":"4","pregnancy_days":"4"},follow_redirects=False)
-            response=client.post("/api/rule-packs",data={"rule_pack":["severaludo","game_of_thrones_decades"]},follow_redirects=False);self.assertEqual(response.status_code,303)
+            response=self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo","game_of_thrones_decades"]});self.assertEqual(response.status_code,303)
             with SessionLocal() as session:
                 save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Westeros {marker}"));save_id=save.id
                 rules=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule",Record.data["rule_pack_id"].as_string()==game_of_thrones_rules.PACK_ID)))
@@ -216,8 +237,8 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertFalse(next(item for item in rules if item.data["code"]=="GOT-62").data["active"])
             client.post("/api/game-of-thrones/modules/GOT-62",data={"enabled":"true"},follow_redirects=False)
             client.post("/api/game-of-thrones/settings",data={"timeline_mode":"alternate","current_season":"Winter","season_length":"3","others_active":"true"},follow_redirects=False)
-            client.post("/api/rule-packs",data={"rule_pack":["severaludo"]},follow_redirects=False)
-            client.post("/api/rule-packs",data={"rule_pack":["severaludo","game_of_thrones_decades"]},follow_redirects=False)
+            self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo"]})
+            self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo","game_of_thrones_decades"]})
             page=client.get("/p/game-of-thrones");self.assertEqual(page.status_code,200);self.assertIn("69 INDEPENDENT MODULES",page.text);self.assertIn("1 BC",page.text)
             with SessionLocal() as session:
                 save=session.get(ChronicleSave,save_id);walkers=session.scalar(select(Record).where(Record.save_id==save_id,Record.data["code"].as_string()=="GOT-62"))
@@ -240,7 +261,7 @@ class CoreSmokeTests(unittest.TestCase):
         marker=uuid.uuid4().hex[:10]
         with TestClient(app) as client:
             client.post("/saves",data={"name":f"Wizarding {marker}","start_year":"1300","days_per_year":"4","pregnancy_days":"4"},follow_redirects=False)
-            response=client.post("/api/rule-packs",data={"rule_pack":["severaludo","harry_potter_decades"]},follow_redirects=False);self.assertEqual(response.status_code,303)
+            response=self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo","harry_potter_decades"]});self.assertEqual(response.status_code,303)
             with SessionLocal() as session:
                 save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Wizarding {marker}"));save_id=save.id
                 rules=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule",Record.data["rule_pack_id"].as_string()==harry_potter_rules.PACK_ID)))
@@ -253,8 +274,8 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertTrue(all((item.global_day or 0)>=1 for item in calendar_events))
             client.post("/api/harry-potter/modules/HP-13",data={"enabled":"true"},follow_redirects=False)
             client.post("/api/harry-potter/settings",data={"timeline_mode":"canon_compatible"},follow_redirects=False)
-            client.post("/api/rule-packs",data={"rule_pack":["severaludo"]},follow_redirects=False)
-            client.post("/api/rule-packs",data={"rule_pack":["severaludo","harry_potter_decades"]},follow_redirects=False)
+            self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo"]})
+            self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo","harry_potter_decades"]})
             page=client.get("/p/harry-potter");self.assertEqual(page.status_code,200);self.assertIn("19 INDEPENDENT MODULES",page.text);self.assertIn("Canon-Compatible Timeline",page.text)
             with SessionLocal() as session:
                 save=session.get(ChronicleSave,save_id);house=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule",Record.data["code"].as_string()=="HP-13"))
@@ -306,7 +327,7 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertTrue({"HP-05","HP-06","HP-11","HP-14","HP-15","HP-19","HP-T01","HP-T05"}.issubset(codes))
             birth_roll=next(roll for roll in rolls if (roll.data or {}).get("hp_rule_code")=="HP-05" and (roll.data or {}).get("sim_id")==child.id)
             result=complete_roll(session,save,birth_roll,1);session.flush();updated=session.get(Record,child.id)
-            self.assertEqual((result["outcome"],updated.data["hp_magical_ability"],updated.data["hp_blood_status"]),("Squib","Squib","Half-Blood"))
+            self.assertEqual((result["outcome"],updated.data["hp_magical_ability"],updated.data["hp_blood_status"]),("Squib","Squib","Unknown"))
             self.assertTrue(updated.data["hp_hidden_squib"])
             self.assertEqual(schedule_rolls(session,save),0)
             session.rollback()
@@ -322,7 +343,7 @@ class CoreSmokeTests(unittest.TestCase):
         marker=uuid.uuid4().hex[:10]
         with TestClient(app) as client:
             client.post("/saves",data={"name":f"Avatar {marker}","start_year":"-12","days_per_year":"4","pregnancy_days":"4"},follow_redirects=False)
-            first=client.post("/api/rule-packs",data={"rule_pack":["severaludo","avatar_decades"]},follow_redirects=False)
+            first=self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo","avatar_decades"]})
             self.assertEqual(first.status_code,303)
             with SessionLocal() as session:
                 save=session.scalar(select(ChronicleSave).where(ChronicleSave.name==f"Avatar {marker}"));save_id=save.id
@@ -331,8 +352,8 @@ class CoreSmokeTests(unittest.TestCase):
                 self.assertTrue(next(item for item in modules if (item.data or {}).get("code")=="ATLA-01").data["active"])
                 self.assertFalse(next(item for item in modules if (item.data or {}).get("code")=="ATLA-50").data["active"])
             client.post("/api/avatar/modules/ATLA-10",data={"enabled":"true"},follow_redirects=False)
-            client.post("/api/rule-packs",data={"rule_pack":["severaludo"]},follow_redirects=False)
-            client.post("/api/rule-packs",data={"rule_pack":["severaludo","avatar_decades"]},follow_redirects=False)
+            self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo"]})
+            self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo","avatar_decades"]})
             with SessionLocal() as session:
                 modules=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="addon_rule")))
                 protection=next(item for item in modules if (item.data or {}).get("code")=="ATLA-10")
@@ -375,7 +396,7 @@ class CoreSmokeTests(unittest.TestCase):
                 sim=Record(save_id=save.id,kind="sim",label=f"Traveler {marker}",global_day=1,data={"birth_global_day":1,"country":"England","sex":"Female","generation":1})
                 partner=Record(save_id=save.id,kind="sim",label=f"Partner {marker}",global_day=1,data={"birth_global_day":1,"country":"England","sex":"Male","generation":1})
                 session.add_all([sim,partner]);session.commit();save_id,sim_id,partner_id=save.id,sim.id,partner.id
-            selected=client.post("/api/rule-packs",data={"rule_pack":["severaludo","historical_events"]},follow_redirects=False)
+            selected=self.reviewed_post(client,"/api/rule-packs",data={"rule_pack":["severaludo","historical_events"]})
             self.assertEqual(selected.status_code,303)
             moved=client.post("/api/migrations",data={"sim_id":sim_id,"move_global_day":"12","to_country":"France","to_location":"Paris","reason":"Immigration"},follow_redirects=False)
             self.assertEqual(moved.status_code,303)
@@ -1757,7 +1778,7 @@ class CoreSmokeTests(unittest.TestCase):
             ping = client.get("/api/clock/ping", headers={"Authorization": f"Bearer {private_config['sync_token']}"})
             self.assertEqual(ping.status_code, 200)
             self.assertTrue(ping.json()["ok"])
-            self.assertEqual(ping.json()["clock_sync_version"], "2.2.12")
+            self.assertEqual(ping.json()["clock_sync_version"], "2.2.13")
             private_report = client.post("/api/clock/report", headers={"Authorization": f"Bearer {private_config['sync_token']}"}, json={"game_day": 60, "hour": 12, "minute": 0, "household_members": []})
             self.assertEqual(private_report.status_code, 200)
             clock_link = client.post("/api/clock/links").json()
@@ -2111,7 +2132,7 @@ class CoreSmokeTests(unittest.TestCase):
             second=client.post("/api/today/pregnancy-count-rolls",data={"sim_id":sim_id},follow_redirects=False)
             self.assertEqual(first.status_code,303);self.assertEqual(second.status_code,303)
             page=client.get("/p/today?task=rolls&roll_kind=pregnancy-count")
-            self.assertEqual(page.status_code,200);self.assertIn(f"Planner Sim {marker}",page.text);self.assertIn("Pregnancy Count",page.text);self.assertIn("Roll d12",page.text);self.assertIn("Result table:",page.text)
+            self.assertEqual(page.status_code,200);self.assertIn(f"Planner Sim {marker}",page.text);self.assertIn("Pregnancy Count",page.text);self.assertIn("Roll d12",page.text);self.assertIn("Rule, result table and explanation",page.text)
             with SessionLocal() as session:
                 rolls=list(session.scalars(select(Record).where(Record.save_id==save_id,Record.kind=="roll",Record.data["pregnancy_count_roll"].as_boolean().is_(True))))
                 self.assertEqual(len(rolls),1);roll=rolls[0]
@@ -2279,9 +2300,11 @@ class CoreSmokeTests(unittest.TestCase):
                 manual=Record(save_id=save.id,kind="roll",label=f"Manual result {marker}",global_day=save.global_day,data={"roll_type":"Aging","die":"d20","bad_results":"1","completed":False})
                 existing=Record(save_id=save.id,kind="roll",label=f"Existing result {marker}",global_day=max(1,save.global_day-1),data={"roll_type":"Event","die":"d12","bad_results":"1","actual":7,"outcome":"Passed","completed":True,"completed_global_day":save.global_day})
                 session.add_all([manual,existing]);session.commit();manual_id,existing_id=manual.id,existing.id
-            completed=client.post(f"/api/rolls/{manual_id}/complete",data={"actual":"1","outcome":""},headers={"referer":"/p/today?task=rolls"},follow_redirects=True)
-            self.assertEqual(completed.status_code,200)
-            self.assertIn("THE CARVED DICE HAVE SPOKEN",completed.text)
+            completed=self.reviewed_post(client,f"/api/rolls/{manual_id}/complete",data={"actual":"1","outcome":""})
+            self.assertEqual(completed.status_code,303)
+            with SessionLocal() as session:
+                self.assertTrue(session.get(Record,manual_id).data['completed'])
+                self.assertEqual(session.get(Record,manual_id).data['actual'],1)
             page=client.get("/p/today?task=rolls")
             self.assertEqual(page.status_code,200)
             self.assertIn("Completed roll results",page.text)
@@ -2301,7 +2324,7 @@ class CoreSmokeTests(unittest.TestCase):
                 resolved=Record(save_id=save.id,kind="roll",label=f"Resolved ghost fate {marker}",global_day=max(1,save.global_day-1),data={"occult_roll":True,"occult_type":"Ghost","roll_type":"Spirit remains","die":"d6","actual":1,"outcome":"Ghost remains","result_rules":"1: Ghost remains; 2-6: Moves on","completed":True,"completed_global_day":save.global_day})
                 detected=Record(save_id=save.id,kind="game_history",label=f"Occult state changed {marker}",global_day=save.global_day,data={"category":"occult","sim_name":"Detected Sim","from":"Human","to":"Werewolf"})
                 session.add_all([pending,resolved,detected]);session.commit();record_ids=[pending.id,resolved.id,detected.id]
-            page=client.get("/p/today")
+            page=client.get("/p/today?view=tools")
             self.assertEqual(page.status_code,200)
             self.assertIn("Occult chronicle",page.text)
             self.assertIn(f"Pending vampire hunt {marker}",page.text)
@@ -2323,11 +2346,11 @@ class CoreSmokeTests(unittest.TestCase):
             page=client.get("/p/today")
             self.assertEqual(page.status_code,200)
             self.assertIn('aria-label="Occult roll automation"',page.text)
-            self.assertIn("Automatic occult rolls are off",page.text)
+            self.assertIn("Automatic · Off",page.text)
             enabled=client.post("/api/occult-rolls/toggle",data={"enabled":"true","return_to":"/p/today"},follow_redirects=False)
             self.assertEqual(enabled.status_code,303);self.assertEqual(enabled.headers["location"],"/p/today")
             page=client.get("/p/today")
-            self.assertIn("Automatic occult rolls are on",page.text)
+            self.assertIn("Automatic · On",page.text)
             self.assertIn("Occult roll auto-generation is on",page.text)
             disabled=client.post("/api/occult-rolls/toggle",data={"enabled":"false","return_to":"/p/today"},follow_redirects=False)
             self.assertEqual(disabled.status_code,303)
@@ -2347,7 +2370,7 @@ class CoreSmokeTests(unittest.TestCase):
                 session.add_all([sim,parent,child]);session.flush()
                 origin=Record(save_id=save.id,kind="roll",label=f"Triggered future outcome {marker}",global_day=save.global_day,data={"sim_id":sim.id,"sim_name":sim.label,"source_rule_key":f"parent-{marker}","rule_generated":True,"die":"d8","actual":1,"outcome":"Something happens","completed":True,"completed_global_day":save.global_day,"triggered":True})
                 session.add(origin);session.commit();save_id,sim_id,parent_id,child_id,origin_id=save.id,sim.id,parent.id,child.id,origin.id
-            page=client.get("/p/today")
+            page=client.get("/p/today?view=tools")
             self.assertEqual(page.status_code,200);self.assertIn("Act on the rules",page.text);self.assertIn(f"Future follow-up {marker}",page.text)
             form={"rule_id":child_id,"sim_id":sim_id,"global_day":"12","origin_roll_id":origin_id,"context_note":"Verified future-rule situation","return_to":"/p/today#rule-workbench"}
             self.assertEqual(client.post("/api/rule-rolls/create",data=form,follow_redirects=False).status_code,303)
@@ -2596,15 +2619,15 @@ class CoreSmokeTests(unittest.TestCase):
                 save = session.scalar(select(ChronicleSave).order_by(ChronicleSave.updated_at.desc()))
                 roll = Record(save_id=save.id, kind="roll", label="Native d6 test", global_day=save.global_day, data={"die": "d6", "bad_results": "1", "completed": False})
                 session.add(roll); session.commit(); roll_id = roll.id
-            response = client.post(f"/api/rolls/{roll_id}/roll", headers={"referer": "http://testserver/p/rolls"}, follow_redirects=True)
-            self.assertEqual(response.status_code, 200)
-            self.assertIn("THE CARVED DICE HAVE SPOKEN", response.text)
+            response = self.reviewed_post(client,f"/api/rolls/{roll_id}/roll")
+            self.assertEqual(response.status_code, 303)
             with SessionLocal() as session:
                 completed = session.get(Record, roll_id)
                 self.assertTrue(completed.data["completed"])
                 self.assertGreaterEqual(completed.data["actual"], 1)
                 self.assertLessEqual(completed.data["actual"], 6)
-                audit = session.scalar(select(DiceAudit).where(DiceAudit.context == "roll", DiceAudit.context_id == roll_id))
+                audit = session.scalar(select(DiceAudit).where(DiceAudit.context_id == roll_id, DiceAudit.context.like('pending-preview-v%')))
+                self.assertIsNotNone(audit)
                 self.assertEqual(audit.notation, "d6")
                 session.delete(completed); session.delete(audit); session.commit()
 
@@ -3029,12 +3052,13 @@ class CoreSmokeTests(unittest.TestCase):
                 )
                 session.add_all([assigned, unassigned, migrated, catalog]); session.flush()
 
-                self.assertEqual(schedule_rolls(session, save), 2)
+                # Unlocated Sims must not inherit a regional event by assumption.
+                self.assertEqual(schedule_rolls(session, save), 1)
                 rolls = list(session.scalars(select(Record).where(
                     Record.save_id == save.id, Record.kind == "roll",
                     Record.data["event_id"].as_string() == catalog.id,
                 )))
-                self.assertEqual({item.data["sim_id"] for item in rolls}, {assigned.id, unassigned.id})
+                self.assertEqual({item.data["sim_id"] for item in rolls}, {assigned.id})
                 self.assertTrue(all(item.data["die"] == "d4" for item in rolls))
                 self.assertTrue(all(item.data["bad_results"] == "3" for item in rolls))
                 self.assertEqual(schedule_rolls(session, save), 0)

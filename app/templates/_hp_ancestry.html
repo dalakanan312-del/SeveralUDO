@@ -1,0 +1,8 @@
+<details class="profile-section hp-ancestry">
+  <summary><strong>Blood status: {{bloodline.display or 'Unknown'}}</strong> · {{'Player-entered override' if bloodline.manual else 'Automatic ancestry'}} · {{bloodline.spellcasters}}/4 spellcaster grandparents</summary>
+  {% if bloodline.manual %}<p>Your manual entry is preserved. The four-grandparent calculation gives <strong>{{bloodline.status}}</strong>. Choose <em>Automatic · four-grandparent ancestry</em> on the Harry Potter page to use it.</p>{% endif %}
+  <p>{{bloodline.reason}}</p>
+  <div class="form-grid">{% for grandparent in bloodline.grandparents %}<div><small>{{grandparent.role}}</small><p><strong>{{grandparent.name}}</strong><br>{{grandparent.evidence}}</p></div>{% endfor %}</div>
+  <p>Pureblood requires all four grandparents to be confirmed spellcasters. Two magical parents are not enough. Squibs retain their own ancestry, but do not count as spellcaster grandparents. Missing relatives or magical identities are not assumed to be Muggles.</p>
+  <p>Parent links and magical identities are checked across all branches, including deceased relatives. Adoptive or guardian links are not substituted for the recorded mother and father.</p>
+</details>

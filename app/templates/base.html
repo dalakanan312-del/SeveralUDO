@@ -29,6 +29,7 @@
 <link rel="stylesheet" href="/static/heritage.css?v={{static_version}}">
 {% if page in ['portrait-studio','ai-settings','sims'] %}<link rel="stylesheet" href="/static/portrait_studio.css?v={{static_version}}">{% endif %}
 {% if page == 'family-fortunes' %}<link rel="stylesheet" href="/static/family_fortunes.css?v={{static_version}}">{% endif %}
+{% if page == 'statistics' %}<link rel="stylesheet" href="/static/statistics.css?v={{static_version}}">{% endif %}
   <script src="/static/htmx.min.js?v={{static_version}}" defer></script>
 {% if ads_config.verification_available %}<meta name="google-adsense-account" content="{{ads_config.verification_client}}">{% endif %}
 {% if user and ads_config.consent_available %}<script id="decades-ad-config" type="application/json">{{ads_config|tojson}}</script>{% endif %}
@@ -64,7 +65,12 @@
     <div class="nav-groups">
       {% for group in navigation_groups %}<details class="nav-group" data-nav-group="{{group.id}}" {% if page in group.pages %}open{% endif %}>
         <summary><span class="nav-group-icon" aria-hidden="true">{{group.icon}}</span><span class="nav-group-copy"><strong>{{group.label}}</strong><small>{{group.description}}</small></span><span class="nav-group-chevron" aria-hidden="true">›</span></summary>
-        <div class="nav-group-links">{% for key in group.pages %}<a class="{% if page==key %}active{% endif %}" {% if page==key %}aria-current="page"{% endif %} href="/p/{{key}}" title="{{features[key][1]}}" data-nav-search="{{group.label}} {{group.description}} {{features[key][0]}} {{features[key][1]}}"><span>{{features[key][0]}}</span>{% set count=(navigation_counts or {}).get(key, automation_pending if key=='automation' else 0) %}{% if count %}<b>{{count}}</b>{% endif %}</a>{% endfor %}</div>
+        <div class="nav-group-links">{% for key in group.primary_pages|default(group.pages) %}
+          {% set collection=(group.collections|default([])|selectattr('home','equalto',key)|list|first) %}
+          {% if collection %}<details class="nav-collection" data-nav-collection {% if page in collection.pages %}open{% endif %}><summary>{{collection.label}}</summary>{% set links=collection.pages %}{% else %}{% set links=[key] %}{% endif %}
+          {% for target in links %}<a class="{% if page==target %}active{% endif %}" {% if page==target %}aria-current="page"{% endif %} href="/p/{{target}}" title="{{features[target][1]}}" data-nav-search="{{group.label}} {{features[target][0]}} {{features[target][1]}}"><span>{{features[target][0]}}</span>{% set count=(navigation_counts or {}).get(target, automation_pending if target=='automation' else 0) %}{% if count %}<b>{{count}}</b>{% endif %}</a>{% endfor %}
+          {% if collection %}</details>{% endif %}
+        {% endfor %}</div>
       </details>{% endfor %}
     </div>
     <p class="nav-no-results" hidden>No matching page. Try a broader word.</p>

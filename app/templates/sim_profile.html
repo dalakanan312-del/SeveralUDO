@@ -29,7 +29,9 @@
       <span>{{profile_summary.life_stage}}</span>
       <span>{{(sim.data.get('sex') or 'Unspecified')|replace('Gender.','')|title}}</span>
       <span>{{sim.data.get('species_occult') or 'Human'}}</span>
+      {% if sim.data.get('infertile') %}<span title="{{sim.data.get('infertility_source') or 'Player-recorded fertility status'}}">{{sim.data.get('fertility_status') or 'Infertile'}}</span>{% endif %}
       {% if hogwarts_profile_theme %}<span class="hogwarts-house-chip">{{hogwarts_profile_theme.symbol}} {{hogwarts_profile_theme.label}} · Hogwarts</span>{% endif %}
+      {% if hp_ancestry %}<span>{{hp_ancestry.display}} · {{'manual blood status' if hp_ancestry.manual else 'ancestry'}}</span>{% endif %}
     </div>
     <div class="vital-line">
       <div><small>Born</small><strong>{{sim_birth_display(save,sim)}}{% if sim.data.get('birth_time') %} · {{sim.data.get('birth_time')}}{% endif %}</strong>{{date_badge(sim.data,"birth")}}<span>{% if sim.data.get('birth_year_only') %}Estimated Global Day {{sim.data.get('birth_global_day','unknown')}} for scheduling{% else %}Global Day {{sim.data.get('birth_global_day','unknown')}}{% endif %}</span></div>
@@ -45,6 +47,7 @@
   </div>
 </header>
 {% include "_profile_essentials.html" %}
+{% if hp_ancestry %}{% set bloodline=hp_ancestry %}{% include "_hp_ancestry.html" %}{% endif %}
 {% if sim_notice %}<div class="notice">{{sim_notice}}</div>{% endif %}
 
 <nav class="profile-jump" aria-label="Profile sections">
@@ -74,6 +77,8 @@
       </dl>
       {% if sim.data.get('notes') %}<blockquote class="profile-note">{{sim.data.get('notes')}}</blockquote>{% endif %}
     </section>
+
+    {% include "_birth_measurements.html" %}
 
     {% if university_profile %}<section class="profile-section sim-university-summary">
       <div class="section-heading"><div><p class="eyebrow">UNIVERSITY & PERFORMANCE</p><h2>{{university_profile.enrollment.data.get('degree') or 'University study'}}</h2></div><a href="/p/university#students">Open university ledger →</a></div>
@@ -111,7 +116,7 @@
       <div class="section-heading"><div><p class="eyebrow">HEALTH & FAMILY PLANNING</p><h2>Life events requiring attention</h2></div><a href="/p/today">Review Today →</a></div>
       <div class="health-split">
         <div><h3>Illness history</h3>{% for illness in illnesses[:8] %}<a class="compact-record" href="/p/illnesses?q={{illness.label|urlencode}}"><span class="record-dot {{'active' if illness in profile_summary.active_illnesses else 'closed'}}"></span><span><strong>{{illness.data.get('illness_name') or illness.label}}</strong><small>GD {{illness.data.get('onset_global_day',illness.global_day)}}{% if illness.data.get('end_global_day') is not none %}–{{illness.data.get('end_global_day')}}{% endif %}</small></span><em>{{illness.data.get('status','Active')}}</em></a>{% else %}<p class="muted">No illnesses recorded.</p>{% endfor %}</div>
-        <div><h3>Pregnancy history</h3>{% for pregnancy in pregnancies[:8] %}<a class="compact-record" href="/pregnancies/{{pregnancy.id}}"><span class="record-dot {{'active' if pregnancy in profile_summary.active_pregnancies else 'closed'}}"></span><span><strong>{{pregnancy.label}}</strong><small>Due GD {{pregnancy.data.get('due_global_day',pregnancy.global_day)}} · {{pregnancy.data.get('babies_delivered',0)}} delivered</small></span><em>{{pregnancy.data.get('status','Active')}}</em></a>{% else %}<p class="muted">No pregnancies recorded.</p>{% endfor %}</div>
+        <div><h3>Pregnancy history</h3>{% for pregnancy in pregnancies[:8] %}<a class="compact-record" href="/pregnancies/{{pregnancy.id}}"><span class="record-dot {{'active' if pregnancy in profile_summary.active_pregnancies else 'closed'}}"></span><span><strong>{{pregnancy.label}}</strong><small>Due GD {{pregnancy.data.get('due_global_day',pregnancy.global_day)}} · {{pregnancy.data.get('babies_delivered',0)}} delivered</small>{% if pregnancy.data.get('labor_tracking') or pregnancy.data.get('labor_duration_manual') %}<small>Labor: {{labor_summary(pregnancy.data)}}</small>{% endif %}</span><em>{{pregnancy.data.get('status','Active')}}</em></a>{% else %}<p class="muted">No pregnancies recorded.</p>{% endfor %}</div>
       </div>
       <div class="allowance-ledger"><div class="section-heading"><div><h3>Pregnancy allowance</h3><p>Active, delivered, miscarried, and stillborn pregnancies count. Cancelled and archived entries do not.</p></div><a href="/p/today?task=rolls&roll_kind=pregnancy-count">Create or view roll →</a></div>{% if pregnancy_plan.current %}<section class="metric-strip four"><article><span>Historical year</span><strong>{{pregnancy_plan.current.year}}</strong></article><article><span>Allowed</span><strong>{{pregnancy_plan.current.allowed}}</strong></article><article><span>Used</span><strong>{{pregnancy_plan.current.used}}</strong></article><article><span>Remaining</span><strong>{{pregnancy_plan.current.remaining}}</strong></article></section>{% if pregnancy_plan.rows|length>1 %}<details><summary>Earlier yearly allowances</summary>{% for row in pregnancy_plan.rows[1:] %}<div class="list-row"><strong>{{row.year}}</strong><span>{{row.used}} of {{row.allowed}} used · {{row.remaining}} remaining</span></div>{% endfor %}</details>{% endif %}{% else %}<div class="empty"><strong>No pregnancy allowance has been rolled for this Sim.</strong><p>Create the roll from Today to save and track it here.</p></div>{% endif %}</div>
     </section>

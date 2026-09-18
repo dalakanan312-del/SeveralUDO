@@ -81,3 +81,7 @@ details.compact-record{display:block;margin:0;padding:0;border:1px solid var(--l
 .record-inline-form{display:grid;grid-template-columns:minmax(170px,1fr) minmax(150px,.8fr) auto auto;gap:.5rem;align-items:center}.record-inline-form input,.record-inline-form select,.record-inline-form button{margin:0}.record-inline-form>span{display:grid;min-width:0}.record-inline-form small{color:var(--muted)}.sim-check-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.35rem;max-height:19rem;overflow:auto;padding:.75rem;border:1px solid var(--line);border-radius:.75rem}.sim-check-grid legend{padding:0 .35rem;color:var(--gold);font-weight:800}.newspaper>div{margin-top:.8rem;padding:1rem;border:1px solid rgba(199,148,66,.2);background:#151619;font:1rem/1.7 Georgia,serif}
 @media(max-width:850px){.family-plan-compact>summary{align-items:flex-start}.plan-quick{flex-wrap:wrap;justify-content:flex-end}.compact-record-grid{grid-template-columns:1fr}.record-inline-form{grid-template-columns:1fr 1fr}.record-inline-form>span{grid-column:1/-1}}
 @media(max-width:560px){.family-plan-compact>summary{display:grid}.plan-quick{justify-content:flex-start;white-space:normal}.record-inline-form{grid-template-columns:1fr}.record-inline-form>span{grid-column:auto}.sim-check-grid{grid-template-columns:1fr}}
+.save-a-sim-ledger .list-row>div{min-width:0;flex:1}
+.save-a-sim-ledger small{display:block;overflow-wrap:anywhere}
+.save-a-sim-ledger form{margin-top:.6rem}
+.save-a-sim-ledger form small{margin-top:.25rem}
