@@ -47,6 +47,39 @@ alter records. Explicit form edits can select automatic calculation even while
 general automation is paused. Frozen relatives are evidence only; their records
 are never rewritten by the refresh.
 
-This is a tracker-only feature: no new game mod, schema migration or live-save
-rewrite is required. It is included in the pending tracker source update, not
-yet installed or deployed.
+## Unknown-ancestry d5
+
+For a living, active Sim whose ancestry remains Unknown, open **Blood status**
+on their profile or **Harry Potter Decades → Magical identity and life**, then
+choose **Roll unknown ancestry · d5**. The HP add-on and HP-04 must be enabled.
+
+| d5 | Result |
+| --- | --- |
+| 1 | Muggle |
+| 2 | Muggle-Born |
+| 3 | Squib |
+| 4 | Half-Blood |
+| 5 | Pureblood |
+
+This is an optional, player-requested fallback, not an automatic roll for every
+newborn. The preview shows the proposed blood status and magical ability. Nothing
+changes until confirmation; declining releases the throw so the next click rolls
+again. A new throw can naturally land on the same face. Repeated clicks do not
+create duplicate obligations. Pending ancestry rolls also appear on Today.
+
+Confirmation sets the tracker identity (non-magical for Muggle/Squib and magical
+for the other three). It does not change the game or create imaginary relatives.
+The result remains labeled **Rolled ancestry** with its exact face; a rolled
+Pureblood is not presented as four confirmed spellcaster grandparents. Existing
+family-tree calculations and evidence remain visible separately.
+
+A confirmed fallback retires unfinished birth-identity/discovery checks for that
+Sim so they cannot overwrite the choice; completed history stays intact. Ancestry
+refreshes preserve the rolled result. The Harry Potter form offers **Keep rolled
+ancestry**, manual corrections, or **Automatic · four-grandparent ancestry**.
+The one confirmed roll stays in history and cannot be rerolled after confirmation.
+Manual use still works while general automation is paused; it does not re-enable
+unrelated automatic scheduling. Frozen/deceased Sims and other saves are protected.
+
+This is tracker-only: no new game mod, schema migration or live-save rewrite is
+required. The d5 addition is included in tracker version 4.6.45.

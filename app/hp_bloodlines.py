@@ -1,12 +1,18 @@
 """Harry Potter ancestry: four confirmed spellcaster grandparent positions."""
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 
 from . import harry_potter_rules, occult_rules
-from .models import Record
+from .models import ChronicleSave, Record
 
-STATUSES = ("Pureblood", "Half-Blood", "Muggle-Born", "Muggle", "Unknown")
+STATUSES = ("Pureblood", "Half-Blood", "Muggle-Born", "Muggle", "Squib", "Unknown")
 SOURCE = "Four-grandparent ancestry"
 PARENT_KEYS = ("mother_id", "father_id")
+ANCESTRY_RESULTS = {1: "Muggle", 2: "Muggle-Born", 3: "Squib", 4: "Half-Blood", 5: "Pureblood"}
+ANCESTRY_TABLE = "; ".join(f"{face}: {label}" for face, label in ANCESTRY_RESULTS.items())
+
+
+def rolled(data):
+    return data.get("hp_blood_status_mode") == "rolled"
 
 
 def enabled(save):
@@ -41,6 +47,8 @@ def spellcaster(person):
 
 
 def manual(data):
+    if rolled(data):
+        return False
     if data.get("hp_blood_status_mode") in {"auto", "manual"}:
         return data["hp_blood_status_mode"] == "manual"
     # Preserve player entries, but correct old birth-roll guesses automatically.
@@ -91,16 +99,23 @@ def classify(sim, by_id):
         status, reason = "Half-Blood", "Magical ancestry or ability is recorded, and at least one grandparent is confirmed not to be a spellcaster."
     else:
         status, reason = "Unknown", "Not enough confirmed ancestry to establish blood status. Two magical parents alone do not establish Pureblood."
-    override = manual(sim.data or {})
+    data = sim.data or {}
+    override = manual(data)
+    assigned = rolled(data)
+    display = data.get("hp_blood_status") if override or assigned else status
     return {"status": status, "reason": reason, "grandparents": grandparents,
         "spellcasters": magical, "known": known, "unknown": 4-known,
-        "manual": override, "display": (sim.data or {}).get("hp_blood_status") if override else status,
+        "manual": override, "rolled": assigned, "display": display,
+        "roll_actual": data.get("hp_ancestry_roll_actual"),
+        "can_roll": status == "Unknown" and display in (None, "", "Unknown") and not invalid
+                    and not assigned and not data.get("hp_ancestry_roll_id") and not sim.deleted
+                    and not any(data.get(k) for k in ("infinite_frozen", "death_confirmed", "game_was_dead")),
         "evidence": {"parents": [p.id if p else None for p in parents],
                      "grandparents": [{"id": g["id"], "spellcaster": g["spellcaster"]} for g in grandparents]}}
 
 
 def updates(sim, by_id):
-    if manual(sim.data or {}):
+    if manual(sim.data or {}) or rolled(sim.data or {}):
         return {}
     result = classify(sim, by_id)
     return {"hp_blood_status": result["status"], "hp_blood_status_mode": "auto",
@@ -137,8 +152,10 @@ def refresh(session, save, by_id=None):
     return changed
 
 
-def form_updates(value):
+def form_updates(value, current=None):
     value = str(value or "auto").strip()
+    if value == "rolled" and rolled(current or {}):
+        return {}
     if value == "auto":
         return {"hp_blood_status_mode": "auto", "hp_blood_status_source": SOURCE}
     if value not in STATUSES:
@@ -146,3 +163,91 @@ def form_updates(value):
     return {"hp_blood_status": value, "hp_blood_status_mode": "manual",
         "hp_blood_status_source": "Player-entered", "hp_blood_status_reason": "Player override",
         "hp_blood_status_evidence": {}}
+
+
+def validate_unknown_ancestry(session, save, sim):
+    from . import infinite_decades
+    if not enabled(save):
+        raise ValueError("Enable the Harry Potter add-on before rolling unknown ancestry.")
+    if (not sim or sim.save_id != save.id or sim.kind != "sim" or sim.deleted
+            or infinite_decades.frozen(save) or (sim.data or {}).get("infinite_frozen")):
+        raise ValueError("Choose an active Sim in this save, not a frozen branch record.")
+    result = classify(sim, people(session, save))
+    death = (sim.data or {}).get("death_global_day")
+    try:
+        deceased = death not in (None, "") and int(death) <= save.global_day
+    except (ValueError, TypeError):
+        deceased = False
+    if not result["can_roll"] or deceased:
+        raise ValueError("This d5 is only for living Sims with unresolved ancestry and no confirmed ancestry roll.")
+    rule = session.scalar(select(Record).where(Record.save_id == save.id, Record.kind == "addon_rule",
+        Record.deleted.is_(False), Record.data["rule_pack_id"].as_string() == harry_potter_rules.PACK_ID,
+        Record.data["code"].as_string() == "HP-04"))
+    if rule is None or not (rule.data or {}).get("active"):
+        raise ValueError("Enable HP-04 Blood Status before rolling unknown ancestry.")
+    return rule
+
+
+def create_unknown_roll(session, save, sim):
+    """Player-requested fallback, never an automatic replacement for known ancestry."""
+    from . import domain
+    # Serialize double-clicks before checking for an existing pending roll.
+    session.flush()
+    if session.get_bind().dialect.name == "sqlite":
+        session.execute(update(ChronicleSave).where(ChronicleSave.id == save.id).values(revision=ChronicleSave.revision))
+    session.refresh(save, with_for_update=True)
+    if sim is not None:
+        session.refresh(sim)
+    rule = validate_unknown_ancestry(session, save, sim)
+    source = f"harry-potter:HP-04:unknown-ancestry:{sim.id}"
+    existing = session.scalar(select(Record).where(Record.save_id == save.id, Record.kind == "roll",
+        Record.deleted.is_(False), Record.data["source"].as_string() == source))
+    if existing:
+        if (existing.data or {}).get("completed"):
+            raise ValueError("This Sim already has a confirmed ancestry roll. Edit their magical fields to correct it.")
+        return existing, False
+    roll = Record(save_id=save.id, kind="roll", label=f"{sim.label} — Unknown ancestry",
+        global_day=save.global_day, data={"sim_id": sim.id, "sim_name": sim.label,
+        "source": source, "source_rule_id": rule.id, "source_rule_kind": "addon_rule",
+        "source_rule_key": "hp_04", "rule_family": "Harry Potter Decades", "rule_generated": True,
+        "hp_rule_code": "HP-04", "hp_unknown_ancestry": True, "roll_type": "Unknown ancestry",
+        "die": "d5", "bad_results": "", "result_rules": ANCESTRY_TABLE,
+        "nonlethal": True, "failure_is_lethal": False, "completed": False,
+        "due_global_day": save.global_day,
+        "notes": "Player-requested identity for unknown ancestry. Updates tracker magical identity, not the game or relatives. The result is labeled Rolled ancestry, not family-tree evidence."})
+    session.add(roll); session.flush(); domain.journal(session, roll, "upsert", 0)
+    return roll, True
+
+
+def apply_unknown_roll(session, save, roll, actual):
+    from . import domain
+    if roll.save_id != save.id or roll.kind != "roll":
+        raise ValueError("Choose an ancestry roll from this save.")
+    sim = session.get(Record, str((roll.data or {}).get("sim_id") or ""))
+    validate_unknown_ancestry(session, save, sim)
+    if actual not in ANCESTRY_RESULTS:
+        raise ValueError("Unknown ancestry uses a d5: enter 1 through 5.")
+    data = sim.data or {}
+    sex = str(data.get("sex") or data.get("game_sex") or "").strip().casefold()
+    magical = data.get("hp_magical_ability") if data.get("hp_magical_ability") in {"Witch", "Wizard"} else (
+        "Wizard" if sex in {"male", "m", "man", "boy"} else "Witch" if sex in {"female", "f", "woman", "girl"} else "Spellcaster")
+    ability = "Muggle" if actual == 1 else "Squib" if actual == 3 else magical
+    base = sim.version
+    sim.data = {**data, "hp_blood_status": ANCESTRY_RESULTS[actual], "hp_blood_status_mode": "rolled",
+        "hp_blood_status_source": "Unknown ancestry d5", "hp_blood_status_evidence": {},
+        "hp_blood_status_reason": f"Player-confirmed d5 result {actual}: {ANCESTRY_RESULTS[actual]}. Not confirmed family-tree evidence.",
+        "hp_ancestry_roll_id": roll.id, "hp_ancestry_roll_actual": actual,
+        "hp_ancestry_roll_global_day": save.global_day, "hp_magical_ability": ability,
+        "hp_hidden_squib": False, "hp_public_magical_status": ability}
+    sim.version += 1; domain.journal(session, sim, "upsert", base)
+    changed = 1
+    # The chosen fallback identity supersedes an unresolved birth-identity check,
+    # not completed history. Future scheduling must not recreate that check.
+    for pending in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == "roll",
+            Record.deleted.is_(False), Record.data["sim_id"].as_string() == sim.id)):
+        if (pending.data or {}).get("hp_rule_code") in {"HP-05", "HP-06"} and not pending.data.get("completed"):
+            base = pending.version; pending.deleted = True
+            pending.data = {**pending.data, "retired_reason": "Identity resolved by confirmed unknown-ancestry d5",
+                "retired_by_ancestry_roll_id": roll.id, "retired_global_day": save.global_day}
+            pending.version += 1; domain.journal(session, pending, "delete", base); changed += 1
+    return changed

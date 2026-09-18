@@ -5397,6 +5397,8 @@ def _schedule_harry_potter_rolls(session: Session, save: ChronicleSave,
     if rule:
         for sim in sims:
             data = sim.data or {}; birth = data.get("birth_global_day", sim.global_day)
+            if data.get("hp_ancestry_roll_id"):
+                continue
             try:
                 birth = int(birth)
             except (TypeError, ValueError):
@@ -5565,6 +5567,9 @@ def _schedule_harry_potter_rolls(session: Session, save: ChronicleSave,
 def _hp_roll_outcome(roll: Record, actual: int) -> str | None:
     """Return the concrete outcome text for automatic HP modules."""
     data = roll.data or {}; code = str(data.get("hp_rule_code") or "").upper()
+    if code == "HP-04" and data.get("hp_unknown_ancestry"):
+        from .hp_bloodlines import ANCESTRY_RESULTS
+        return ANCESTRY_RESULTS.get(actual)
     if code == "HP-05":
         if data.get("hp_birth_branch") == "magical-parent":
             return "Squib" if actual == 1 else "Witch or Wizard"
@@ -5587,7 +5592,12 @@ def _apply_hp_roll_result(session: Session, save: ChronicleSave, roll: Record, a
     data = roll.data or {}; code = str(data.get("hp_rule_code") or "").upper()
     sim_id = str(data.get("sim_id") or ""); sim = session.get(Record, sim_id) if sim_id else None
     changed = 0
+    if code == "HP-04" and data.get("hp_unknown_ancestry"):
+        from .hp_bloodlines import apply_unknown_roll
+        return apply_unknown_roll(session, save, roll, actual)
     if code == "HP-05" and sim and not sim.deleted:
+        if (sim.data or {}).get("hp_ancestry_roll_id"):
+            return 0
         sim_data = dict(sim.data or {}); magical_parent = data.get("hp_birth_branch") == "magical-parent"
         if magical_parent and actual == 1:
             updates = {"hp_magical_ability": "Squib", "hp_hidden_squib": True,
@@ -5960,7 +5970,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             sim.version += 1
             journal(session, sim, "upsert", sim_base)
             hogwarts_house_changed = True
-    hp_changed = _apply_hp_roll_result(session, save, roll, actual) if automate else 0
+    hp_changed = _apply_hp_roll_result(session, save, roll, actual) if automate or roll.data.get("hp_unknown_ancestry") else 0
     family_plan = None
     family_plan_changed = False
     family_plan_created = False
@@ -6006,7 +6016,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         session, save, list(session.scalars(select(Record).where(
             Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False),
         )))
-    ) if hp_changed else 0
+    ) if hp_changed and automate else 0
     if automate:
         automatic_followups += _schedule_event_followup(session, save, roll, actual)
         automatic_followups += maternal_rules.schedule(session, save, roll)

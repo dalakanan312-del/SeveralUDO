@@ -118,7 +118,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.44")
+app = FastAPI(title="Decades Tracker", version="4.6.45")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 from .request_safety import RequestSafetyMiddleware
 app.add_middleware(RequestSafetyMiddleware, settings=settings)
@@ -4344,6 +4344,25 @@ async def create_hp_roll(request: Request):
     return RedirectResponse("/p/harry-potter#roll-workbench",status_code=303)
 
 
+@app.post("/api/harry-potter/sims/{sim_id}/ancestry/roll")
+def roll_unknown_hp_ancestry(sim_id: str, request: Request):
+    from . import action_previews
+    with db() as session:
+        ctx = context(request, session); save = ctx.get("save")
+        if not save:
+            raise HTTPException(400, "Open a save first.")
+        sim = session.get(Record, sim_id)
+        if not sim or sim.save_id != save.id or sim.kind != "sim":
+            raise HTTPException(404, "Sim not found in this save.")
+        try:
+            roll, created = hp_bloodlines.create_unknown_roll(session, save, sim)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        save.revision += int(created)
+        return action_previews.response(__import__(__name__, fromlist=['app']), request,
+            session, save, {"return_to": f"/sims/{sim.id}"}, "roll", roll, True)
+
+
 @app.post("/api/harry-potter/sims/{sim_id}")
 async def update_hp_sim(sim_id: str, request: Request):
     form=await request.form()
@@ -4351,7 +4370,7 @@ async def update_hp_sim(sim_id: str, request: Request):
         ctx=context(request,session);save=ctx.get("save");sim=session.get(Record,sim_id)
         if not save or not sim or sim.save_id!=save.id or sim.kind!="sim" or sim.deleted: raise HTTPException(404,"Sim not found.")
         try:
-            blood_values = hp_bloodlines.form_updates(form.get("blood_status"))
+            blood_values = hp_bloodlines.form_updates(form.get("blood_status"), sim.data)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         ancestry = hp_bloodlines.people(session, save)
@@ -5082,6 +5101,8 @@ def reopen_roll(request: Request, roll_id: str):
         roll=session.get(Record,roll_id)
         if not roll or roll.kind!="roll" or roll.deleted: raise HTTPException(404)
         save=owned_save(request,session,roll.save_id)
+        if (roll.data or {}).get("hp_unknown_ancestry") and (roll.data or {}).get("completed"):
+            raise HTTPException(409, "Ancestry was already confirmed. Correct magical fields or choose automatic ancestry on the Harry Potter page; completed roll history is retained.")
         if not bool((roll.data or {}).get("completed")): return RedirectResponse(request.headers.get("referer") or "/p/rolls",status_code=303)
         sim=session.get(Record,str((roll.data or {}).get("sim_id") or "")) if (roll.data or {}).get("sim_id") else None
         if sim and bool((sim.data or {}).get("death_confirmed")) and (sim.data or {}).get("death_source_roll_id")==roll.id:
