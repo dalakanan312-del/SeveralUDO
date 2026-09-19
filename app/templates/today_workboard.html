@@ -1,9 +1,26 @@
-{% extends 'base.html' %}{% block body %}
-<header class="hero compact"><p class="eyebrow">PLAY · {{save.name}}</p><h1>Today</h1><p><strong data-live-weekday>{% if ui_clock and ui_clock.game_day is not none %}{{sim_weekday(ui_clock.game_day)}} · last reported in game{% else %}{{tracker_weekday(save.global_day)}} · tracker weekday{% endif %}</strong></p><p><span data-live-historical-label>{{historical_period(save,save.global_day)}}</span> · Global Day <span data-live-global-day>{{save.global_day}}</span></p></header>
-<div class="u-actions"><nav class="u-window" aria-label="Time window">{% for key,label in [('today','Today'),('overdue','Overdue'),('future','Future')] %}<a href="/p/today?window={{key}}&household={{board_household|urlencode}}" {% if board_window==key %}aria-current="page"{% endif %}>{{label}}</a>{% endfor %}</nav><button type="button" data-refresh-work>Refresh work</button><a href="/p/today?view=tools">All Today tools →</a></div>
-{% include '_today_pregnancy_roll.html' %}
-<details class="panel" data-ui-detail="today-tools"><summary>Calendar controls, age check and other tools</summary><p>The complete controls remain available, including manual rolls, seven-day skips, age checks, occult summaries, pregnancy-count rolls and undo.</p><div class="u-actions"><a href="/p/today?view=tools">Open detailed Today</a><a href="/p/planner">Calendar and plans</a><a href="/p/rolls">All rolls / add roll</a><a href="/p/automation">Full automation review</a></div></details>
+{% extends 'base.html' %}
+{% block workspace_context %}{% endblock %}
+{% block body %}
+<header class="workspace-heading">
+  <div><p class="eyebrow">PLAY · {{save.name}}</p><h1>Today</h1><p class="workspace-subtitle">A little progress. Another chapter.</p></div>
+  <div class="workspace-date"><strong data-live-weekday>{% if ui_clock and ui_clock.game_day is not none %}{{sim_weekday(ui_clock.game_day)}} · last reported in game{% else %}{{tracker_weekday(save.global_day)}} · tracker weekday{% endif %}</strong><span data-live-historical-label>{{historical_period(save,save.global_day)}}</span><small>Global Day <span data-live-global-day>{{save.global_day}}</span></small></div>
+</header>
+<div class="workspace-context">{% include '_usability_bar.html' %}</div>
+<section class="workspace-toolbar" aria-label="Choose your work">
+  <nav class="u-window" aria-label="Time window">{% for key,label in [('today','Today'),('overdue','Overdue'),('future','Future')] %}<a href="/p/today?window={{key}}&household={{board_household|urlencode}}" {% if board_window==key %}aria-current="page"{% endif %}>{{label}}</a>{% endfor %}</nav>
+  <form action="/p/today" method="get" class="workspace-household" data-ui-filters><input type="hidden" name="window" value="{{board_window}}"><label for="today-household">Household<select id="today-household" name="household"><option value="all">All households</option>{% for h in board_households %}<option value="{{h.id}}" {% if board_household==h.id %}selected{% endif %}>{{h.label}}</option>{% endfor %}</select></label><button>Apply</button></form>
+  <button type="button" data-refresh-work>↻ Refresh work</button>
+</section>
+<p class="workspace-window-note">{{'Due today only. Earlier unresolved work is under Overdue; upcoming work is under Future.' if board_window=='today' else 'Viewing '+board_window+' work only. Use Today to return to the current day.'}}</p>
+<nav class="workspace-jumps" aria-label="Work sections" hx-boost="false">
+  {% for group in board_groups %}<a href="#work-{{group.id}}"><span>{{group.label}}</span><b data-work-count="{{group.id}}">{{group.count}}</b></a>{% endfor %}
+</nav>
+<div class="workspace-tools">
+  {% include '_today_pregnancy_roll.html' %}
+  <details class="panel workspace-more-tools" data-ui-detail="today-tools"><summary>More play tools <small>Calendar, age check, manual rolls &amp; undo</small></summary><div class="u-actions"><a class="button" href="/p/today?view=tools">All Today tools →</a><a class="button" href="/p/planner">Calendar and plans</a><a class="button" href="/p/rolls">All rolls / add roll</a><a class="button" href="/p/automation">Full automation review</a></div><p>Detailed Today includes seven-day skips, age checks, occult summaries and undo.</p>{% include '_workflow_navigation.html' %}</details>
+</div>
 {% if not save_settings.get('automation_enabled',true) %}<div class="notice">Tracker automation is paused. Recorded work remains visible; turn automation on in Game Connection or the detailed Today tools when ready.</div>{% endif %}
-<p class="muted">{{'Due today only. Earlier unresolved work is under Overdue; upcoming work is under Future.' if board_window=='today' else 'This window is separate from today. Historical completed results retain deceased Sims.'}}</p>
-<form action="/p/today" method="get" class="u-actions" data-ui-filters><input type="hidden" name="window" value="{{board_window}}"><label>Household task batch<select name="household"><option value="all">All households</option>{% for h in board_households %}<option value="{{h.id}}" {% if board_household==h.id %}selected{% endif %}>{{h.label}}</option>{% endfor %}</select></label><button>Show household</button></form>{% if daily_history %}<details class="panel" data-ui-detail="daily-history"><summary>Today in history · {{daily_history|length}} events</summary>{% for event in daily_history %}<p><a href="/p/events?q={{event.label|urlencode}}">{{event.label}}</a> · {{event.data.get("scope") or "Historical context"}}</p>{% endfor %}</details>{% endif %}<div data-workboard data-window="{{board_window}}">{% for group in board_groups %}{% include '_today_section.html' %}{% endfor %}</div><p role="status" id="ui-status"></p>
+<div data-workboard data-window="{{board_window}}">{% for group in board_groups %}{% include '_today_section.html' %}{% endfor %}</div>
+{% if daily_history %}<details class="panel workspace-history" data-ui-detail="daily-history"><summary>Today in history <small>{{daily_history|length}} events · optional context</small></summary>{% for event in daily_history %}<p><a href="/p/events?q={{event.label|urlencode}}">{{event.label}}</a> · {{event.data.get("scope") or "Historical context"}}</p>{% endfor %}</details>{% endif %}
+<p role="status" aria-live="polite" id="ui-status"></p>
 {% endblock %}

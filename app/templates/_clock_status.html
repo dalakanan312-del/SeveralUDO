@@ -1,0 +1,13 @@
+{% if ui_clock %}
+<details class="u-clock workspace-clock" aria-label="Game connection status" data-clock-state="{{ui_clock.state}}">
+  <summary>
+    <span class="workspace-clock-status"><i aria-hidden="true"></i><strong data-clock-label>{{ui_clock.label}}</strong></span>
+    <span class="workspace-clock-reading"><small>Connected save</small><span data-clock-save>{{ui_clock.save_name}}</span></span>
+    <span class="workspace-clock-reading"><small>Tracker</small><span>GD <span data-live-global-day>{{ui_clock.global_day}}</span></span></span>
+    <dl class="workspace-clock-reading"><dt>In game</dt><dd data-clock-game>{% if ui_clock.game_day is not none %}{{sim_weekday(ui_clock.game_day)}} · Day {{ui_clock.game_day}} · {{'%02d'|format(ui_clock.hour or 0)}}:{{'%02d'|format(ui_clock.minute or 0)}}{% else %}No report yet{% endif %}</dd></dl>
+    <span class="workspace-clock-reading"><small>Last successful report</small><time data-clock-seen datetime="{{ui_clock.last_success or ''}}">{{ui_clock.last_success or 'None yet'}}</time></span>
+    <span class="workspace-clock-chevron" aria-hidden="true">⌄</span>
+  </summary>
+  <div class="workspace-clock-detail"><p data-clock-detail>{{ui_clock.detail}}</p><p data-clock-receipt>{{ui_clock.receipt_summary}}</p><div class="u-actions"><a class="button" href="/p/clock">Game Connection</a><button type="button" data-mark-paused {% if not ui_clock.can_mark_paused %}hidden{% endif %} data-paused="{{'true' if ui_clock.paused else 'false'}}">{{'Clear paused marker' if ui_clock.paused else 'Mark game paused'}}</button></div></div>
+</details>
+{% endif %}

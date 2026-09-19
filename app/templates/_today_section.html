@@ -1,5 +1,5 @@
 {% from '_roll_card.html' import roll_card with context %}
-<section class="u-work-section" id="work-{{group.id}}" data-work-section="{{group.id}}"><h2>{{group.label}} <span class="u-count">{{group.count}}</span></h2>
+<section class="u-work-section" id="work-{{group.id}}" data-work-section="{{group.id}}" data-work-total="{{group.count}}" aria-labelledby="work-heading-{{group.id}}"><header class="workspace-section-heading"><div><h2 id="work-heading-{{group.id}}">{{group.label}} <span class="u-count">{{group.count}}</span></h2><p>{{'Review and resolve these before moving on.' if group.id=='decisions' else 'Recorded results. Your decisions stay here.' if group.id=='completed' else 'Births, health, relationships and events in this window.'}}</p></div><a href="#work-{{group.id}}" hx-boost="false" aria-label="Link to {{group.label}}">#</a></header>
 {% for birth in group.birth_panels %}{% include '_birth_panel.html' %}{% endfor %}
 {% for item in group.rows %}{% set person=group.by_id.get(item.data.get('sim_id') or item.data.get('mother_id')) %}
 {% if item.kind=='roll' %}{{roll_card(item,person,board_window!='future')}}{% else %}
