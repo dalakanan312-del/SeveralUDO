@@ -1,0 +1,6 @@
+{% if user and save %}
+<aside class="death-reminder-banner" data-death-reminders data-user="{{user.id}}" data-save="{{save.id}}" data-epoch="{{(infinite_meta|default({})).get('epoch','')}}" data-day="{{save.global_day}}" hidden aria-label="Scheduled death reminders">
+  <div><strong data-death-summary></strong><small>Scheduled deaths still need your confirmation.</small></div>
+  <button type="button" data-open-death-reminders>Review deaths</button>
+</aside>
+{% endif %}

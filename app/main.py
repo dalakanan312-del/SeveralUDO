@@ -27,7 +27,7 @@ from .db import Base, SessionLocal, engine, ensure_local_query_indexes
 from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, Device, DiceAudit, LegacyWorkspaceCode, Membership, NotificationEvent, NotificationPreference, Portrait, Record, User, Workspace, WorkspaceInvite
 from .security import hash_secret, token
 from .session_policy import REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware, set_session_mode
-from . import birth_legitimacy, birth_measurements, labor, hp_bloodlines
+from . import birth_legitimacy, birth_measurements, labor, hp_bloodlines, death_reminders
 from .workflow import related_tasks, page_sections
 
 
@@ -118,7 +118,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.46")
+app = FastAPI(title="Decades Tracker", version="4.6.47")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 from .request_safety import RequestSafetyMiddleware
 app.add_middleware(RequestSafetyMiddleware, settings=settings)
@@ -1355,6 +1355,7 @@ def live_status(request: Request):
             "save_id": save.id,
             "global_day": int(save.global_day),
             "ui_clock": ctx['ui_clock'],
+            "death_reminders": death_reminders.pending(session, save, user.id, ctx['ui_clock']),
             "historical_label":historical_period(save,save.global_day),
             "clock": {
                 "enabled": bool(link and link.enabled) or bool(advance.get('sims3_saved_clock_enabled')),

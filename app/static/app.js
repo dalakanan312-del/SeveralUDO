@@ -100,11 +100,32 @@ document.addEventListener('change',(event)=>{const form=event.target.closest('fo
 document.addEventListener('submit',()=>{trackerFormDirty=false;});
 async function pollLiveStatus(){
   const body=document.body;const endpoint=body.dataset.liveStatus;if(!endpoint||document.hidden||liveStatusPollActive)return;liveStatusPollActive=true;
-  try{const response=await fetch(endpoint,{headers:{Accept:'application/json'},cache:'no-store'});if(!response.ok)throw Error('Connection unavailable');const data=await response.json();if(data.save_id!==body.dataset.saveId)return;document.dispatchEvent(new CustomEvent('decades:clock',{detail:data.ui_clock}));document.querySelectorAll('[data-live-historical-label]').forEach(n=>{n.textContent=data.historical_label||n.textContent;});const current=Number(body.dataset.currentGlobalDay),next=Number(data.global_day);if(!Number.isFinite(next))return;document.querySelectorAll('[data-live-global-day]').forEach((node)=>{node.textContent=String(next);});if(Number.isFinite(current)&&next!==current){body.dataset.currentGlobalDay=String(next);if(document.querySelector('[data-workboard]'))document.dispatchEvent(new CustomEvent('decades:day-changed',{detail:{dirty:trackerFormDirty}}));else if(trackerFormDirty)showDayAdvanceNotice(current,next);else location.reload();}}
+  const scope=document.querySelector('[data-death-reminders]');
+  const saveId=scope?.dataset.save||body.dataset.saveId;
+  try{
+    const response=await fetch(endpoint,{headers:{Accept:'application/json'},cache:'no-store'});
+    if(!response.ok)throw Error('Connection unavailable');const data=await response.json();
+    // A response started on a different page/save must not reopen an old alert.
+    if(scope!==document.querySelector('[data-death-reminders]')||data.save_id!==saveId)return;
+    if(scope&&data.death_reminders&&String(data.death_reminders.epoch||'')!==String(scope.dataset.epoch||''))return;
+    body.dataset.saveId=saveId;
+    document.dispatchEvent(new CustomEvent('decades:clock',{detail:data.ui_clock}));
+    document.dispatchEvent(new CustomEvent('decades:live-status',{detail:{...data,editing:trackerFormDirty}}));
+    document.querySelectorAll('[data-live-historical-label]').forEach(n=>{n.textContent=data.historical_label||n.textContent;});
+    const current=Number(scope?.dataset.day||body.dataset.currentGlobalDay),next=Number(data.global_day);if(!Number.isFinite(next))return;
+    document.querySelectorAll('[data-live-global-day]').forEach(node=>{node.textContent=String(next);});
+    body.dataset.currentGlobalDay=String(next);if(scope)scope.dataset.day=String(next);
+    if(Number.isFinite(current)&&next!==current){
+      if(document.querySelector('[data-workboard]'))document.dispatchEvent(new CustomEvent('decades:day-changed',{detail:{dirty:trackerFormDirty}}));
+      else if(trackerFormDirty||data.death_reminders?.items.length)showDayAdvanceNotice(current,next);
+      else location.reload();
+    }
+  }
   catch(_error){document.dispatchEvent(new CustomEvent('decades:clock-error'));}finally{liveStatusPollActive=false;}
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollLiveStatus();});
 window.setInterval(pollLiveStatus,10000);window.setTimeout(pollLiveStatus,2200);
+document.addEventListener('decades:request-status',pollLiveStatus);
 
 function themeRgb(value){const clean=String(value||'').replace('#','');return [0,2,4].map((index)=>parseInt(clean.slice(index,index+2),16));}
 function themeHex(channels){return '#'+channels.map((channel)=>Math.max(0,Math.min(255,Math.round(channel))).toString(16).padStart(2,'0')).join('');}

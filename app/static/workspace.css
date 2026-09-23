@@ -1,4 +1,19 @@
 /* Play-workspace refresh. Use the selected palette, density and text scale. */
+.death-reminder-banner{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin:0 0 1rem;padding:1rem;border:2px solid var(--gold);border-radius:var(--radius);background:var(--panel);color:var(--ink)}
+.death-reminder-banner[hidden]{display:none}
+.death-reminder-banner small{display:block;color:var(--muted);margin-top:.25rem}
+.death-reminder-dialog{width:min(680px,calc(100vw - 2rem));max-height:85vh;box-sizing:border-box;overflow:auto;padding:1.5rem;border:2px solid var(--gold);border-radius:var(--radius);background:var(--panel);color:var(--ink)}
+.death-reminder-dialog::backdrop{background:rgba(0,0,0,.65)}
+.death-reminder-dialog h2{margin:.4rem 0 1rem;font-size:1.7rem}
+.death-reminder-dialog p,.death-reminder-dialog small{line-height:1.5;overflow-wrap:anywhere}
+.death-reminder-list{list-style:none;padding:0;margin:1rem 0;display:grid;gap:.75rem}
+.death-reminder-list li{padding:1rem;border:1px solid var(--line);border-radius:10px;background:var(--panel-soft)}
+.death-reminder-list li>a:first-child{font-weight:700;font-size:1.1rem;color:var(--ink);overflow-wrap:anywhere}
+.death-reminder-list small{display:block;color:var(--muted);margin-top:.3rem}
+.death-reminder-list p{margin:.5rem 0 .8rem}
+.death-reminder-actions{display:flex;flex-wrap:wrap;gap:.7rem;margin:1rem 0}
+@media(max-width:520px){.death-reminder-banner{align-items:stretch;flex-direction:column}.death-reminder-dialog{padding:1rem}.death-reminder-actions>*{width:100%;text-align:center}}
+@media print{.death-reminder-banner,.death-reminder-dialog{display:none}}
 .workspace-skip{position:fixed;left:1rem;top:-10rem;z-index:10000;padding:.8rem 1rem;background:var(--panel);color:var(--ink);border:2px solid var(--gold);border-radius:8px}
 .workspace-skip:focus{top:1rem}
 :where(a,button,summary,select,input):focus-visible{outline:2px solid var(--gold);outline-offset:3px}
