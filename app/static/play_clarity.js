@@ -8,7 +8,7 @@
   const headers=()=>({'X-Decades-Fragment':'1','X-UI-Save':ctx()?.dataset.save||'','X-Dynasty-Epoch':ctx()?.dataset.epoch||''});
   const report=message=>{let n=document.querySelector('#ui-status');if(!n){n=document.createElement('p');n.id='ui-status';n.setAttribute('role','status');document.querySelector('main')?.prepend(n);}n.textContent=message;};
   async function json(url,options){const r=await fetch(url,{cache:'no-store',...options});let data;try{data=await r.json();}catch{throw Error('The tracker could not return a preview. No changes were confirmed.');}if(!r.ok){const error=Error(data.detail||'The save changed. Review a new preview.');error.status=r.status;throw error;}return data;}
-  function dialog(title){const d=document.createElement('dialog');d.className='u-confirm-dialog';d.setAttribute('aria-label',title);const h=document.createElement('h2');h.textContent=title;d.append(h);document.body.append(d);const opener=document.activeElement;d.addEventListener('close',()=>{d.remove();if(opener?.isConnected)opener.focus();});return d;}
+  function dialog(title){const d=document.createElement('dialog');d.className='u-confirm-dialog';d.setAttribute('aria-label',title);const exit=document.createElement('button');exit.type='button';exit.className='dialog-exit';exit.textContent='✕ Close';exit.dataset.closeDialog='';exit.title='Close without confirming or declining';exit.addEventListener('click',()=>d.close());const h=document.createElement('h2');h.textContent=title;d.append(exit,h);document.body.append(d);const opener=document.activeElement;d.addEventListener('close',()=>{d.remove();if(opener?.isConnected)opener.focus({preventScroll:true});});return d;}
   function paragraph(d,text){const p=document.createElement('p');p.textContent=text;d.append(p);}
   function showPreview(p,form){
     const d=dialog('Review before confirming');paragraph(d,p.label);
@@ -39,7 +39,7 @@
       try{
         if(p.kind!=='roll'){location.assign(p.return_to||'/p/rules');return;}
         const result=await json('/api/previews/'+encodeURIComponent(p.token)+'/refresh',{method:'POST',headers:headers()});
-        d.close();showPreview(result.preview,form);
+        if(!d.open)return;d.close();showPreview(result.preview,form);
       }catch(error){showError(error);refresh.disabled=false;cancel.disabled=false;}
     });
     confirm.addEventListener('click',async()=>{confirm.disabled=true;cancel.disabled=true;let committed=false;

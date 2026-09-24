@@ -15,6 +15,8 @@ from .tray_scanner import decode_sgi, discover_portraits, match_portraits
 PAGE = "decade-snapshots"
 DEFAULT_BACKGROUND = "#ffffff"
 SHARED_KINDS = {"decade_snapshot", "household_portrait"}
+LAYOUT_VERSION = 2
+STAGE_HEIGHTS = {"newborn":140, "infant":220, "toddler":205, "child":295, "preteen":330, "teen":395}
 
 
 def _branch(save):
@@ -149,23 +151,69 @@ def _font(size):
     return ImageFont.load_default(size=size)
 
 
+def _infant_body(image):
+    """Remove a detached lower support pillow, never guess through the body.
+
+    Some infant Tray poses leave the Boppy below the baby, separated by a
+    transparent band. Treat that lower, wide/short component as a prop. Keep
+    ordinary crawling/seated poses, attached pillows and opaque uploads intact
+    when there is no clear separator. This affects rendering, not source bytes.
+    """
+    width, height = image.size
+    solid = image.getchannel("A").point(lambda value: 255 if value >= 32 else 0)
+    gap_start = None
+    for y in range(height):
+        empty = solid.crop((0, y, width, y + 1)).getbbox() is None
+        if empty and gap_start is None:
+            gap_start = y
+        elif not empty and gap_start is not None:
+            start, gap_start = gap_start, None
+            if y - start < max(3, int(height * .025)):
+                continue
+            upper = solid.crop((0, 0, width, start)).getbbox()
+            lower = solid.crop((0, y, width, height)).getbbox()
+            if not upper or not lower:
+                continue
+            upper_height, upper_width = upper[3] - upper[1], upper[2] - upper[0]
+            lower_height, lower_width = lower[3] - lower[1], lower[2] - lower[0]
+            if (upper_height >= height * .4 and y >= height * .6
+                    and height * .1 <= lower_height <= height * .35
+                    and lower_width >= upper_width * .45
+                    and lower_height <= lower_width * .7):
+                # Cut in the empty band, retaining antialiased edges on the baby.
+                body = image.crop((0, 0, width, (start + y) // 2))
+                bounds = body.getchannel("A").getbbox()
+                return body.crop(bounds) if bounds else image
+    return image
+
+
+def _photo_stage(entry):
+    return str(entry.get("photo_age_stage") or "").casefold().replace(" ", "").replace("_", "")
+
+
+def _actor(entry, raw):
+    actor = portraits.open_image(raw).convert("RGBA")
+    bounds = actor.getchannel("A").getbbox()
+    if bounds:
+        actor = actor.crop(bounds)
+    stage = _photo_stage(entry)
+    if stage == "infant":
+        actor = _infant_body(actor)
+    return ImageOps.contain(actor, (300, STAGE_HEIGHTS.get(stage, 440)), Image.Resampling.LANCZOS)
+
+
 def compose(year, people, background=DEFAULT_BACKGROUND, show_names=False):
     """Cutout group portrait. Keep full bodies and transparent space, not tiles."""
     if not people: raise ValueError("Add at least one portrait first.")
-    heights = {"newborn":140, "infant":160, "toddler":205, "child":295, "preteen":330, "teen":395}
     grouped = defaultdict(list)
     for entry, raw in people:
         grouped[(entry.get("household_id") or "", entry.get("household_name") or "")].append((entry, raw))
     actors = []
     for group in grouped.values():
         # Adults are behind children, with a small stagger rather than large gaps.
-        group.sort(key=lambda pair:-heights.get(pair[0].get("photo_age_stage"), 440))
+        group.sort(key=lambda pair:-STAGE_HEIGHTS.get(_photo_stage(pair[0]), 440))
         for entry, raw in group:
-            actor = portraits.open_image(raw).convert("RGBA")
-            bounds = actor.getchannel("A").getbbox()
-            if bounds: actor = actor.crop(bounds)
-            height = heights.get(entry.get("photo_age_stage"), 440)
-            actor = ImageOps.contain(actor, (300, height), Image.Resampling.LANCZOS)
+            actor = _actor(entry, raw)
             actors.append((entry, actor))
     # Bound dimensions and memory without dropping people from large dynasties.
     bands = [actors[i:i+60] for i in range(0,len(actors),60)]
@@ -327,7 +375,7 @@ def update(session, save, year, *, selected_ids=None, background=DEFAULT_BACKGRO
           "members":list(members.values()),"member_count":len(members),"member_ids":list(members),
           "household_names":list(dict.fromkeys(entry["household_name"] for entry in members.values())),
           "contributions":contributions,"background_color":background,"show_names":bool(show_names),
-          "missing_member_names":missing,"source":"Shared decade group portrait","layout":"group"}
+          "missing_member_names":missing,"source":"Shared decade group portrait","layout":"group","layout_version":LAYOUT_VERSION}
     _touch(session,album,data);_store(session,save,album,"default",image,"image/webp","decade-group")
     for extra in records[1:]:
         _touch(session,extra,{**extra.data,"merged_into":album.id})
@@ -335,6 +383,44 @@ def update(session, save, year, *, selected_ids=None, background=DEFAULT_BACKGRO
     return {"snapshot":album,"records":[album],"added":len(added),"kept":len(existing_ids),"missing":missing,
             "available":available,"ambiguous":ambiguous,"invalid":invalid,"background_color":background,
             "created":int(not records),"updated":int(bool(records)),"individual":{}}
+
+
+def refresh_layout(session, save, snapshot_id, expected_version):
+    """Recompose only archived members, even if this branch is in an earlier year."""
+    from .decade_portraits import _hex_color
+    from .infinite_dynasty import frozen as branch_frozen
+    from .models import ChronicleSave
+    if branch_frozen(save):
+        raise ValueError("Continue an active branch before refreshing portraits.")
+    if session.get_bind().dialect.name != 'sqlite':
+        session.execute(select(ChronicleSave.id).where(ChronicleSave.id == save.id).with_for_update())
+    album = session.scalar(select(Record).where(Record.id == snapshot_id, Record.save_id == save.id,
+        Record.kind == 'decade_snapshot', or_(Record.deleted.is_(False), Record.data['infinite_frozen'].as_boolean().is_(True))))
+    if not album or (album.data or {}).get('merged_into'):
+        raise ValueError("This snapshot is no longer available in this save.")
+    if album.version != expected_version:
+        raise ValueError("This snapshot changed. Refresh the page before updating its layout.")
+    data = dict(album.data or {})
+    if not data.get('album_version'):
+        raise ValueError("Use Add Sims / layout to convert this older collage first.")
+    people = []
+    for member in data.get('members', []):
+        photo = _image(session, album.id, member['portrait_stage'])
+        if not photo:
+            raise ValueError("A saved member photo is missing. The snapshot was left unchanged.")
+        people.append((member, photo.image))
+    raw = compose(data['portrait_year'], people, _hex_color(data.get('background_color') or DEFAULT_BACKGROUND),
+                  bool(data.get('show_names')))
+    current = _image(session, album.id)
+    if current and current.image == raw and data.get('layout_version') == LAYOUT_VERSION:
+        return album
+    if current and _image(session, album.id, 'original') is None:
+        _store(session, save, album, 'original', current.image, current.mime_type, 'decade-original')
+    _touch(session, album, {**data, 'layout_version': LAYOUT_VERSION,
+                           'original_preserved': bool(_image(session, album.id, 'original'))})
+    _store(session, save, album, 'default', raw, 'image/webp', 'decade-group')
+    save.revision += 1
+    return album
 
 
 def page_context(session,save,year=None):

@@ -240,6 +240,12 @@ class HeritageTests(unittest.TestCase):
         before=self.s.scalar(select(func.count()).select_from(Change))
         self.assertEqual(self.export().status_code,200)
         self.assertEqual(before,self.s.scalar(select(func.count()).select_from(Change)))
+
+    def test_chronicle_preview_has_exit_but_download_remains_standalone(self):
+        response=self.export()
+        self.assertIn('Back to tracker',response.text)
+        self.assertIn("default-src 'none'",response.headers['content-security-policy'])
+        self.assertNotIn('Back to tracker',self.export(download='yes').text)
     def test_later_privacy_changes_cover_derived_outcomes(self):
         row=self.put('thread',next_step='Find the letter',private='')
         row=self.put('thread',row,status='Resolved',outcome_notes='Found in the cellar',private='')

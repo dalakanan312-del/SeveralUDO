@@ -260,6 +260,23 @@ h1{{font:700 32px Georgia,serif}}p{{line-height:1.6;color:#c9c3b8}}code{{word-br
 </main></body></html>"""
 
 
+def native_navigation(window):
+    """Outside the page: usable even on an image, an export or an error screen."""
+    from webview.menu import MenuAction
+    def go_back():
+        try:
+            handled = window.evaluate_js("""(() => {
+                if (typeof window.decadesNavigateBack === 'function') return window.decadesNavigateBack();
+                if (history.length > 1 && document.referrer.startsWith(location.origin + '/')) { history.back(); return true; }
+                return false;
+            })()""")
+            if handled: return
+        except Exception:
+            pass
+        window.load_url(URL + '/p/today')
+    return [MenuAction('← Back', go_back), MenuAction('Today', lambda: window.load_url(URL + '/p/today'))]
+
+
 def open_native_window(tracker: LocalTracker) -> None:
     import webview
 
@@ -294,6 +311,7 @@ def open_native_window(tracker: LocalTracker) -> None:
         gui="edgechromium",
         private_mode=False,
         storage_path=str(storage),
+        menu=native_navigation(window),
         icon=str(icon),
     )
 

@@ -360,7 +360,7 @@ def register(m):
                     if total>20000000:break
                     photos[portrait.record_id]='data:'+portrait.mime_type+';base64,'+base64.b64encode(portrait.image).decode('ascii')
             data=h.chronicle_data(save,people,facts,photos,ids,start,end,options)
-            html=m.templates.get_template('heritage_chronicle.html').render(chronicle=data)
+            html=m.templates.get_template('heritage_chronicle.html').render(chronicle=data,tracker_return='' if form.get('download')=='yes' else '/p/today')
             headers={'Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"}
             if form.get('download')=='yes':headers['Content-Disposition']=f'attachment; filename="{exports.safe_filename(save.name)}-family-chronicle.html"'
             return HTMLResponse(html,headers=headers)

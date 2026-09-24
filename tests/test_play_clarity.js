@@ -23,7 +23,7 @@ function harness(responses){
   const context={document,window:{addEventListener:(name,fn)=>listeners[name]=fn,scrollY:100},
     HTMLFormElement:Form,URL,FormData:class {},location:{href:'http://tracker/p/today',assign(){}},
     CustomEvent:class {constructor(name,options){this.type=name;this.detail=options.detail;}},
-    fetch:async(url,options)=>{calls.push({url,options});const next=responses.shift();return{ok:next.status===200,status:next.status,json:async()=>next.data};}};
+    fetch:async(url,options)=>{calls.push({url,options});const next=await responses.shift();return{ok:next.status===200,status:next.status,json:async()=>next.data};}};
   vm.runInNewContext(code,context);
   return {nodes,calls,events,dialog:()=>nodes.filter(n=>n.tag==='dialog'&&n.open).at(-1),
     submit:()=>listeners.submit({target:new Form(),preventDefault(){},stopImmediatePropagation(){}})};
@@ -83,4 +83,27 @@ test('a roll already confirmed elsewhere can close without trying to decline it 
   await h.submit();const dialog=h.dialog();await dialog.children.find(n=>n.textContent==='Decline result').click();
   await dialog.children.find(n=>n.textContent==='Close preview').click();
   assert.equal(h.dialog(),undefined);assert.equal(h.calls.length,2);assert.equal(h.events.length,0);
+});
+
+test('the visible Close exits without confirming or declining a result',async()=>{
+  const h=harness([{status:200,data:{preview:preview('current')}}]);
+  await h.submit();await h.dialog().children.find(n=>n.className==='dialog-exit').click();
+  assert.equal(h.dialog(),undefined);assert.equal(h.calls.length,1);assert.equal(h.events.length,0);
+});
+
+test('Close still works when decline fails',async()=>{
+  const h=harness([{status:200,data:{preview:preview('current')}},{status:503,data:{detail:'Offline'}}]);
+  await h.submit();await h.dialog().children.find(n=>n.textContent==='Decline result').click();
+  await h.dialog().children.find(n=>n.className==='dialog-exit').click();
+  assert.equal(h.dialog(),undefined);assert.equal(h.calls.length,2);assert.equal(h.events.length,0);
+});
+
+test('closing while a refresh is in flight does not reopen the preview afterwards',async()=>{
+  let release;const pending=new Promise(resolve=>release=resolve);
+  const h=harness([{status:200,data:{preview:preview('old')}},{status:409,data:{detail:'Changed'}},pending]);
+  await h.submit();const dialog=h.dialog();await dialog.children.find(n=>n.textContent==='Confirm these changes').click();
+  const refreshing=dialog.children.find(n=>n.textContent==='Review updated preview').click();
+  await dialog.children.find(n=>n.className==='dialog-exit').click();
+  release({status:200,data:{preview:preview('new')}});await refreshing;
+  assert.equal(h.dialog(),undefined);assert.equal(h.events.length,0);
 });

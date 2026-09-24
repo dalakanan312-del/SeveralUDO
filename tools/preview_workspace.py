@@ -1,5 +1,6 @@
 """Read-only UI preview backed exclusively by disposable test fixtures."""
 import json
+import io
 import mimetypes
 import os
 from pathlib import Path
@@ -12,7 +13,8 @@ sys.path.insert(0, str(ROOT))
 os.environ['DATABASE_URL'] = 'sqlite://'
 os.environ['DECADES_SKIP_STARTUP_MIGRATIONS'] = '1'
 from tests.test_usability import UsabilityTests
-from app.models import ClockLink
+from app.models import ClockLink, Portrait
+from PIL import Image
 from datetime import datetime, timezone
 
 
@@ -26,6 +28,9 @@ def snapshots():
             last_game_day=31, last_game_hour=9, last_game_minute=24, last_seen_at=datetime.now(timezone.utc)))
         fixture.f.session.commit()
         person = fixture.f.people[0]
+        photo = io.BytesIO();Image.new('RGB',(1600,2400),'#806d5a').save(photo,format='PNG')
+        fixture.f.session.add(Portrait(save_id=fixture.f.save.id,record_id=person.id,stage='default',mime_type='image/png',image=photo.getvalue()))
+        fixture.f.session.commit()
         fixture.add('roll', 'Birthday survival', sim_id=person.id, roll_type='Young Adult', die='d20', bad_results='1')
         fixture.add('roll', 'Household harvest', sim_id=person.id, die='d6', bad_results='1', roll_scope='household', household_name='Cooley')
         fixture.add('illness', 'Ben Cooley — recovering from fever', day=98, sim_id=fixture.f.people[1].id, status='Active')
@@ -39,7 +44,11 @@ def snapshots():
                 response = fixture.client.get(path)
                 assert response.status_code == 200
                 pages[(path, mode)] = response.text.replace('A little progress. Another chapter.', 'UI preview · sample data only').encode()
+            response = fixture.client.get(f'/photos/{person.id}/default')
+            assert response.status_code == 200
+            pages[('/photos/sample/default',mode)] = response.text.replace(person.id,'sample').encode()
         api = {'/api/live-status': fixture.client.get('/api/live-status').content,
+               '/portraits/sample/default': photo.getvalue(),
                '/api/notifications': b'{"items":[]}'}
         fixture.add('roll', 'Fresh sample task', sim_id=person.id, die='d6', bad_results='1')
         for group in ['decisions', 'happening', 'completed']:
@@ -68,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
             content_type = mimetypes.guess_type(file.name)[0] or 'application/octet-stream'
         elif path in API:
             content = API[path]
-            content_type = 'text/html' if '/today/' in path else 'application/json'
+            content_type = 'image/png' if path.startswith('/portraits/') else ('text/html' if '/today/' in path else 'application/json')
         elif path == '/favicon.ico':
             self.send_error(404)
             return
@@ -104,5 +113,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    print('Read-only sample UI: http://127.0.0.1:9893/p/today', flush=True)
-    ThreadingHTTPServer(('127.0.0.1', 9893), Handler).serve_forever()
+    import argparse
+    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=9893);args=parser.parse_args()
+    print(f'Read-only sample UI: http://127.0.0.1:{args.port}/p/today', flush=True)
+    ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()

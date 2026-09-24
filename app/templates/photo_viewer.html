@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block body %}
+<section class="photo-page" aria-label="Photo viewer">
+  <header class="photo-viewer-toolbar"><h1>{{photo_label}}</h1><a class="button primary" href="{{photo_return}}" data-tracker-back>Close photo</a><a class="button" href="{{photo_url}}?download=1" download>Download</a></header>
+  <p class="muted">Close photo or Back returns to the tracker. Press Escape to go back.</p>
+  <div class="photo-viewer-image"><img src="{{photo_url}}{% if photo_version %}?v={{photo_version}}{% endif %}" alt="{{photo_label}}" data-photo-page-image></div>
+  <p data-photo-page-error role="status" hidden>The photo could not be loaded. You can still use Close photo or Back.</p>
+</section>
+{% endblock %}

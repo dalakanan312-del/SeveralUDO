@@ -9,7 +9,7 @@ import ipaddress
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -118,7 +118,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.47")
+app = FastAPI(title="Decades Tracker", version="4.6.48")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 from .request_safety import RequestSafetyMiddleware
 app.add_middleware(RequestSafetyMiddleware, settings=settings)
@@ -992,6 +992,24 @@ def _update_decade_album(request,form):
         except ValueError as exc:
             request.session["decade_notice"]=str(exc)
     return RedirectResponse(f"/p/decade-snapshots?year={year}",status_code=303)
+
+
+@app.post("/api/decade-snapshots/{snapshot_id}/refresh")
+def refresh_decade_snapshot(request: Request, snapshot_id: str, version: int = Form(...)):
+    with db() as session:
+        ctx = context(request, session)
+        save = ctx.get('save')
+        if not ctx.get('user') or not save:
+            raise HTTPException(401, 'Open a save first.')
+        try:
+            with session.begin_nested():
+                album = decade_album.refresh_layout(session, save, snapshot_id, version)
+            request.session['decade_notice'] = 'Refreshed the saved portrait layout. All members and original photos were kept.'
+            destination = f'/p/decade-snapshots?year={album.data["portrait_year"]}#album-{album.id}'
+        except ValueError as exc:
+            request.session['decade_notice'] = str(exc)
+            destination = '/p/decade-snapshots'
+    return RedirectResponse(destination, status_code=303)
 
 
 @app.post("/auth/register")
@@ -5630,12 +5648,34 @@ def clock_ping(authorization: str | None = Header(None)):
         }
 
 
+@app.get("/photos/{record_id}/{stage}")
+def view_photo(request: Request, record_id: str, stage: str):
+    with db() as session:
+        record = session.get(Record, record_id)
+        if not record: raise HTTPException(404)
+        owned_save(request, session, record.save_id)
+        destinations = {'sim': ('sims', f'/sims/{record.id}'),
+                        'relationship': ('relationships', f'/relationships/{record.id}'),
+                        'decade_snapshot': ('decade-snapshots', '/p/decade-snapshots'),
+                        'household_portrait': ('decade-snapshots', '/p/decade-snapshots')}
+        page, fallback = destinations.get(record.kind, ('portrait-studio', '/p/portrait-studio'))
+        return templates.TemplateResponse(request, 'photo_viewer.html', context(request, session,
+            page=page, photo_label=record.label or 'Photo', photo_return=fallback,
+            photo_url=f'/portraits/{record.id}/{quote(stage,safe="")}',
+            photo_version=request.query_params.get('v', '')))
+
+
 @app.get("/portraits/{record_id}/{stage}")
 def portrait(request: Request, record_id: str, stage: str):
     with db() as session:
         record = session.get(Record, record_id)
         if not record: raise HTTPException(404)
         save=owned_save(request, session, record.save_id)
+        download = request.query_params.get('download') == '1'
+        if not download and request.headers.get('sec-fetch-dest') == 'document':
+            target = f'/photos/{record.id}/{quote(stage,safe="")}'
+            if request.query_params.get('v'): target += '?' + urlencode({'v':request.query_params['v']})
+            return RedirectResponse(target, status_code=303, headers={'Cache-Control':'private, no-store'})
         if stage == "current" and record.kind == "sim":
             raw=str((record.data or {}).get("game_age_stage") or "").replace("Age.","").replace("_","").replace(" ","").casefold()
             stage_map={"baby":"newborn","newborn":"newborn","infant":"infant","toddler":"toddler","child":"child","preteen":"preteen","teen":"teen","youngadult":"youngadult","adult":"adult","elder":"elder"}
@@ -5653,7 +5693,10 @@ def portrait(request: Request, record_id: str, stage: str):
         if not item: raise HTTPException(404)
         etag=f'"portrait-{hashlib.sha256(item.image).hexdigest()[:20]}"'
         headers={"Cache-Control":"private,max-age=0,must-revalidate","ETag":etag}
-        if request.headers.get("if-none-match") == etag:
+        if download:
+            suffix = {'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}.get(item.mime_type,'img')
+            headers['Content-Disposition'] = f'attachment; filename="portrait-{record.id}-{stage_key}.{suffix}"'
+        if not download and request.headers.get("if-none-match") == etag:
             return Response(status_code=304,headers=headers)
         return Response(item.image, media_type=item.mime_type, headers=headers)
 
