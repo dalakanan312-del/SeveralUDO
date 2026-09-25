@@ -11,6 +11,9 @@ $Compiler = $CompilerCandidates | Where-Object { $_ -and (Test-Path -LiteralPath
 $Script = Join-Path $Root "installer\DecadesTracker.iss"
 if (-not $Compiler) { throw "Inno Setup 6 is required. Install it or set INNO_SETUP_COMPILER to ISCC.exe." }
 if (-not (Test-Path -LiteralPath (Join-Path $Root "dist\Decades Tracker\Decades Tracker.exe") -PathType Leaf)) { throw "Build the desktop application first." }
+foreach ($PrivateFile in @("config.json", "install_result.txt")) {
+  if (Test-Path -LiteralPath (Join-Path $Root "dist\Decades Tracker\_internal\clock_bridge\$PrivateFile")) { throw "Do not package private Clock Sync files: $PrivateFile" }
+}
 & $Compiler $Script
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }
 $Installer = Join-Path $Root "release\Decades-Tracker-4.6.49-Setup.exe"

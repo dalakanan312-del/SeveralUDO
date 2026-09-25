@@ -11,22 +11,13 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
 }
 & $Python -m pip install --disable-pip-version-check -r "requirements-desktop.txt"
 if ($LASTEXITCODE -ne 0) { throw "Desktop build dependencies could not be installed." }
-& $Python -m PyInstaller --noconfirm --clean --windowed --name "Decades Tracker" `
-  --noupx `
-  --icon "assets\decades-app-icon.ico" `
-  --version-file "assets\decades-version-info.txt" `
-  --add-data "app\templates;app\templates" `
-  --add-data "app\static;app\static" `
-  --add-data "app\medieval_names.json;app" `
-  --add-data "app\game_localization_fallbacks.json;app" `
-  --add-data "assets\decades-app-icon.png;assets" `
-  --add-data "assets\decades-app-icon.ico;assets" `
-  --add-data "assets\loading.html;assets" `
-  --add-data "clock_bridge;clock_bridge" `
-  --collect-all uvicorn --collect-all jinja2 --collect-all sqlalchemy `
-  --collect-all webview --collect-all pythonnet --collect-all clr_loader `
-  desktop_launcher.py
+# Keep the maintained spec: regenerating it drops its private-file exclusions.
+& $Python -m PyInstaller --noconfirm --clean "Decades Tracker.spec"
 if ($LASTEXITCODE -ne 0) { throw "Desktop build failed." }
+foreach ($PrivateFile in @("config.json", "install_result.txt")) {
+  $BundledPrivateFile = Join-Path $Root "dist\Decades Tracker\_internal\clock_bridge\$PrivateFile"
+  if (Test-Path -LiteralPath $BundledPrivateFile) { throw "Private Clock Sync file was included in the desktop build: $PrivateFile" }
+}
 $AppPayload = Join-Path $Root "dist\Decades Tracker\_internal\app"
 New-Item -ItemType Directory -Force -Path $AppPayload | Out-Null
 # PyInstaller records these assets correctly in its analysis graph, but some

@@ -9,6 +9,8 @@
 - Roll-source statistics show readable categories instead of long internal identifiers; detailed source IDs are collapsed.
 - Corrected the Crusades occurrence chain: the yearly event check and its conditional per-Sim survival checks use their own source-defined dice and outcomes. Completed history is not replayed.
 
-Validation: 283 focused and regression tests, Quick Dice JavaScript checks, plus desktop/mobile browser checks of the new controls.
+Validation: 285 focused, regression and packaging tests, Quick Dice JavaScript checks, plus desktop/mobile browser checks of the new controls.
+
+The desktop build preserves its maintained private-file exclusions and refuses to package local Clock Sync configuration or installation logs.
 
 Existing Sims, branches, completed rolls and saves are retained. No database schema changes or new game mod is required. Unrelated Sims 3 experiments are excluded.
