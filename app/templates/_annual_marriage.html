@@ -1,0 +1,46 @@
+<section class="panel workflow-section-target" id="annual-marriage">
+<div class="section-heading"><div><p class="eyebrow">FAMILY PLANNING · {{annual_marriage.year}}</p><h2>Yearly marriage &amp; remarriage</h2></div><span>{{'Annual era rules on' if annual_marriage.enabled else 'Existing one-time rules'}}</span></div>
+{% if annual_marriage.notice %}<p class="notice">{{annual_marriage.notice}}</p>{% endif %}
+<p>One roll per eligible Sim per calendar year, including heirs. The odds do not grant permission to marry: your minimum age, regional, class, faith and local-custom restrictions still apply. No Pre-Teen rolls.</p>
+<form action="/settings" method="post" class="form-grid"><input type="hidden" name="return_to" value="/p/relationships#annual-marriage"><input type="hidden" name="settings_scope" value="annual-marriage">
+<label>Marriage scheduling<select name="marriage_roll_mode"><option value="legacy" {% if not annual_marriage.enabled %}selected{% endif %}>Existing one-time / custom tables</option><option value="era_annual" {% if annual_marriage.enabled %}selected{% endif %}>Yearly era-based table</option></select></label><button class="primary">Preview scheduling change</button></form>
+<small>Starts with the current year, without creating decades of old checks. Pending checks from the other mode are retired; completed results stay unchanged. <a href="/p/rules">Set the baseline marriage age</a>.</small>
+{% if annual_marriage.enabled %}
+<div id="annual-marriage-decisions">
+{% for entry in annual_marriage.decisions %}{% set r=entry.roll %}
+<article class="card"><h3>{{entry.sim.label}} · {{r.data.get('planner_year')}}</h3><p>{{r.data.get('outcome')}} · {{r.data.get('marriage_decision')|replace('_',' ')}}</p>
+{% if r.data.get('marriage_decision')=='planned' %}<p>Wedding planned for GD {{r.data.get('suggested_marriage_global_day')}}. <a href="/relationships/{{r.data.get('marriage_plan_id')}}">Open the betrothal and record the wedding</a>.</p>
+{% elif r.data.get('marriage_decision')=='refusal_pending' %}<p>Finish the <a href="/p/today?task=rolls">d6 refusal roll</a> before choosing a spouse.</p>
+{% else %}
+{% if entry.candidates %}<form action="/api/marriage-rules/rolls/{{r.id}}/match" method="post" class="form-grid"><input type="hidden" name="marriage_save_id" value="{{save.id}}"><input type="hidden" name="record_version" value="{{r.version}}"><label>Eligible spouse<select name="spouse_id" required><option value="">Choose a spouse</option>{% for person in entry.candidates %}<option value="{{person.id}}">{{person.label}}</option>{% endfor %}</select></label><button>Plan this year's marriage</button></form>
+{% else %}<p>No eligible spouse is available. Keep this as a formal courtship, betrothal or arranged-match task; the Sim rolls again next year. No spouse or completed wedding is invented.</p>{% endif %}
+{% if r.data.get('refusal_result') is none %}<form action="/api/marriage-rules/rolls/{{r.id}}/refusal" method="post"><input type="hidden" name="marriage_save_id" value="{{save.id}}"><input type="hidden" name="record_version" value="{{r.version}}"><button>Try to refuse · 1 on d6</button></form>{% else %}<p>Refusal roll: {{r.data.refusal_result}}. The Sim cannot refuse this result.</p>{% endif %}
+{% endif %}</article>{% else %}<p>No successful yearly decisions need attention.</p>{% endfor %}
+</div>{% endif %}
+<details><summary>Era odds and how these rolls work</summary>
+<div class="table-scroll"><table><thead><tr><th>Era</th><th>First: Teen</th><th>First: Young Adult</th><th>First: Adult / Elder</th><th>Remarry: first 5 years</th><th>Remarry: after 5 years</th></tr></thead><tbody>
+{% for start,end,label,columns in annual_marriage.eras %}<tr><th>{{label}}</th>{% for sides,wins in columns %}<td>{{'1' if wins==1 else '1–2'}} on d{{sides}}</td>{% endfor %}</tr>{% endfor %}
+</tbody></table></div>
+<p>Young Adults are 18–39; Adults are 40–59. Elders use the Adult first-marriage roll and always use the after-five-years remarriage roll. At shared era boundaries, the newer era applies (for example, 1000 and 1450).</p>
+<p>Widowed, divorced or abandoned Sims start in the following calendar year. The first five eligible years are years 1–5; an explicitly selected practical extension uses years 1–10. A refusal succeeds only on 1 on d6. Required arranged or political marriages override annual rolls.</p>
+<p>Successful rolls suggest a date within that same calendar year. You choose the eligible spouse and play the wedding; the tracker does not change the game. Unresolved checks expire when the year changes without inventing results.</p>
+</details>
+<details><summary>Individual eligibility &amp; practical remarriage</summary>
+<form action="/p/relationships#annual-marriage" method="get"><label>Sim<select name="marriage_sim">{% for person in annual_marriage.people %}<option value="{{person.id}}" {% if annual_marriage.selected and person.id==annual_marriage.selected.id %}selected{% endif %}>{{person.label}}</option>{% endfor %}</select></label><button>Show eligibility</button></form>
+{% if annual_marriage.selected %}{% set person=annual_marriage.selected %}<p>{{person.label}}: {{annual_marriage.reason or 'Meets the configured marriage permissions'}}</p>
+<form action="/api/marriage-rules/sims/{{person.id}}" method="post" class="form-grid"><input type="hidden" name="marriage_save_id" value="{{save.id}}"><input type="hidden" name="record_version" value="{{person.version}}">
+<label>Permission<select name="marriage_eligibility">{% for value,label in [('auto','Use configured age and local restrictions'),('blocked','Not legally / socially permitted'),('event','Required arranged / political marriage')] %}<option value="{{value}}" {% if person.data.get('marriage_eligibility','auto')==value %}selected{% endif %}>{{label}}</option>{% endfor %}</select></label>
+<label>Not permitted before year (optional)<input type="number" name="marriage_available_from_year" min="-9999" max="9999" value="{{person.data.get('marriage_available_from_year') if person.data.get('marriage_available_from_year') is not none else ''}}"></label>
+<label>Event override through year (blank = until cleared)<input type="number" name="marriage_event_until_year" min="-9999" max="9999" value="{{person.data.get('marriage_event_until_year') if person.data.get('marriage_event_until_year') is not none else ''}}"></label>
+<label>Local-custom tag<input name="marriage_custom" maxlength="160" value="{{person.data.get('marriage_custom','')}}"></label>
+<label><input type="checkbox" name="marriage_practical_extension" value="yes" {% if person.data.get('marriage_practical_extension') %}checked{% endif %}> Use early remarriage odds for up to ten years (never for Elders)</label>
+<label>Practical reason<input name="marriage_practical_reason" maxlength="500" value="{{person.data.get('marriage_practical_reason','')}}" placeholder="Dependent children, farm, business, title or inheritance"></label><button>Save Sim's marriage permissions</button>
+</form>{% endif %}</details>
+<details><summary>Regional, class, faith &amp; local-custom restrictions</summary>
+<p>These are player-configured permissions, not a historical law database. Match the country, social class or faith recorded on the Sim (or their household). Blank filters apply to everyone. Any matching block wins; minimum ages can only raise your baseline. Unknown or unusual circumstances can be blocked in the individual controls above.</p>
+{% for policy in annual_marriage.policies %}<div class="list-row"><span><strong>{{policy.label}}</strong> · {{policy.permission}} · {{policy.from_year}}–{{policy.until_year}} · minimum {{policy.min_age}}<small>{{policy.region or 'All regions'}} · {{policy['class'] or 'All classes'}} · {{policy.faith or 'All faiths'}} · {{policy.custom or 'All customs'}}</small></span><form action="/api/marriage-rules/remove-policy" method="post"><input type="hidden" name="marriage_save_id" value="{{save.id}}"><input type="hidden" name="policy_id" value="{{policy.id}}"><button>Remove restriction</button></form></div>{% endfor %}
+<form action="/api/marriage-rules/policy" method="post" class="form-grid"><input type="hidden" name="marriage_save_id" value="{{save.id}}"><label>Rule name<input name="label" maxlength="160" required></label><label>Permission<select name="permission"><option value="allowed">Allowed above minimum age</option><option value="blocked">Blocked in this year range</option></select></label>
+{% for key,label in [('region','Country / region'),('class','Household class'),('faith','Faith / religion'),('custom','Local-custom tag')] %}<label>{{label}}<input name="{{key}}" maxlength="160" placeholder="All"></label>{% endfor %}
+<label>From year<input name="from_year" type="number" min="-9999" max="9999" value="-9999"></label><label>Through year<input name="until_year" type="number" min="-9999" max="9999" value="9999"></label><label>Minimum age in years<input name="min_age" type="number" min="13" max="120" value="18"></label><button>Add eligibility rule</button></form>
+</details>
+</section>

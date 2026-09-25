@@ -85,7 +85,10 @@ def roll_presentation(save, row, person=None):
         if shared:
             event_context+='\nShared world decision (personal checks still apply): '+'; '.join(f"GD {r.data['day']}: {r.data['outcome']}" for r in shared)
     # Context only belongs on the roll if an actual event supplied it.
-    return {'title': title, 'calculation': calculation, 'warning': warning,
+    marriage_text=' '.join(str(d.get(key) or '') for key in ('source','source_id','roll_type')).casefold()
+    marriage='marriage' in marriage_text or d.get('annual_marriage') or d.get('marriage_refusal')
+    marriage_label=('Marriage refusal' if d.get('marriage_refusal') else 'Remarriage' if d.get('remarriage_roll') or 'remarriage' in marriage_text else 'Marriage') if marriage else ''
+    return {'title': title, 'calculation': calculation, 'warning': warning, 'marriage_label':marriage_label,
             'context': event_context if d.get('event_id') or d.get('event_rule_id') else '',
             'rule_name': d.get('roll_type') or row.label}
 
@@ -122,7 +125,8 @@ def household_predicate(save, household_id):
     members = select(Record.id).where(Record.save_id == save.id, Record.kind == 'sim', Record.deleted.is_(False),
         func.coalesce(Record.data['current_household_id'].as_string(), Record.data['household_id'].as_string()) == household_id).correlate(None)
     d = Record.data; p = d['payload']
-    return or_(Record.id.in_(members), *[d[k].as_string().in_(members) for k in ('sim_id', 'mother_id', 'father_id', 'partner1_id', 'partner2_id')],
+    return or_(and_(d['roll_scope'].as_string()=='event',d['eligible_household_ids'].as_string().contains('"'+str(household_id)+'"')),
+        Record.id.in_(members), *[d[k].as_string().in_(members) for k in ('sim_id', 'mother_id', 'father_id', 'partner1_id', 'partner2_id')],
         d['household_id'].as_string() == household_id, *[p[k].as_string().in_(members) for k in ('sim_id','mother_id','father_id','partner1_id','partner2_id')],
         p['tracker_household_id'].as_string() == household_id,p['inferred_household_id'].as_string() == household_id,p['inferred_tracker_household_id'].as_string() == household_id)
 

@@ -1,6 +1,8 @@
 {% extends "base.html" %}{% block title %}Roll Tables · Decades Tracker{% endblock %}{% block body %}
 <header class="hero compact"><p class="eyebrow">RULE CENTER · AUTOMATIC OUTCOMES</p><h1>Roll tables</h1><p>Everything that determines which die appears and what its result means, grouped by purpose instead of record type.</p></header>
 {% include "_rule_center_nav.html" %}
+<p><a class="button" href="/p/roll-automation">Automatic scheduling switches →</a></p>
+{% include "_annual_marriage.html" %}
 {% if core_ruleset.id in ['severaludo','morbid_ultimate'] %}
 <details class="panel" id="maternal-followups"><summary>Maternal complications — the second roll</summary>
   <p>A failed maternal check schedules a separate death-or-infertility follow-up for that baby. Death is not scheduled until that second roll gives a lethal result.</p>

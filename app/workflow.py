@@ -18,6 +18,8 @@ def collection_for(page):
     return next((group for group in COLLECTIONS if page in group['pages']),None)
 
 RELATED_TASKS = {
+    'roll-automation': (('Review due rolls','/p/today'),('Edit source tables','/p/roll-tables'),('Master automation and clock','/p/clock')),
+    'quick-dice': (('Back to Today','/p/today'),('Play a drama prompt','/p/drama-randomizer'),('Challenge rolls','/p/rolls')),
     'decade-snapshots': (('Individual portraits','/p/portrait-studio'),('Dynasty branches','/p/infinite-decades'),('Family history','/p/storyline')),
     'family-fortunes': (('Planned marriages','/p/relationships'),('Dowries & promises','/p/life-records#dowries'),('Estate plans','/p/historical-life#estate'),('Exact endings','/p/storyline')),
     'historical-addresses': (('Current households','/p/households'),('Titles & estates','/p/titles-estates'),('Record a move','/p/world#migration-new')),
@@ -37,7 +39,7 @@ RELATED_TASKS = {
     'today': (('What should I play next?', '/p/play-next'), ('Review game updates', '/p/automation'), ('Plan household turns', '/p/planner#rotation'), ('View the timeline', '/p/timeline'), ('Edit roll rules', '/p/roll-tables')),
     'automation': (('Check game connection', '/p/clock'), ('Return to Today', '/p/today'), ('Correct a Sim profile', '/p/sims')),
     'clock': (('Review received changes', '/p/automation'), ('Open Today', '/p/today'), ('Sync desktop / online records', '/p/sync')),
-    'rolls': (('Roll due tasks on Today', '/p/today?task=rolls'), ('Edit dice and outcomes', '/p/roll-tables'), ('Check duplicate rolls', '/p/health')),
+    'rolls': (('Roll due tasks on Today', '/p/today?task=rolls'), ('Random decision dice', '/p/quick-dice'), ('Edit dice and outcomes', '/p/roll-tables'), ('Check duplicate rolls', '/p/health')),
     'relationships': (('Plan dowries & settlements', '/p/life-records#dowries'), ('Plan pregnancies', '/p/planner#family-plans'), ('Marriage ages & rules', '/p/roll-tables#family-planning'), ('Check the family tree', '/p/family-tree')),
     'infinite-decades': (('Compare branches', '/p/branch-comparison'), ('Plan the next household', '/p/play-next')),
     'planner': (('What should I play next?', '/p/play-next'), ('Marriage rolls & dates', '/p/relationships#marriage-rolls'), ('Manage succession', '/p/challenge#succession'), ('Choose a dynasty branch', '/p/infinite-decades'), ('Play today', '/p/today')),

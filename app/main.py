@@ -28,6 +28,8 @@ from .models import BackupSnapshot, Change, ChronicleSave, ClockLink, Conflict, 
 from .security import hash_secret, token
 from .session_policy import REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware, set_session_mode
 from . import birth_legitimacy, birth_measurements, labor, hp_bloodlines, death_reminders
+from . import marriage_rules, marriage_rules_ui
+from . import quick_dice, roll_automation, roll_automation_ui
 from .workflow import related_tasks, page_sections
 
 
@@ -47,6 +49,8 @@ FEATURES = {
     "pregnancies": ("Pregnancies", "Pregnancy timelines, outcomes and newborn scheduling"),
     "university": ("University", "Enrollment, terms, credits, grades and academic performance"),
     "rolls": ("Rolls", "Automatic obligations, outcomes and audited dice"),
+    "quick-dice": ("Quick Dice", "Free dice and coin flips for random decisions; no automatic consequences"),
+    "roll-automation": ("Roll Automation", "Optional scheduling switches and confirmed prerequisites"),
     "events": ("Events", "Historical events, eligibility and effects"),
     "illnesses": ("Illnesses", "Disease, severity, treatment and outcomes"),
     "family-tree": ("Family Tree", "Ancestors, descendants and dynasty lines"),
@@ -118,7 +122,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.48")
+app = FastAPI(title="Decades Tracker", version="4.6.49")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 from .request_safety import RequestSafetyMiddleware
 app.add_middleware(RequestSafetyMiddleware, settings=settings)
@@ -1576,6 +1580,11 @@ def feature_page(request: Request, page: str):
         ctx = context(request, session, page=page, title=FEATURES[page][0], subtitle=FEATURES[page][1])
         if not ctx["user"]: return RedirectResponse("/", status_code=303)
         save = ctx["save"]
+        if page=='quick-dice':
+            return quick_dice.render(__import__(__name__,fromlist=['app']),request,session,ctx)
+        if page=='roll-automation':
+            if not save:return RedirectResponse('/p/saves',303)
+            return templates.TemplateResponse(request,'roll_automation.html',{**ctx,**roll_automation_ui.context(session,save,request)})
         if page==decade_album.PAGE:
             if not save: return RedirectResponse("/p/saves",status_code=303)
             return templates.TemplateResponse(request,"decade_snapshots.html",{
@@ -2401,6 +2410,8 @@ def feature_page(request: Request, page: str):
             if page=="sims":
                 ctx["name_cultures"]=names.library_names(session,save.id,include_recorded=bool(ctx["all_sims"]))
         ctx.update(records=records, kind=kind, portrait_status=portrait_studio.public_configuration(portrait_studio.configuration(session, ctx['user'].id)))
+        if save and page in {'relationships','roll-tables'}:
+            ctx['annual_marriage'] = marriage_rules_ui.context(session,save,request)
         if page in {'university','planner','avatar','harry-potter','game-of-thrones','occult-rules'} and life_filter!='all':
             ctx['all_sims']=[row for row in ctx.get('all_sims',[]) if (_living_sim(row,save) if life_filter=='living' else sim_is_deceased(row,save))]
             if page=='planner':ctx['family_plan_analysis']=[row for row in ctx.get('family_plan_analysis',[]) if not row.get('sim') or (_living_sim(row['sim'],save) if life_filter=='living' else sim_is_deceased(row['sim'],save))]
@@ -3865,6 +3876,13 @@ def create_matchmaking_courtship(request: Request, first_id: str = Form(...), se
         sims=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="sim",Record.deleted.is_(False))))
         first=next((item for item in sims if item.id==first_id),None);second=next((item for item in sims if item.id==second_id),None)
         if not first or not second: raise HTTPException(404,"Sim not found")
+        annual_origin=session.get(Record,source_roll_id) if source_roll_id else None
+        if annual_origin and annual_origin.data.get('annual_marriage'):
+            if annual_origin.save_id!=save.id or annual_origin.data.get('sim_id')!=first.id or not marriage_rules.is_active(annual_origin):
+                raise HTTPException(400,'That yearly result belongs to a different Sim or save.')
+            try: marriage_rules.plan_match(session,save,annual_origin,second.id)
+            except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+            return RedirectResponse('/p/relationships#annual-marriage',303)
         depth=max(1,min(8,int((save.settings or {}).get("kinship_detection_generations") or 3)))
         warning=kinship_warning(first.id,second.id,sims,depth)
         if warning: raise HTTPException(409,f"Courtship blocked: {warning}")
@@ -5127,14 +5145,23 @@ def reopen_roll(request: Request, roll_id: str):
         if sim and bool((sim.data or {}).get("death_confirmed")) and (sim.data or {}).get("death_source_roll_id")==roll.id:
             raise HTTPException(409,"This death has already been confirmed. Correct the Sim profile instead of reopening the roll.")
         related=[roll]
+        try: marriage_parent=marriage_rules.reopen_origin(session,save,roll)
+        except ValueError as exc: raise HTTPException(409,str(exc)) from exc
+        if marriage_parent:related.append(marriage_parent)
         auto_deaths=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="death",Record.deleted.is_(False),Record.data["source_roll_id"].as_string()==roll.id)))
         related.extend(auto_deaths)
         conditional_followups=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(False),Record.data["origin_roll_id"].as_string()==roll.id,Record.data["automatic_followup"].as_boolean().is_(True))))
         if any(item.data.get("maternal_followup") and item.data.get("completed") for item in conditional_followups):
             raise HTTPException(409,"Reopen the completed maternal complication follow-up first, so its death or infertility result is not silently discarded.")
+        if any(item.data.get('extra_automation') and item.data.get('completed') for item in conditional_followups):
+            raise HTTPException(409,'Reopen the completed optional consequence first; its recorded outcome must not be silently removed.')
         related.extend(conditional_followups)
         if sim: related.append(sim)
         set_today_undo(request,f"Reopened {roll.label}",related)
+        if marriage_parent:
+            marriage_rules.change(session,marriage_parent,{'marriage_decision':'refusal_pending','refusal_result':None,
+                'suggested_marriage_global_day':roll.data.get('refusal_original_suggested_day')})
+            save.revision+=1
         if roll.data.get("maternal_followup") and sim:
             from . import maternal_rules
             try: maternal_rules.reopen_infertility(session, sim, roll)
@@ -5170,6 +5197,10 @@ def reopen_roll(request: Request, roll_id: str):
             base=retired.version;data=dict(retired.data or {});data.pop("retired_reason",None);data.pop("retired_global_day",None);data.pop("retired_by_death_roll_id",None);retired.data=data;retired.deleted=False;retired.version+=1;domain.journal(session,retired,"upsert",base)
         base=roll.version;data=dict(roll.data or {})
         for key in ("actual","outcome","completed","completed_global_day","pregnancy_count","nonlethal","event_followup_roll_id","event_followup_processed"): data.pop(key,None)
+        if data.get('annual_marriage'):
+            for key in ('marriage_success','marriage_decision','marriage_candidate_count','refusal_result',
+                        'suggested_marriage_global_day','suggested_marriage_date_range','suggested_marriage_date_source'):
+                data.pop(key,None)
         data["correction_note"]="Reopened for correction";roll.data=data;roll.version+=1;domain.journal(session,roll,"upsert",base);save.revision+=1
     return RedirectResponse(request.headers.get("referer") or "/p/rolls",status_code=303)
 
@@ -5784,3 +5815,6 @@ usability_ui.register(__import__(__name__,fromlist=['app']))
 portrait_studio.register(__import__(__name__,fromlist=['app']))
 from . import action_previews
 action_previews.register(__import__(__name__,fromlist=['app']))
+marriage_rules_ui.register(__import__(__name__,fromlist=['app']))
+quick_dice.register(__import__(__name__,fromlist=['app']))
+roll_automation_ui.register(__import__(__name__,fromlist=['app']))

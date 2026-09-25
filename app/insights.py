@@ -334,6 +334,25 @@ def statistics_day(row, save):
     return save.global_day if day is None else day
 
 
+def roll_source_category(data):
+    """Summarize provenance, never expose one category per internal record ID."""
+    source=str(data.get('source_type') or data.get('source') or '').casefold()
+    kind=str(data.get('roll_type') or '').casefold()
+    if data.get('maternal_followup') or 'maternal' in kind:return 'Childbirth & maternal checks'
+    if data.get('annual_marriage') or data.get('marriage_refusal') or 'marriage' in source or 'marriage' in kind:return 'Marriage & remarriage'
+    if source.startswith('aging:') or kind in domain.AGING_STAGE_OFFSETS:return 'Aging'
+    if source.startswith('harry-potter:') or data.get('hp_rule_key'):return 'Harry Potter'
+    if source.startswith('avatar:'):return 'Avatar'
+    if source.startswith(('game-of-thrones:', 'got:')):return 'Game of Thrones'
+    if data.get('occult_roll') or source.startswith('occult:'):return 'Occult'
+    if data.get('event_id') or data.get('event_rule_id') or source.startswith(('event:', 'campaign:')):return 'Historical events'
+    if data.get('pregnancy_count_roll') or 'pregnancy' in source or 'pregnancy' in kind:return 'Pregnancy & family planning'
+    if data.get('origin_roll_id') or source.startswith('rule:auto-followup:'):return 'Other follow-up checks'
+    if source.startswith('planner:'):return 'Other planner checks'
+    if source.startswith('manual') or data.get('manual_roll'):return 'Manual rolls'
+    return 'Other tracker rolls'
+
+
 def statistics(records: list[Record], save: ChronicleSave) -> dict:
     from .record_state import deceased as is_deceased
     current = save.global_day
@@ -509,7 +528,7 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
     completed_rolls: list[Record] = []
     passed = failed_count = administrative = 0
     roll_types = defaultdict(lambda: {"total": 0, "completed": 0, "passed": 0, "failed": 0, "administrative":0})
-    roll_dice = Counter(); roll_sources = Counter(); roll_years = Counter()
+    roll_dice = Counter(); roll_sources = Counter(); roll_source_details = Counter(); roll_years = Counter()
     pending_due = pending_future = event_rolls = 0
     missing_roll_die = missing_roll_results = 0
     for roll in rolls:
@@ -520,7 +539,8 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
         completed = bool(data.get("completed"))
         roll_types[roll_type]["total"] += 1
         roll_dice[die] += 1
-        roll_sources[source] += 1
+        roll_sources[roll_source_category(data)] += 1
+        roll_source_details[source] += 1
         if not data.get("die"):
             missing_roll_die += 1
         if data.get("event_id") or roll_type.casefold().startswith("event"):
@@ -661,6 +681,8 @@ def statistics(records: list[Record], save: ChronicleSave) -> dict:
             "failure_rate": round(failed_count * 100 / (len(completed_rolls)-administrative), 1) if len(completed_rolls)>administrative else 0.0,
             "event_rolls": event_rolls, "types": top_roll_types, "dice": roll_dice.most_common(),
             "sources": roll_sources.most_common(),
+            "source_details": roll_source_details.most_common(20),
+            "source_details_total": len(roll_source_details),
         },
         "largest_families": [(name, count, parent_id) for count, name, parent_id in family_sizes[:10]],
         "pregnancy": {

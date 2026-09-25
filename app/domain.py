@@ -179,6 +179,21 @@ NON_ROLL_CATALOG_IDS = {
 # These values are transcribed from the linked SeveralUDO era pages so fresh and
 # existing saves receive the same editable rules.
 ORIGINAL_EVENT_ROLL_OVERRIDES: dict[str, dict] = {
+    "EVT-1000S-0180": {
+        "configured_die": "d20", "configured_bad_results": "4",
+        "source_roll_plan": [
+            {"index":0, "label":"Crusade occurrence", "die":"d20", "bad_results":"4",
+             "result_rules":"4: A crusade occurs; 1-3,5-20: No crusade this year",
+             "context":"Once each year for the active save", "selector":"All Sims",
+             "roll_scope":"event", "parent_index":None, "parent_indices":[],
+             "trigger_results":"", "repeat_interval_years":1, "failure_is_lethal":False},
+            {"index":1, "label":"Crusade survival", "die":"d12", "bad_results":"3",
+             "result_rules":"3: Dies in the crusade; 1-2,4-12: Survives the crusade",
+             "context":"Every eligible Sim, only when a crusade occurs", "selector":"All Sims",
+             "roll_scope":"sim", "parent_index":0, "parent_indices":[0],
+             "trigger_results":"4", "failure_is_lethal":True},
+        ],
+    },
     "EVT-0143": {
         "location": "Spain",
         "affected_class": "Male Sims age 16+ in Spain",
@@ -2409,6 +2424,35 @@ def event_roll_configuration(event: Record, rule_data: dict | None = None) -> di
     }
 
 
+def repair_source_occurrence_plans(session: Session, save: ChronicleSave, events) -> int:
+    """Correct the known malformed import, not edited rules or completed history."""
+    changed = 0
+    canonical = 'roll a d20 every year to see if there will be a crusade 4 means there is roll a d12 for all sims when there is a crusade 3 means that sim dies'
+    for event in events:
+        data = event.data or {}
+        if data.get('catalog_id') != 'EVT-1000S-0180' or data.get('infinite_frozen'): continue
+        if re.sub(r'\s+', ' ', str(data.get('notes') or '')).strip().casefold() != canonical: continue
+        # A stale parsed plan must not override the player's edited event table.
+        expected = {'configured_die':'d20', 'die':'d20', 'configured_bad_results':'4',
+                    'bad_results':'4', 'configured_result_rules':'4: there is Roll a'}
+        if any(data.get(key) not in (None, '', value) for key, value in expected.items()): continue
+        if data.get('roll_scope') or data.get('roll_unit'): continue
+        plan = data.get('source_roll_plan') or []
+        if not (len(plan)==2 and plan[0].get('result_rules')=='4: there is Roll a'
+                and plan[0].get('die')=='d20' and plan[0].get('bad_results')=='4'
+                and plan[1].get('die')=='d12' and plan[1].get('bad_results')=='3'
+                and all(step.get('parent_index') is None and not step.get('parent_indices')
+                        and not step.get('roll_scope') and not step.get('roll_unit') for step in plan)): continue
+        fixed = event_source_roll_plan(data['notes'], ORIGINAL_EVENT_ROLL_OVERRIDES['EVT-1000S-0180'])
+        base = event.version
+        event.data = {**data, 'source_roll_plan':fixed, 'source_roll_plan_version':5,
+                      'configured_die':'d20', 'configured_bad_results':'4',
+                      'configured_result_rules':fixed[0]['result_rules'], 'die':'d20', 'bad_results':'4',
+                      'source_occurrence_repaired':True}
+        event.version += 1; journal(session,event,'upsert',base); changed += 1
+    return changed
+
+
 def repair_pending_event_rolls(session: Session, save: ChronicleSave) -> int:
     """Refresh unfinished event obligations from their authoritative event table.
 
@@ -2427,7 +2471,8 @@ def repair_pending_event_rolls(session: Session, save: ChronicleSave) -> int:
     if not events:
         return 0
     rule_map = _event_rule_map(session, save)
-    changed = retire_inapplicable_event_rolls(session, save)
+    changed = repair_source_occurrence_plans(session, save, events.values())
+    changed += retire_inapplicable_event_rolls(session, save)
     rolls = session.scalars(select(Record).where(
         Record.save_id == save.id,
         Record.kind == "roll",
@@ -3344,6 +3389,8 @@ def backfill_generated_marriage_dates(session: Session, save: ChronicleSave) -> 
         outcome = str(data.get("outcome") or "").casefold()
         if not _marriage_roll(roll) or not any(value in outcome for value in ("may marry", "may remarry")):
             continue
+        if data.get('annual_marriage') or data.get('marriage_refusal'):
+            continue
         if data.get("suggested_marriage_global_day") not in (None, ""):
             continue
         first_day = max(save.global_day, int(roll.global_day or save.global_day)) + 1
@@ -3373,11 +3420,15 @@ def _setting_int(save: ChronicleSave, key: str, default: int) -> int:
 
 def _schedule_marriage_rolls(session: Session, save: ChronicleSave, sims: list[Record] | None = None) -> tuple[int, int]:
     """Restore the one-time non-heir marriage obligation used by the 3.x planner."""
+    from . import marriage_rules
+    if not automation_enabled(save): return 0, 0
+    if marriage_rules.enabled(save): return marriage_rules.schedule(session, save)
+    _, annual_retired = marriage_rules.schedule(session, save)
     rules = [record for record in session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "planner_rule", Record.deleted.is_(False)
     )) if _marriage_rule(record) and bool((record.data or {}).get("active", True)) and core_rulesets.applies_to_selected_core(save, record)]
     if not rules:
-        return 0, 0
+        return 0, annual_retired
     sims = sims if sims is not None else list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "sim", Record.deleted.is_(False)
     )))
@@ -3394,7 +3445,7 @@ def _schedule_marriage_rolls(session: Session, save: ChronicleSave, sims: list[R
     )) if _marriage_roll(record)]
     existing_sim_ids = {str((record.data or {}).get("sim_id") or "") for record in existing_rolls}
     tracking_start = max(1, _setting_int(save, "roll_tracking_start_day", _setting_int(save, "roll_tracking_start", 1)))
-    retired = 0
+    retired = annual_retired
     for roll in existing_rolls:
         if bool((roll.data or {}).get("completed")):
             continue
@@ -3445,6 +3496,8 @@ def _schedule_marriage_rolls(session: Session, save: ChronicleSave, sims: list[R
 
 def _schedule_remarriage_rolls(session: Session, save: ChronicleSave, sims: list[Record] | None = None) -> tuple[int, int]:
     """Schedule one era-aware, nonfatal remarriage decision after each ended marriage."""
+    from . import marriage_rules
+    if not automation_enabled(save) or marriage_rules.enabled(save): return 0, 0
     seed_remarriage_rule(session, save)
     rules = [record for record in session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "planner_rule", Record.deleted.is_(False)
@@ -4131,6 +4184,9 @@ def _create_automatic_followup(session: Session, save: ChronicleSave, origin: Re
                                rule: Record, sim: Record, due: int, actor_id: str,
                                sequence: int = 0, overrides: dict | None = None) -> tuple[Record | None, bool]:
     origin_data = origin.data or {}; rule_data = rule.data or {}
+    if origin_data.get('extra_automation'):
+        from . import roll_automation
+        if not roll_automation.enabled(save,origin_data['extra_automation'],rule):return None,False
     child_key = str(rule_data.get("rule_key") or rule_data.get("key") or rule.id)
     existing = list(session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
@@ -4155,6 +4211,8 @@ def _create_automatic_followup(session: Session, save: ChronicleSave, origin: Re
         "allow_after_death":bool(rule_data.get("allow_after_death")) or (rule.kind == "occult_rule" and str(rule_data.get("occult") or "") == "Ghost" and child_key != "ghost_haunting_death"),
     }
     common.update(overrides or {})
+    if origin_data.get('extra_automation'):
+        common['extra_automation']=origin_data['extra_automation']
     if rule.kind == "occult_rule":
         created = _add_occult_roll(session, save, rule, sim, due, source, overrides=common)
     else:
@@ -4179,6 +4237,9 @@ def _create_automatic_followup(session: Session, save: ChronicleSave, origin: Re
 def _schedule_automatic_occult_followup(session: Session, save: ChronicleSave, roll: Record) -> int:
     """Create every required built-in or declared follow-up without duplicates."""
     data = roll.data or {}
+    if data.get('extra_automation'):
+        from . import roll_automation
+        if not roll_automation.enabled(save,data['extra_automation']):return 0
     if data.get('catch_up_resolution'):return 0
     if not bool(data.get("completed")):
         return 0
@@ -4365,10 +4426,13 @@ def retire_inapplicable_event_rolls(session: Session, save: ChronicleSave) -> in
         reason = ''
         if event_is_ignored(event) or not ed.get('active', True) or not ed.get('roll_required'):
             reason = 'The source event is hidden, inactive, or no longer requires rolls.'
+        elif (step.get('parent_index') is not None or step.get('parent_indices')) and not d.get('automatic_followup') and not d.get('origin_roll_id'):
+            reason = 'This is a conditional follow-up, not an independent event roll. Its occurrence check must trigger it first.'
         elif unit != str(d.get('roll_scope') or 'sim'):
-            reason = 'The source requires one roll per household, not one per Sim.' if unit == 'household' else 'The source requires individual Sim checks.'
+            reason = ('The source requires one occurrence check for the active save.' if unit == 'event' else
+                      'The source requires one roll per household, not one per Sim.' if unit == 'household' else 'The source requires individual Sim checks.')
         else:
-            candidates = ([by_id.get(str(d.get('sim_id') or ''))] if unit == 'sim' else
+            candidates = (sims if unit == 'event' else [by_id.get(str(d.get('sim_id') or ''))] if unit == 'sim' else
                           [s for s in sims if (s.data or {}).get('current_household_id') == d.get('household_id')])
             due = int(roll.global_day if roll.global_day is not None else save.global_day)
             valid = False
@@ -4448,12 +4512,13 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
         Record.data["source"].as_string().like("event:%"),
     )))
-    completed_households = set()
+    completed_households = set(); completed_occurrences = set()
     for old in session.scalars(select(Record).where(Record.save_id == save.id, Record.kind == 'roll',
             Record.deleted.is_(False), Record.data['completed'].as_boolean().is_(True),
             Record.data['event_id'].as_string().is_not(None))):
         od = old.data or {}
         if od.get('infinite_frozen') or not str(od.get('source') or '').startswith('event:'): continue
+        completed_occurrences.add((od['event_id'],int(od.get('source_roll_plan_index') or 0),int(old.global_day or 0)))
         person = sim_by_id.get(str(od.get('sim_id') or ''))
         home_id = od.get('household_id') or ((person.data or {}).get('current_household_id') if person else None)
         if home_id: completed_households.add((od['event_id'],str(home_id),int(od.get('source_roll_plan_index') or 0),int(old.global_day or 0)))
@@ -4562,7 +4627,10 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                             continue
                     unit = event_targets.roll_scope(event_data, step, rule_data)
                     if unit == 'household' and (not household or (household.data or {}).get('infinite_frozen')): continue
-                    target_key = f'household:{household.id}' if unit == 'household' else sim.id
+                    target_key = 'save' if unit == 'event' else f'household:{household.id}' if unit == 'household' else sim.id
+                    # Earlier per-Sim occurrence results remain historical facts.
+                    # Do not reroll or silently replay that year's completed work.
+                    if unit == 'event' and any((eid,step_index,due) in completed_occurrences for eid in equivalent_event_ids): continue
                     if unit == 'household' and any((eid,household.id,step_index,due) in completed_households for eid in equivalent_event_ids): continue
                     base_source = f"event:{event.id}:{target_key}" if root_position == 0 else f"event:{event.id}:{target_key}:step:{step_index}"
                     source = f"{base_source}:occurrence:{due}" if repeat_interval else base_source
@@ -4584,11 +4652,18 @@ def schedule_event_rolls(session: Session, save: ChronicleSave, sims: list[Recor
                     eligible_ids = [s.id for s in sims if (s.data or {}).get('current_household_id') == household.id
                                     and _event_applies(event,s,due,rule_data,household,save,fallback_location,pregnancies,migrations,step)
                                     and _source_roll_step_applies(step,s,household,save,fallback_location,due,migrations)] if unit == 'household' else []
-                    target_label = household.label if unit == 'household' else sim.label
+                    if unit == 'event':
+                        eligible_ids = [s.id for s in sims
+                            if ((s.data or {}).get('death_global_day') is None or int(s.data['death_global_day'])>save.global_day)
+                            and _event_applies(event,s,due,rule_data,households.get(str((s.data or {}).get('current_household_id') or '')),save,fallback_location,pregnancies,migrations,step)
+                            and _source_roll_step_applies(step,s,households.get(str((s.data or {}).get('current_household_id') or '')),save,fallback_location,due,migrations)]
+                    target_label = 'Yearly occurrence' if unit == 'event' else household.label if unit == 'household' else sim.label
                     roll = Record(save_id=save.id, kind="roll", label=f"{event.label} — {target_label}", global_day=due, data={
                         "event_id": event.id, "source_id": event.id, "sim_id": sim.id if unit == 'sim' else None, "sim_name": sim.label if unit == 'sim' else None,
-                        "roll_scope":unit, "household_id":household.id if household else None,
-                        "household_name":household.label if household else None, "eligible_sim_ids":eligible_ids,
+                        "roll_scope":unit, "household_id":household.id if household and unit!='event' else None,
+                        "household_name":household.label if household and unit!='event' else None, "eligible_sim_ids":eligible_ids,
+                        "eligible_household_ids":sorted({str((sim_by_id[sid].data or {}).get('current_household_id')) for sid in eligible_ids
+                                                        if (sim_by_id[sid].data or {}).get('current_household_id')}) if unit=='event' else [],
                         "eligibility_summary":event_targets.eligibility_text(event_data,step,rule_data),
                         "roll_type": roll_type, "die": sim_spec["die"], "bad_results": sim_spec["bad_results"],
                         "result_rules": sim_spec["result_rules"], "failure_outcome": sim_spec["failure_outcome"],
@@ -4715,7 +4790,10 @@ def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Reco
             if not home and sim: home = session.get(Record,(sim.data or {}).get('current_household_id')) if (sim.data or {}).get('current_household_id') else None
             unit = event_targets.roll_scope(config,child)
             household_origin = data.get('roll_scope') == 'household'
-            if household_origin:
+            event_origin = data.get('roll_scope') == 'event'
+            if event_origin:
+                targets = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=='sim',Record.deleted.is_(False))))
+            elif household_origin:
                 targets = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=='sim',Record.deleted.is_(False),
                     Record.id.in_(data.get('eligible_sim_ids') or []))))
             else: targets = [sim] if sim and not sim.deleted else []
@@ -4727,13 +4805,19 @@ def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Reco
             delay = max(0, int(child.get("delay_days") or 0))
             delay += max(0, int(child.get("delay_years") or 0)) * max(1, int(save.days_per_year or 1))
             due = save.global_day + delay
+            eligibility_day = int(data.get('event_occurrence_global_day') or origin.global_day or due) if event_origin else due
+            migrations = list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=='migration',Record.deleted.is_(False)))) if event_origin else []
             label = str(child.get("label") or child.get("context") or f"{source_record.label} follow-up")[:160]
             lethal = bool(child.get("failure_is_lethal")) or _lethal_outcome(result_rules)
             for target in (targets[:1] if unit=='household' else targets):
-                if not _event_applies(source_record,target,due,{},home,save,step=child): continue
-                if not _source_roll_step_applies(child,target,home,save,'',due): continue
+                if event_origin:
+                    home_id = (target.data or {}).get('current_household_id')
+                    home = session.get(Record,home_id) if home_id else None
+                    if home and (home.save_id!=save.id or home.deleted): home=None
+                if not _event_applies(source_record,target,eligibility_day,{},home,save,migrations=migrations,step=child): continue
+                if not _source_roll_step_applies(child,target,home,save,'',eligibility_day,migrations): continue
                 source = f"conditional-followup:{origin.id}:step:{child_index}"
-                if household_origin and unit=='sim': source += f':sim:{target.id}'
+                if (household_origin or event_origin) and unit=='sim': source += f':sim:{target.id}'
                 if session.scalar(select(Record.id).where(Record.save_id==save.id,Record.kind=='roll',Record.deleted.is_(False),
                         Record.data['source'].as_string()==source).limit(1)): continue
                 followup = Record(save_id=save.id, kind="roll", label=f"{home.label if unit=='household' else target.label} — {label}", global_day=due, data={
@@ -4745,6 +4829,8 @@ def _schedule_event_followup(session: Session, save: ChronicleSave, origin: Reco
                 "failure_is_lethal":lethal, "nonlethal":not lethal,
                 "source":source, "due_global_day":due, "completed":False, "automatic_followup":True,
                 "source_roll_plan_index":child_index,
+                "event_occurrence_global_day":data.get('event_occurrence_global_day'),
+                "event_occurrence_year":data.get('event_occurrence_year'),
                 })
                 session.add(followup); session.flush(); journal(session, followup, "upsert", 0); created += 1
         if created or children:
@@ -5040,7 +5126,7 @@ def rescale_age_timing(session: Session, save: ChronicleSave, old_days_per_year:
             )
             if candidates:
                 updates["death_window_end"] = birth + candidates[0] - 1
-        elif source.startswith("planner:marriage:"):
+        elif source.startswith("planner:marriage:") and not (data.get('annual_marriage') or data.get('marriage_refusal')):
             due = birth + age_setting_days(save, "marriage_min_age_days", 72)
         elif bool(data.get("hp_hogwarts_sorting")) or str(data.get("source_rule_key") or "") == "hp_13":
             due = birth + 11 * new
@@ -5706,6 +5792,8 @@ def schedule_rolls(session: Session, save: ChronicleSave) -> int:
     created += schedule_occult_rolls(session, save, sims)
     created += schedule_event_rolls(session, save, sims)
     created += schedule_campaign_rolls(session, save, sims)
+    from . import roll_automation
+    roll_automation.schedule(session,save)
     portrait_prompt_created = decade_portraits.schedule_prompt(session, save)
     save.revision += created + marriage_retired + remarriage_retired + portrait_prompt_created
     return created
@@ -5912,6 +6000,13 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         is_bad = actual == 1
         automatic_outcome = ("Heads — dies in labor" if is_bad else "Tails — survives traumatic birth; infertile") if sides == 2 else ("Dies in labor" if is_bad else "Survives traumatic birth; infertile")
         roll.data = {**roll.data, "nonlethal": not is_bad}
+    elif roll.data.get('annual_marriage') or roll.data.get('marriage_refusal'):
+        from . import marriage_rules
+        if not 1 <= actual <= int(str(roll.data.get('die') or 'd6')[1:]):
+            raise ValueError('That result is outside the marriage die range.')
+        automatic_outcome = marriage_rules.apply_result(session, save, roll, actual)
+        is_bad = False
+        roll.data = {**roll.data, 'nonlethal':True, 'failure_is_lethal':False}
     elif _marriage_roll(roll):
         automatic_outcome = marriage_roll_result(actual, str(roll.data.get("result_rules") or ""), str(roll.data.get("bad_results") or ""))
         is_bad = automatic_outcome in {"Does not marry", "Does not remarry"}
@@ -5992,7 +6087,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             family_plan, family_plan_changed, family_plan_created = sync_family_plan_from_pregnancy_roll(
                 session, save, roll, allowance_sim, pregnancy_count,
             )
-    if automate and _marriage_roll(roll):
+    if automate and _marriage_roll(roll) and not (roll.data.get('annual_marriage') or roll.data.get('marriage_refusal')):
         marriage_updates = {"nonlethal":True}
         outcome_text = str(roll.data.get("outcome") or "").casefold()
         if ("may marry" in outcome_text or "may remarry" in outcome_text) and roll.data.get("suggested_marriage_global_day") in (None, ""):
@@ -6019,6 +6114,8 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     ) if hp_changed and automate else 0
     if automate:
         automatic_followups += _schedule_event_followup(session, save, roll, actual)
+        from . import roll_automation
+        roll_automation.followups(session,save,roll)
         automatic_followups += maternal_rules.schedule(session, save, roll)
         if roll.data.get("maternal_followup") and not is_bad:
             maternal_changed = maternal_rules.apply_infertility(session, save, roll)
@@ -6076,7 +6173,8 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
             if isinstance(causes, str):
                 causes = [value.strip() for value in re.split(r"[;\n]+", causes) if value.strip()]
             causes = causes or DEFAULT_DEATH_CAUSES[group]
-            cause = event_cause or (roll_rng(session).choice(causes) if (save.settings or {}).get("automatic_death_causes", True) else "Player choice")
+            extra_cause='Dehydration' if roll.data.get('extra_automation')=='dehydration' and roll.data.get('dehydration_check') else None
+            cause = extra_cause or event_cause or (roll_rng(session).choice(causes) if (save.settings or {}).get("automatic_death_causes", True) else "Player choice")
             # Only rewrite the schedule when the failed-roll date is earlier.
             # If the Sim was already due to die sooner, that earlier date wins.
             if existing_death_day is None or failed_roll_death_day < existing_death_day:

@@ -42,7 +42,13 @@ def board(session,save,params,section=None):
     d=Record.data;k=Record.kind
     day=func.coalesce(d['due_global_day'].as_integer(),Record.global_day)
     post_death=or_(d['allow_after_death'].as_boolean().is_(True),and_(d['occult_roll'].as_boolean().is_(True),d['occult_rule_key'].as_string()=='ghost_persistence'))
-    roll=and_(k=='roll',d['completed'].as_boolean().is_not(True),or_(ui.related_living_sql(save),post_death),when(Record.global_day))
+    marriage=or_(d['annual_marriage'].as_boolean().is_(True),d['marriage_refusal'].as_boolean().is_(True),
+        *(d[key].as_string().ilike('%marriage%') for key in ('source','source_id','roll_type')))
+    # Yearly marriage decisions remain actionable throughout the year. Legacy
+    # eligibility and refusal checks likewise must not vanish after one day.
+    roll_window=or_(when(Record.global_day),and_(marriage,Record.global_day<g)) if window=='today' else when(Record.global_day)
+    roll=and_(k=='roll',d['completed'].as_boolean().is_not(True),d['infinite_frozen'].as_boolean().is_not(True),
+        or_(ui.related_living_sql(save),post_death),roll_window)
     hidden=select(Record.id).where(Record.save_id==save.id,Record.kind=='event',or_(Record.deleted.is_(True),Record.data['ignored'].as_boolean().is_(True),Record.data['hidden'].as_boolean().is_(True))).correlate(None)
     roll=and_(roll,or_(d['event_id'].as_string().is_(None),d['event_id'].as_string().notin_(hidden)))
     decision=or_(roll,and_(heritage.due_tasks_sql(save),when(day)),
@@ -104,13 +110,15 @@ def render(request,session,ctx,templates):
 
 def schedule(m,session,save):
     heritage.schedule_routines(session,save)
-    marker=(save.global_day,6)
+    marker=(save.global_day,7)
     if domain.automation_enabled(save) and m._TODAY_SCHEDULE_CHECKED.get(save.id)!=marker:
         save.revision+=domain.retire_prechallenge_rolls(session,save)
         domain.schedule_marriage_rolls(session,save)
         save.revision+=domain.schedule_occult_rolls(session,save)
         save.revision+=domain.schedule_event_rolls(session,save)
         save.revision+=domain.schedule_campaign_rolls(session,save)
+        from . import roll_automation
+        roll_automation.schedule(session,save)
         m._TODAY_SCHEDULE_CHECKED[save.id]=marker
 
 def register(m):

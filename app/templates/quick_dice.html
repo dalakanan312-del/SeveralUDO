@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Quick Dice · Decades Tracker{% endblock %}
+{% block body %}
+<link rel="stylesheet" href="/static/quick_dice.css?v={{static_version}}">
+<section id="quick-dice" data-history-key="decades-quick-dice-{{user.id}}">
+<header class="hero compact"><p class="eyebrow">PLAY · RANDOM DECISIONS</p><h1>Quick Dice</h1><p>A spare set of dice for whatever happens next. These rolls never change Sims, complete challenge rolls, or schedule consequences.</p></header>
+<div class="quick-dice-layout">
+<section class="panel"><h2>Pick a die</h2>
+<form action="/api/quick-dice" method="post" data-quick-dice-form>
+<label>What are you deciding? <small>Optional</small><input name="question" maxlength="160" placeholder="Who hosts the next feast?"></label>
+<div class="quick-dice-tray">{% for sides,label in dice_presets %}<button class="quick-die" type="submit" name="notation" value="d{{sides}}" aria-label="{{'Flip a coin' if sides==2 else 'Roll '~label}}">
+<svg viewBox="0 0 80 80" aria-hidden="true" focusable="false">{% if sides==2 %}<circle cx="40" cy="40" r="31"/><circle class="die-facet" cx="40" cy="40" r="25"/>{% elif sides==4 %}<path d="M40 6L75 69H5Z"/>{% elif sides==6 %}<rect x="10" y="10" width="60" height="60" rx="10"/>{% else %}<path d="M40 5L71 22V58L40 75L9 58V22Z"/><path class="die-facet" d="M9 22L40 15L71 22M9 58L40 65L71 58"/>{% endif %}<text x="40" y="47" text-anchor="middle">{{'½' if sides==2 else sides}}</text></svg>
+<strong>{{label}}</strong><small>{{'Heads / tails' if sides==2 else '1–'~sides}}</small></button>{% endfor %}</div>
+</form>
+<details class="quick-dice-custom"><summary>Custom dice, multiple dice &amp; modifiers</summary>
+<form action="/api/quick-dice" method="post" class="form-grid" data-quick-dice-form>
+<label>Dice notation<input name="notation" value="2d6" maxlength="64" required aria-describedby="dice-notation-help" autocapitalize="off" spellcheck="false"></label>
+<label>Decision label <small>Optional</small><input name="question" maxlength="160"></label>
+<p id="dice-notation-help">Examples: d3, d50, 2d6, 3d10+2, d20-1. Up to 100 dice, with 2–1000 sides each. Modifiers: −10000 to +10000.</p><button class="primary">Roll custom dice</button>
+</form></details>
+</section>
+<section class="panel quick-dice-results" aria-labelledby="dice-result-heading">
+<p class="eyebrow">YOUR THROW</p><h2 id="dice-result-heading">Result</h2>
+<div id="dice-result" role="status" aria-live="polite" aria-atomic="true">
+{% if quick_dice_result %}{% set r=quick_dice_result %}<p class="quick-dice-question">{{r.question or r.notation}}</p><strong class="quick-dice-total">{{r.coin or r.total}}</strong><p>{{r.notation}} · {{r.faces|join(' + ')}}{% if r.modifier %} {{'+' if r.modifier>0 else '−'}} {{r.modifier|abs}}{% endif %} = {{r.total}}</p>{% else %}<p class="muted">Pick a die to roll.</p>{% endif %}
+</div>
+<p id="quick-dice-status" role="alert">{{quick_dice_error or ''}}</p>
+<p class="muted">Decide what each number means before rolling. For a coin: 1 = heads, 2 = tails. Each click makes a new throw; repeats are possible.</p>
+<div class="section-heading"><h3>Recent throws</h3><button type="button" id="clear-quick-dice" hidden>Clear list</button></div>
+<ol id="quick-dice-history" class="quick-dice-history"></ol><p id="quick-dice-history-note" class="muted">With JavaScript enabled, the last 10 throws stay in this browser. They are not added to Storyline or your challenge-roll history.</p>
+<noscript><p>Dice still work without JavaScript. Your latest result appears above after each roll.</p></noscript>
+</section>
+</div>
+<script id="quick-dice-initial" type="application/json">{{quick_dice_result|tojson}}</script>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/quick_dice.js?v={{static_version}}" defer></script>{% endblock %}

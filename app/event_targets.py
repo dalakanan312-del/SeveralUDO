@@ -20,6 +20,7 @@ def roll_scope(data, step=None, rule=None):
     step, rule = step or {}, rule or {}
     for obj in (step, rule):
         value = str(obj.get('roll_scope') or obj.get('roll_unit') or '').strip().casefold()
+        if value in {'event', 'save', 'once per event'}: return 'event'
         if value in {'household', 'family', 'per household'}: return 'household'
         if value in {'sim', 'individual', 'per sim'}: return 'sim'
     explicit = str(data.get('roll_scope') or data.get('roll_unit') or '').strip().casefold()

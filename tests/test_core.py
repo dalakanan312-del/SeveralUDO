@@ -4717,7 +4717,7 @@ class CoreSmokeTests(unittest.TestCase):
             self.assertEqual(hidden_source_ids,{
                 "EVT-0143","EVT-0157","EVT-0264","EVT-0269","EVT-0484","EVT-0485","EVT-0486","EVT-0488",
                 "EVT-0491","EVT-0492","EVT-0493","EVT-0494","EVT-0496","EVT-0497","EVT-0499","EVT-0500",
-                "EVT-0501","EVT-0522","EVT-0529","EVT-0629",
+                "EVT-0501","EVT-0522","EVT-0529","EVT-0629","EVT-1000S-0180",
             })
 
             with SessionLocal() as session:

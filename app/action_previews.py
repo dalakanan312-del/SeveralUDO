@@ -99,7 +99,7 @@ def roll_dependencies(session,save,roll):
     # Explicit source rules and actor eligibility must not silently change even
     # when this particular result would still happen to have the same outcome.
     data=roll.data or {};sources={str(data.get(key) or '') for key in
-        ('source_rule_id','event_id','source_id','pregnancy_id')}
+        ('source_rule_id','event_id','source_id','pregnancy_id','origin_roll_id')}
     if str(data.get('source') or '').startswith('aging:'):sources.add(data['source'].split(':')[-1])
     rows=[]
     for record_id in sorted(sources-{''}):
@@ -107,7 +107,9 @@ def roll_dependencies(session,save,roll):
         if row and row.save_id==save.id:rows.append(snapshot(row,RECORD_FIELDS))
     actor_ids={str(data.get(key) or '') for key in ('sim_id','rule_actor_sim_id')}-{''}
     actor_keys=('birth_global_day','death_global_day','death_confirmed','game_was_dead',
-                'current_household_id','species_occult','occult_types')
+                'current_household_id','species_occult','occult_types',
+                'marriage_eligibility','marriage_available_from_year','marriage_event_until_year',
+                'marriage_practical_extension','marriage_practical_reason','marriage_custom','country','faith','religion','social_class')
     actors=[]
     for record_id in sorted(actor_ids):
         row=session.get(Record,record_id)
@@ -116,7 +118,8 @@ def roll_dependencies(session,save,roll):
     return {'sources':rows,'actors':actors,
             'calendar':{k:getattr(save,k) for k in ('global_day','start_year','days_per_year','pregnancy_days')},
             'rules':{k:(save.settings or {}).get(k) for k in
-                     ('automation_enabled','core_ruleset_id','selected_rule_packs','infinite_decades')}}
+                     ('automation_enabled','core_ruleset_id','selected_rule_packs','infinite_decades',
+                      'marriage_roll_mode','annual_marriage_policies','marriage_min_age_days','roll_automation')}}
 
 
 def apply_settings(session,save,form):
@@ -134,6 +137,10 @@ def apply_settings(session,save,form):
     for key in ('roll_tracking_start_day','try_for_baby_daily_limit','delivery_day_limit','elder_min_age_days','elder_max_age_days','marriage_min_age_days','inheritance_rule_cutoff_year','free_save_a_sims','full_moon_anchor_global_day','full_moon_interval_days','kinship_detection_generations'):
         if key in form and integer(form.get(key)) is not None:values[key]=integer(form[key])
     scope=str(form.get('settings_scope') or ('succession' if str(form.get('return_to') or '').startswith('/p/challenge') else 'rules'))
+    if 'marriage_roll_mode' in form:
+        mode=str(form['marriage_roll_mode'])
+        if mode not in {'legacy','era_annual'}:raise ValueError('Choose a supported marriage scheduling mode.')
+        values['marriage_roll_mode']=mode
     if scope=='succession':values['succession_require_legitimate']='succession_require_legitimate' in form
     elif scope=='rules' and 'sim_menu_order' not in form:
         for key in ('maternal_rolls_enabled','automatic_death_causes','automatic_birth_circumstances'):values[key]=key in form
@@ -166,6 +173,14 @@ def describe(plan,kind):
     for change in plan['records']:
         old,row=change['before'],change['after'];d=row['data'];before=(old or {}).get('data') or {}
         if row['kind']=='roll':
+            if d.get('marriage_decision')!=before.get('marriage_decision'):
+                decision=d.get('marriage_decision')
+                messages={'awaiting_spouse':'Choose an eligible spouse and plan the wedding this calendar year.',
+                          'awaiting_match':'Records an arranged-match task; no eligible spouse is available. Roll again next year.',
+                          'refused':'Refusal succeeds; remains unmarried and rolls again next year.',
+                          'must_marry':'Refusal fails; proceed with marriage or an arranged match.',
+                          'no_marriage':'Remains unmarried and rolls again next calendar year.'}
+                if decision in messages:effects.append(messages[decision])
             if old and before.get('completed'):
                 completed+=1
                 if kind in {'settings','packs'}:raise ValueError('This change would alter completed history. It has been blocked for review.')
