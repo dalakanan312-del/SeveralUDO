@@ -29,7 +29,7 @@ from .security import hash_secret, token
 from .session_policy import REMEMBER_DEVICE_SECONDS, StaySignedInMiddleware, set_session_mode
 from . import birth_legitimacy, birth_measurements, labor, hp_bloodlines, death_reminders
 from . import marriage_rules, marriage_rules_ui
-from . import quick_dice, roll_automation, roll_automation_ui
+from . import quick_dice, roll_automation, roll_automation_ui, pregnancy_planning
 from .workflow import related_tasks, page_sections
 
 
@@ -122,7 +122,7 @@ def static_version() -> str:
     return digest.hexdigest()[:12]
 
 
-app = FastAPI(title="Decades Tracker", version="4.6.49")
+app = FastAPI(title="Decades Tracker", version="4.6.50")
 app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, max_age=REMEMBER_DEVICE_SECONDS, same_site="lax", https_only=not settings.local_mode)
 from .request_safety import RequestSafetyMiddleware
 app.add_middleware(RequestSafetyMiddleware, settings=settings)
@@ -659,13 +659,14 @@ def planner_analysis(sims: list[Record], pregnancies: list[Record], plans: list[
         target = int_or_none(data.get("target_children")) or 0
         target_pregnancies = int_or_none(data.get("target_pregnancies"))
         pregnancy_plan = str(data.get("target_measure") or "").casefold() == "pregnancies" or target_pregnancies is not None
-        plan_year = int_or_none(data.get("planner_year"))
+        plan_year = None if data.get("source_pregnancy_roll_id") or data.get("pregnancy_allowance_scope")=="lifetime" else int_or_none(data.get("planner_year"))
         counted_pregnancies = []
         if sim and pregnancy_plan:
             counted_pregnancies = [
                 pregnancy for pregnancy in pregnancies
                 if str((pregnancy.data or {}).get("mother_id") or "") == sim.id
                 and domain.counts_against_pregnancy_allowance(pregnancy)
+                and pregnancy_planning.conception_day(save,pregnancy)<=save.global_day
                 and (plan_year is None or domain.pregnancy_allowance_year(save, pregnancy) == plan_year)
             ]
         pregnancies_used = len(counted_pregnancies)
@@ -2042,7 +2043,7 @@ def feature_page(request: Request, page: str):
                 if candidate_due is None or candidate_due < 1 or bool(candidate.data.get("completed")) or (candidate.data.get("sim_id") in dead_sim_ids and not post_death_roll) or key in completed_roll_keys or key in pending_roll_keys: continue
                 pending_rolls.append(candidate); pending_roll_keys.add(key)
             def roll_category(roll):
-                if bool((roll.data or {}).get("pregnancy_count_roll")): return "pregnancy-count"
+                if bool((roll.data or {}).get("pregnancy_count_roll")) or roll.data.get("pregnancy_yearly_roll"): return "pregnancy-count"
                 if bool((roll.data or {}).get("occult_roll")): return "occult"
                 text = " ".join(str(roll.data.get(k) or "") for k in ("source","source_id","roll_type")).casefold()
                 if "event" in text: return "event"
@@ -4881,7 +4882,7 @@ def save_today_focus(request: Request, save_id: str, current_heir_id: str = Form
 
 @app.post("/api/today/pregnancy-count-rolls")
 def add_pregnancy_count_roll(request: Request, sim_id: str = Form(...), view: str = Form(""),
-                             save_id: str = Form(""), household: str = Form("")):
+                             save_id: str = Form(""), household: str = Form(""), pregnancy_kind: str = Form("lifetime")):
     with db() as session:
         ctx=context(request,session);save=ctx["save"];sim=session.get(Record,sim_id)
         if not save or not sim or sim.save_id!=save.id:
@@ -4891,7 +4892,13 @@ def add_pregnancy_count_roll(request: Request, sim_id: str = Form(...), view: st
         try:
             if not session.scalar(select(Record.id).where(Record.id==sim.id,Record.save_id==save.id,usability.living_sql(save))):
                 raise ValueError("Pregnancy-count rolls are only available for living Sims already born.")
-            roll,created=domain.create_pregnancy_count_roll(session,save,sim)
+            if pregnancy_kind not in {"lifetime","yearly"}:
+                raise ValueError("Choose the lifetime allowance or the yearly pregnancy decision.")
+            if pregnancy_kind=="yearly":
+                from . import pregnancy_planning
+                roll,created=pregnancy_planning.create_annual(session,save,sim)
+            else:
+                roll,created=domain.create_pregnancy_count_roll(session,save,sim)
         except ValueError as exc:
             if view=="workboard":
                 request.session["pregnancy_roll_notice"]=str(exc)
@@ -4902,7 +4909,7 @@ def add_pregnancy_count_roll(request: Request, sim_id: str = Form(...), view: st
         if view=="workboard":
             request.session["pregnancy_roll_notice"]=(
                 f"Pregnancy roll ready for {sim.label}. Use the die below; no result has been rolled yet." if created else
-                f"Showing {sim.label}'s existing pregnancy allowance. Its recorded result is unchanged." if roll.data.get("completed") else
+                f"Showing {sim.label}'s existing pregnancy result. Its recorded result is unchanged." if roll.data.get("completed") else
                 f"Showing {sim.label}'s existing pregnancy roll. No duplicate was created.")
             return RedirectResponse(usability_ui.pregnancy_destination(session,save,roll,household),status_code=303)
     return RedirectResponse("/p/today?task=rolls&roll_kind=pregnancy-count",status_code=303)
@@ -5156,8 +5163,13 @@ def reopen_roll(request: Request, roll_id: str):
         if any(item.data.get('extra_automation') and item.data.get('completed') for item in conditional_followups):
             raise HTTPException(409,'Reopen the completed optional consequence first; its recorded outcome must not be silently removed.')
         related.extend(conditional_followups)
+        yearly_tasks=list(session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="task",Record.deleted.is_(False),Record.data["source_pregnancy_yearly_roll_id"].as_string()==roll.id)))
+        related.extend(yearly_tasks)
         if sim: related.append(sim)
         set_today_undo(request,f"Reopened {roll.label}",related)
+        for task in yearly_tasks:
+            if not task.data.get("completed"):
+                task_base=task.version;task.deleted=True;task.version+=1;domain.journal(session,task,"delete",task_base);save.revision+=1
         if marriage_parent:
             marriage_rules.change(session,marriage_parent,{'marriage_decision':'refusal_pending','refusal_result':None,
                 'suggested_marriage_global_day':roll.data.get('refusal_original_suggested_day')})
@@ -5196,7 +5208,7 @@ def reopen_roll(request: Request, roll_id: str):
         for retired in session.scalars(select(Record).where(Record.save_id==save.id,Record.kind=="roll",Record.deleted.is_(True),Record.data["retired_by_death_roll_id"].as_string()==roll.id)):
             base=retired.version;data=dict(retired.data or {});data.pop("retired_reason",None);data.pop("retired_global_day",None);data.pop("retired_by_death_roll_id",None);retired.data=data;retired.deleted=False;retired.version+=1;domain.journal(session,retired,"upsert",base)
         base=roll.version;data=dict(roll.data or {})
-        for key in ("actual","outcome","completed","completed_global_day","pregnancy_count","nonlethal","event_followup_roll_id","event_followup_processed"): data.pop(key,None)
+        for key in ("actual","outcome","completed","completed_global_day","pregnancy_count","pregnancy_yearly_success","nonlethal","event_followup_roll_id","event_followup_processed"): data.pop(key,None)
         if data.get('annual_marriage'):
             for key in ('marriage_success','marriage_decision','marriage_candidate_count','refusal_result',
                         'suggested_marriage_global_day','suggested_marriage_date_range','suggested_marriage_date_source'):

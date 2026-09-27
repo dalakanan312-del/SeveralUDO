@@ -1,15 +1,27 @@
 # Optional roll automation
 
 Open **Settings → Roll Automation**, or use its link on Today / Roll Tables.
-All seven new category switches default off for existing saves. Enable the
+All optional category switches default off for existing saves. Enable the
 desired category and the source rulepack/module. Per-rule switches are separate
 from the module's enabled state. Master pause and frozen branches take priority.
 
 ## Scheduling
 
-- Pregnancy allowance: once per historical year for living, fertile, capable
-  Sims within configurable historical ages. Married-only and side-household-only
-  filters default on. Missing main-household identity does not guess a household.
+- Pregnancy allowance: once per Sim, setting a lifetime total using the era table
+  when first rolled. Recorded pregnancies in every year consume that one total;
+  twins/triplets use one allowance. Existing completed results stay in history,
+  the currently recorded allowance is preserved, and duplicate unfinished count
+  rolls are retired.
+- Annual Baby Roll: a separate toggle, using the supplied D20 age bands and
+  modifiers by default. Runs once per historical year for eligible Sims with a
+  completed lifetime allowance remaining, no current pregnancy and no recorded
+  conception that year. A success creates a Today task to have a baby that year,
+  not a fictional pregnancy or a new allowance. Actual births still go through
+  normal multiples, birth, newborn, infant-survival and maternal checks.
+  Optional custom fixed odds and independent married-only/side-household
+  restrictions are available. Missing main-household identity never guesses one.
+  Explicit Sim or household restrictions take priority. Teen eligibility must
+  be confirmed from the timeline/class/theme rules.
 - HP: failed witch-hunt occurrence in 1300–1691 → HP-T02; HP-19 result 1–2 from
   1692 → HP-T03. One consequence per originating household event.
 - Changeling: newborn human sharing a household or recorded country with a
@@ -59,3 +71,23 @@ Correct completed children before reopening their parent. Consequence previews
 include the actual generated rolls and detect changed automation settings.
 
 No new database record types, schema migrations, game writes or network services.
+
+## Annual Baby Roll details
+
+Age is measured at the beginning of the historical year and scales with the
+save's days per year. The D20 base success range is 1 at 13–17, 1–7 at 18–24,
+1–6 at 25–29, 1–5 at 30–34, 1–4 at 35–39, 1–2 at 40–44 and 1 at 45–49.
+There is no natural annual roll below 13 or from 50 onward.
+
+Add +1 for the heir household, +1 for marriage/established partnership, −4 for a
+birth in the previous historical year, −2 for an Infant/Toddler in the household,
+−2 for no partner/widowhood/separation, and +2 for a confirmed fertility treatment
+or theme bonus. Twins count as one previous-year birth, and multiple young
+children apply the household penalty once. Clamp the final upper bound to 1–10.
+The married-27 example is 1–7, reduced to 1–3 after a previous-year birth.
+
+Roll Automation's known-prerequisite editor records permission, earliest allowed
+year, restriction notes, fertility bonus, and otherwise-unrecorded established
+partnerships. Ordinary friendship/romance records are not assumed to establish a
+partnership. Rolls display their source calculation and modifier breakdown.
+Old unfinished yearly decisions expire; completed history is never repeated.

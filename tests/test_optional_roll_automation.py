@@ -35,8 +35,8 @@ class OptionalRollAutomationTests(unittest.TestCase):
         auto.schedule(self.f.session,self.f.save);auto.schedule(self.f.session,self.f.save)
         self.assertEqual(len(self.generated('pregnancy')),1)
         self.assertEqual(self.generated()[0].data['sim_id'],a.id)
-        self.f.save.global_day+=4;auto.schedule(self.f.session,self.f.save);self.assertEqual(len(self.generated()),2)
-        a.data={**a.data,'infinite_frozen':True};self.f.save.global_day+=4;auto.schedule(self.f.session,self.f.save);self.assertEqual(len(self.generated()),2)
+        self.f.save.global_day+=4;auto.schedule(self.f.session,self.f.save);self.assertEqual(len(self.generated()),1)
+        a.data={**a.data,'infinite_frozen':True};self.f.save.global_day+=4;auto.schedule(self.f.session,self.f.save);self.assertEqual(len(self.generated()),1)
     def test_side_pregnancy_does_not_guess_missing_main_house(self):
         self.enable('pregnancy',pregnancy_married_only=False)
         self.add('planner_rule','Side Household Pregnancy',die='d20',bad_results='1: No pregnancy',active=True)

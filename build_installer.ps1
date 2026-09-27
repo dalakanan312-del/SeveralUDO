@@ -16,7 +16,7 @@ foreach ($PrivateFile in @("config.json", "install_result.txt")) {
 }
 & $Compiler $Script
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }
-$Installer = Join-Path $Root "release\Decades-Tracker-4.6.49-Setup.exe"
+$Installer = Join-Path $Root "release\Decades-Tracker-4.6.50-Setup.exe"
 $Checksum = Get-FileHash -LiteralPath $Installer -Algorithm SHA256
 $ChecksumFile = "$Installer.sha256"
 Set-Content -LiteralPath $ChecksumFile -Encoding ASCII -Value ("{0} *{1}" -f $Checksum.Hash.ToLowerInvariant(), (Split-Path -Leaf $Installer))

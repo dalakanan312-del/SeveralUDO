@@ -147,13 +147,13 @@ DEFAULT_ERA_GUIDANCE = [
 ]
 
 DEFAULT_PLANNER_RULES = [
-    ("Side Household Pregnancy", -9999, 1299, "d20", "1-14: Schedule that many pregnancies; 15-20: No pregnancy", "Annual pregnancy-count roll"),
-    ("Side Household Pregnancy", 1300, 1399, "d20", "1-13: Schedule that many pregnancies; 14-20: No pregnancy", "Annual pregnancy-count roll"),
-    ("Side Household Pregnancy", 1400, 1499, "d20", "1-11: Schedule that many pregnancies; 12-15: One pregnancy; 16-20: No pregnancy", "Annual pregnancy-count roll"),
-    ("Side Household Pregnancy", 1500, 1699, "d12", "1-10: Schedule that many pregnancies; 11-12: No pregnancy", "Annual pregnancy-count roll"),
-    ("Side Household Pregnancy", 1700, 1799, "d10", "1-8: Schedule that many pregnancies; 9-10: No pregnancy", "Annual pregnancy-count roll"),
-    ("Side Household Pregnancy", 1800, 1899, "d10", "1-8: Schedule that many pregnancies; 9-10: No pregnancy", "Annual pregnancy-count roll"),
-    ("Side Household Pregnancy", 1900, 9999, "d6", "1-5: Schedule that many pregnancies; 6: No pregnancy", "Annual pregnancy-count roll"),
+    ("Side Household Pregnancy", -9999, 1299, "d20", "1-14: Schedule that many pregnancies; 15-20: No pregnancy", "Lifetime pregnancy-count roll"),
+    ("Side Household Pregnancy", 1300, 1399, "d20", "1-13: Schedule that many pregnancies; 14-20: No pregnancy", "Lifetime pregnancy-count roll"),
+    ("Side Household Pregnancy", 1400, 1499, "d20", "1-11: Schedule that many pregnancies; 12-15: One pregnancy; 16-20: No pregnancy", "Lifetime pregnancy-count roll"),
+    ("Side Household Pregnancy", 1500, 1699, "d12", "1-10: Schedule that many pregnancies; 11-12: No pregnancy", "Lifetime pregnancy-count roll"),
+    ("Side Household Pregnancy", 1700, 1799, "d10", "1-8: Schedule that many pregnancies; 9-10: No pregnancy", "Lifetime pregnancy-count roll"),
+    ("Side Household Pregnancy", 1800, 1899, "d10", "1-8: Schedule that many pregnancies; 9-10: No pregnancy", "Lifetime pregnancy-count roll"),
+    ("Side Household Pregnancy", 1900, 9999, "d6", "1-5: Schedule that many pregnancies; 6: No pregnancy", "Lifetime pregnancy-count roll"),
     ("Non-Heir Marriage Eligibility", -9999, 1299, "d12", "1", "Marriage eligibility for a non-heir"),
     ("Non-Heir Marriage Eligibility", 1300, 1499, "d10", "1", "Marriage eligibility for a non-heir"),
     ("Non-Heir Marriage Eligibility", 1500, 1799, "d8", "1", "Marriage eligibility for a non-heir"),
@@ -3179,7 +3179,9 @@ def pregnancy_count_result(actual: int, result_rules: str, zero_results: str = "
 
 
 def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Record) -> tuple[Record, bool]:
-    """Create one editable-rule pregnancy allowance for a Sim in the current historical year."""
+    """Create one lifetime allowance, using the era table at its first roll."""
+    from . import pregnancy_planning
+    pregnancy_planning.lock_save(session,save)
     if sim.kind != "sim" or sim.deleted or sim.save_id != save.id:
         raise ValueError("Choose a Sim from the active save.")
     if (sim.data or {}).get("infertile"):
@@ -3187,6 +3189,11 @@ def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Reco
     death_day = (sim.data or {}).get("death_global_day")
     if bool((sim.data or {}).get("game_was_dead")) or (death_day not in (None, "") and int(death_day) <= save.global_day):
         raise ValueError("Pregnancy-count rolls are only available for living Sims.")
+    existing = pregnancy_planning.canonical(session, save, sim)
+    if existing:
+        return existing, False
+    if sim.data.get("pregnancy_allowance_count") is not None:
+        raise ValueError("This Sim already has a recorded lifetime pregnancy allowance. Review it on their profile.")
     year = save.start_year + (save.global_day - 1) // max(1, save.days_per_year)
     rules = [record for record in session.scalars(select(Record).where(
         Record.save_id == save.id, Record.kind == "planner_rule", Record.deleted.is_(False)
@@ -3195,7 +3202,7 @@ def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Reco
                  if int((record.data or {}).get("start_year", -9999)) <= year <= int((record.data or {}).get("end_year", 9999))), None)
     if not rule:
         raise ValueError(f"No active pregnancy-count rule covers {year}. Add or enable one under Roll Tables.")
-    source = f"planner:pregnancy-count:{sim.id}:{year}"
+    source = f"planner:pregnancy-count:{sim.id}:lifetime"
     existing = session.scalar(select(Record).where(
         Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
         Record.data["source"].as_string() == source,
@@ -3213,8 +3220,8 @@ def create_pregnancy_count_roll(session: Session, save: ChronicleSave, sim: Reco
         "planner_rule_id":rule.id, "planner_year":year, "due_global_day":save.global_day,
         "core_ruleset_id":rule_data.get("core_ruleset_id"),
         "core_source_rule_id":rule_data.get("source_rule_id"),
-        "completed":False, "nonlethal":True, "pregnancy_count_roll":True,
-        "notes":f"Pregnancy allowance for {year}; uses the editable era planner rule",
+        "completed":False, "nonlethal":True, "pregnancy_count_roll":True, "pregnancy_allowance_scope":"lifetime",
+        "notes":f"Lifetime pregnancy allowance; uses the editable era table when first rolled in {year}. The separate yearly check decides whether to try for pregnancy.",
     })
     session.add(roll); session.flush(); journal(session, roll, "upsert", 0); save.revision += 1
     return roll, True
@@ -3248,51 +3255,13 @@ def pregnancy_allowance_year(save: ChronicleSave, pregnancy: Record) -> int | No
 
 
 def pregnancy_allowance_status(session: Session, save: ChronicleSave, sim: Record) -> dict:
-    """Return each recorded annual allowance with live used and remaining counts."""
-    stored = (sim.data or {}).get("pregnancy_allowances") or {}
-    allowances = {str(key):dict(value) for key,value in stored.items() if isinstance(value, dict)} if isinstance(stored, dict) else {}
-    if (sim.data or {}).get("pregnancy_allowance_count") is not None:
-        year = str((sim.data or {}).get("pregnancy_allowance_year") or save.start_year)
-        allowances.setdefault(year, {
-            "allowed":int((sim.data or {}).get("pregnancy_allowance_count") or 0),
-            "roll_id":(sim.data or {}).get("pregnancy_allowance_roll_id"),
-            "recorded_global_day":(sim.data or {}).get("pregnancy_allowance_recorded_global_day"),
-        })
-    completed_rolls = session.scalars(select(Record).where(
-        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
-        Record.data["sim_id"].as_string() == sim.id,
-    ).order_by(Record.updated_at.desc()))
-    for roll in completed_rolls:
-        data = roll.data or {}
-        if not data.get("pregnancy_count_roll") or not data.get("completed") or data.get("pregnancy_count") is None:
-            continue
-        year = str(data.get("planner_year") or (save.start_year + (int(roll.global_day or save.global_day) - 1) // max(1, save.days_per_year)))
-        allowances.setdefault(year, {"allowed":int(data.get("pregnancy_count") or 0), "roll_id":roll.id, "recorded_global_day":data.get("completed_global_day")})
-    used_by_year: dict[str, int] = {}
-    pregnancies = session.scalars(select(Record).where(
-        Record.save_id == save.id, Record.kind == "pregnancy", Record.deleted.is_(False),
-        Record.data["mother_id"].as_string() == sim.id,
-    ))
-    for pregnancy in pregnancies:
-        if not counts_against_pregnancy_allowance(pregnancy):
-            continue
-        year_value = pregnancy_allowance_year(save, pregnancy)
-        if year_value is None:
-            continue
-        year = str(year_value)
-        used_by_year[year] = used_by_year.get(year, 0) + 1
-    rows = []
-    for year,value in allowances.items():
-        allowed = max(0, int(value.get("allowed") or 0)); used = used_by_year.get(str(year), 0)
-        rows.append({"year":int(year), "allowed":allowed, "used":used, "remaining":max(0, allowed - used), **value})
-    rows.sort(key=lambda row:row["year"], reverse=True)
-    current_year = save.start_year + (save.global_day - 1) // max(1, save.days_per_year)
-    return {"rows":rows, "current":next((row for row in rows if row["year"] == current_year), rows[0] if rows else None)}
+    from .pregnancy_planning import status
+    return status(session, save, sim)
 
 
 def sync_family_plan_from_pregnancy_roll(session: Session, save: ChronicleSave, roll: Record,
                                          sim: Record, pregnancy_count: int) -> tuple[Record, bool, bool]:
-    """Create or update the annual family plan represented by a count roll."""
+    """Create or update the lifetime family plan represented by a count roll."""
     data = roll.data or {}
     year = int(data.get("planner_year") or (save.start_year + (int(roll.global_day or save.global_day) - 1) // max(1, save.days_per_year)))
     source = f"pregnancy-count:{roll.id}"
@@ -3316,14 +3285,16 @@ def sync_family_plan_from_pregnancy_roll(session: Session, save: ChronicleSave, 
         "target_pregnancies": max(0, int(pregnancy_count)),
         "target_measure": "pregnancies",
         "min_birth_spacing_days": max(0, int(save.pregnancy_days)),
-        "planner_year": year,
+        "planner_year": None,
+        "allowance_recorded_year": year,
+        "pregnancy_allowance_scope": "lifetime",
         "source": source,
         "source_pregnancy_roll_id": roll.id,
         "automatic": True,
         "active": plan_active,
-        "notes": f"Created automatically from the {year} pregnancy-count roll. Multiple births still use one pregnancy allowance.",
+        "notes": f"Lifetime allowance from the pregnancy-count roll recorded in {year}. Each pregnancy counts once across all years, including twins or triplets. A separate yearly check decides whether to try that year.",
     }
-    label = f"{sim.label} family plan · {year}"
+    label = f"{sim.label} family plan · Lifetime"
     if plan:
         current = plan.data or {}
         legacy_child_mirror = current.get("source_pregnancy_roll_id") == roll.id and "target_children" in current
@@ -3345,36 +3316,8 @@ def sync_family_plan_from_pregnancy_roll(session: Session, save: ChronicleSave, 
 
 
 def backfill_pregnancy_allowances(session: Session, save: ChronicleSave) -> int:
-    """Copy completed pre-feature pregnancy-count rolls onto their Sim profiles once."""
-    rolls = session.scalars(select(Record).where(
-        Record.save_id == save.id, Record.kind == "roll", Record.deleted.is_(False),
-        Record.data["pregnancy_count_roll"].as_boolean().is_(True),
-        Record.data["completed"].as_boolean().is_(True),
-    ).order_by(Record.updated_at))
-    changed = 0
-    for roll in rolls:
-        data = roll.data or {}
-        if not data.get("pregnancy_count_roll") or not data.get("completed") or data.get("pregnancy_count") is None:
-            continue
-        sim = session.get(Record, data.get("sim_id")) if data.get("sim_id") else None
-        if not sim or sim.kind != "sim" or sim.deleted:
-            continue
-        year = int(data.get("planner_year") or (save.start_year + (int(roll.global_day or save.global_day) - 1) // max(1, save.days_per_year)))
-        sim_data = dict(sim.data or {}); allowances = dict(sim_data.get("pregnancy_allowances") or {})
-        entry = {"allowed":int(data.get("pregnancy_count") or 0), "roll_id":roll.id, "recorded_global_day":data.get("completed_global_day"), "actual":data.get("actual")}
-        if allowances.get(str(year)) != entry:
-            allowances[str(year)] = entry
-            sim_data["pregnancy_allowances"] = allowances
-            if int(sim_data.get("pregnancy_allowance_year") or -9999) <= year:
-                sim_data.update({
-                    "pregnancy_allowance_count":entry["allowed"], "pregnancy_allowance_year":year,
-                    "pregnancy_allowance_roll_id":roll.id, "pregnancy_allowance_recorded_global_day":entry["recorded_global_day"],
-                })
-            base = sim.version; sim.data = sim_data; sim.version += 1; journal(session, sim, "upsert", base); changed += 1
-        _, plan_changed, _ = sync_family_plan_from_pregnancy_roll(session, save, roll, sim, entry["allowed"])
-        changed += int(plan_changed)
-    save.revision += changed
-    return changed
+    from .pregnancy_planning import reconcile
+    return reconcile(session, save)
 
 
 def backfill_generated_marriage_dates(session: Session, save: ChronicleSave) -> int:
@@ -5982,10 +5925,19 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         is_bad = False
         automatic_outcome = f"Old-age death scheduled during historical age {actual}"
     elif bool(roll.data.get("pregnancy_count_roll")):
+        from . import pregnancy_planning
         pregnancy_sim = session.get(Record, roll.data.get("sim_id")) if roll.data.get("sim_id") else None
+        if pregnancy_sim:
+            existing = pregnancy_planning.canonical(session, save, pregnancy_sim)
+            if existing and existing.id != roll.id:
+                raise ValueError("This Sim already has a lifetime allowance roll. Use that roll instead of a second count.")
         if pregnancy_sim and pregnancy_sim.save_id == save.id and pregnancy_sim.data.get("infertile"):
             raise ValueError("This Sim is recorded as infertile. Review their fertility result before planning more pregnancies.")
         pregnancy_count, automatic_outcome = pregnancy_count_result(actual, str(roll.data.get("result_rules") or ""), str(roll.data.get("zero_results") or ""))
+        is_bad = False
+    elif roll.data.get("pregnancy_yearly_roll"):
+        from . import pregnancy_planning
+        automatic_outcome = pregnancy_planning.yearly_result(session, save, roll, actual)
         is_bad = False
     elif roll.data.get("maternal_followup"):
         origin = session.get(Record, roll.data.get("origin_roll_id"))
@@ -6070,7 +6022,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
     family_plan_changed = False
     family_plan_created = False
     if pregnancy_count is not None:
-        roll.data = {**roll.data, "pregnancy_count":pregnancy_count}
+        roll.data = {**roll.data, "pregnancy_count":pregnancy_count, "pregnancy_allowance_scope":"lifetime", "extra_annual":False}
         sim_id = roll.data.get("sim_id")
         allowance_sim = session.get(Record, sim_id) if sim_id else None
         if automate and allowance_sim and allowance_sim.kind == "sim" and not allowance_sim.deleted:
@@ -6081,6 +6033,7 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
                 "pregnancy_allowances":allowances, "pregnancy_allowance_count":pregnancy_count,
                 "pregnancy_allowance_year":year, "pregnancy_allowance_roll_id":roll.id,
                 "pregnancy_allowance_recorded_global_day":save.global_day,
+                "pregnancy_allowance_scope":"lifetime", "pregnancy_lifetime_roll_id":roll.id,
             })
             sim_base = allowance_sim.version; allowance_sim.data = sim_data; allowance_sim.version += 1
             journal(session, allowance_sim, "upsert", sim_base); allowance_changed = True
@@ -6116,6 +6069,9 @@ def complete_roll(session: Session, save: ChronicleSave, roll: Record, actual: i
         automatic_followups += _schedule_event_followup(session, save, roll, actual)
         from . import roll_automation
         roll_automation.followups(session,save,roll)
+        if pregnancy_count is not None:
+            from . import pregnancy_planning
+            pregnancy_planning.schedule(session,save)
         automatic_followups += maternal_rules.schedule(session, save, roll)
         if roll.data.get("maternal_followup") and not is_bad:
             maternal_changed = maternal_rules.apply_infertility(session, save, roll)

@@ -6,7 +6,7 @@ from uuid import uuid4
 from fastapi import Request, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy import update
-from . import roll_automation as auto, domain
+from . import roll_automation as auto, domain, pregnancy_planning
 from .models import Record, ChronicleSave
 
 def stamp(save):return hashlib.sha256(json.dumps(auto.config(save),sort_keys=True).encode()).hexdigest()
@@ -44,12 +44,19 @@ def register(m):
                         cfg[key]=form.get(key)=='on'
                         if cfg[key] and not old.get(key):starts.setdefault(key,save.global_day)
                     cfg['from']=starts
-                    for key,default in [('pregnancy_min_age',18),('pregnancy_max_age',59)]:
+                    for key,default in [('pregnancy_min_age',13),('pregnancy_max_age',49)]:
                         n=auto.number(form.get(key),default)
                         if not 13<=n<=120:raise ValueError('Pregnancy eligibility ages must be between 13 and 120.')
                         cfg[key]=n
                     if cfg['pregnancy_max_age']<cfg['pregnancy_min_age']:raise ValueError('Maximum pregnancy age must not be below the minimum.')
-                    for key in ('pregnancy_married_only','pregnancy_side_only'):cfg[key]=form.get(key)=='on'
+                    for key in ('pregnancy_married_only','pregnancy_side_only','pregnancy_yearly_married_only','pregnancy_yearly_side_only'):cfg[key]=form.get(key)=='on'
+                    cfg['pregnancy_yearly_mode']=str(form.get('pregnancy_yearly_mode') or 'age_table')
+                    if cfg['pregnancy_yearly_mode'] not in {'age_table','custom'}:raise ValueError('Choose the age-based Annual Baby Roll or custom yearly odds.')
+                    for key in ('pregnancy_yearly_die','pregnancy_yearly_success'):
+                        if key in form:cfg[key]=str(form.get(key) or '').strip()
+                    yearly=pregnancy_planning.annual_table(cfg) if cfg['pregnancy_yearly_mode']=='custom' else ('d20','age table')
+                    if cfg.get('pregnancy_yearly') and cfg['pregnancy_yearly_mode']=='custom' and not yearly:
+                        raise ValueError('Set the yearly pregnancy die and successful results before enabling yearly checks.')
                     allowed={r.id for r in auto.rows(session,save,['addon_rule','occult_rule']) if option(r)}
                     cfg['rules']={rid:rid in form.getlist('rule_on') for rid in allowed}
                     save.settings={**save.settings,'roll_automation':cfg};save.revision+=1
@@ -103,6 +110,15 @@ def register(m):
                                 'household':('roll_context_major_court','roll_context_active_feud','roll_context_winter_affected','roll_context_war_affected','roll_context_fixed_major_event')}
                         if row.kind not in fields:raise ValueError('Choose a Sim or household.')
                         values={k:form.get(k)=='on' for k in fields[row.kind]}
+                        if 'pregnancy_rule_permission' in form:
+                            permission=str(form.get('pregnancy_rule_permission') or 'inherit')
+                            if permission not in {'inherit','allowed','blocked'}:raise ValueError('Choose an allowed pregnancy eligibility setting.')
+                            values['pregnancy_rule_permission']=permission
+                            values['pregnancy_available_from_year']=auto.number(form.get('pregnancy_available_from_year'))
+                            values['pregnancy_rule_note']=str(form.get('pregnancy_rule_note') or '').strip()[:1000]
+                        if row.kind=='sim' and form.get('pregnancy_facts_present')=='1':
+                            values['pregnancy_fertility_boost']=form.get('pregnancy_fertility_boost')=='on'
+                            values['pregnancy_established_partnership']=form.get('pregnancy_established_partnership')=='on'
                         if row.kind=='sim':
                             status=str(form.get('avatar_prisoner_status') or '')
                             if status not in {'','captured','missing'}:raise ValueError('Choose a captivity status.')

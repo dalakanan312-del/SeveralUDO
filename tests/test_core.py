@@ -2146,7 +2146,7 @@ class CoreSmokeTests(unittest.TestCase):
                 plan=session.scalar(select(Record).where(Record.save_id==save_id,Record.kind=="family_plan",Record.data["source_pregnancy_roll_id"].as_string()==roll_id))
                 self.assertIsNotNone(plan);self.assertEqual(plan.data["target_pregnancies"],7);self.assertNotIn("target_children",plan.data)
             profile=client.get(f"/sims/{sim_id}")
-            self.assertEqual(profile.status_code,200);self.assertIn("Pregnancy allowance",profile.text);self.assertIn("<span>Allowed</span><strong>7</strong>",profile.text);self.assertIn("<span>Used</span><strong>2</strong>",profile.text);self.assertIn("<span>Remaining</span><strong>5</strong>",profile.text)
+            self.assertEqual(profile.status_code,200);self.assertIn("Lifetime pregnancy allowance",profile.text);self.assertIn("<span>Allowed</span><strong>7</strong>",profile.text);self.assertIn("<span>Used</span><strong>2</strong>",profile.text);self.assertIn("<span>Remaining</span><strong>5</strong>",profile.text)
             planner=client.get("/p/planner");self.assertEqual(planner.status_code,200);self.assertIn(f"Planner Sim {marker} family plan",planner.text);self.assertIn("2/7</b> pregnancies",planner.text);self.assertIn("0</b> children",planner.text)
             with SessionLocal() as session:
                 session.execute(delete(Record).where(Record.save_id==save_id));session.execute(delete(ChronicleSave).where(ChronicleSave.id==save_id));session.commit()

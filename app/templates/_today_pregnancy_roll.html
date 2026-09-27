@@ -1,14 +1,16 @@
 <details class="panel" id="work-pregnancy-count" data-ui-detail="pregnancy-count-roll">
-  <summary>＋ Roll for pregnancies <small>Pregnancy allowance</small></summary>
-  <p>Choose how many pregnancies a Sim receives using the rule and die for {{historical_year(save,save.global_day)}}. This counts pregnancies, not individual babies.</p>
+  <summary>＋ Roll for pregnancies <small>Lifetime allowance &amp; yearly decision</small></summary>
+  <p>Roll once to set a Sim’s lifetime number of pregnancies using their era table. Separately, use the D20 Annual Baby Roll at the beginning of each year to decide whether they have a baby that year. Twins and triplets still count as one pregnancy.</p>
   <form action="/api/today/pregnancy-count-rolls" method="post" class="form-grid" hx-boost="false">
     <input type="hidden" name="view" value="workboard">
     <input type="hidden" name="save_id" value="{{save.id}}">
     <input type="hidden" name="household" value="{{board_household}}">
     <label>Living Sim<select name="sim_id" required><option value="">Choose a Sim</option>{% for sim in pregnancy_roll_people %}<option value="{{sim.id}}">{{sim.label}}</option>{% endfor %}</select></label>
-    <div><small>One allowance per Sim per historical year. If a roll already exists, this opens it without rerolling or changing its result.</small></div>
+    <label>Which roll?<select name="pregnancy_kind"><option value="lifetime">Lifetime allowance — how many pregnancies in total</option><option value="yearly">Annual Baby Roll — baby in {{historical_year(save,save.global_day)}}?</option></select></label>
+    <div><small>An existing roll opens without rerolling. Yearly checks require a completed lifetime allowance with pregnancies remaining.</small></div>
     <button class="primary" {% if not pregnancy_roll_people %}disabled{% endif %}>Create or find pregnancy roll</button>
     <a href="/p/roll-tables#family-planning">Pregnancy roll rules →</a>
+    <a href="/p/roll-automation">Annual Baby Roll rules and automation switches →</a>
   </form>
   {% if not pregnancy_roll_people %}<p class="muted">No living Sims in this household selection. Choose another household or add a Sim first.</p>{% endif %}
 </details>

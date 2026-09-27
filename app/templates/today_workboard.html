@@ -13,7 +13,7 @@
   <a class="button" href="/p/quick-dice" hx-boost="false">Quick Dice</a>
   <a class="button" href="/p/roll-automation" hx-boost="false">Roll Automation</a>
 </section>
-<p class="workspace-window-note">{{'Due today, plus outstanding marriage and remarriage checks. Other earlier work is under Overdue; upcoming work is under Future.' if board_window=='today' else 'Viewing '+board_window+' work only. Use Today to return to the current day.'}}</p>
+<p class="workspace-window-note">{{'Due today, plus outstanding marriage, remarriage and pregnancy-planning checks. Other earlier work is under Overdue; upcoming work is under Future.' if board_window=='today' else 'Viewing '+board_window+' work only. Use Today to return to the current day.'}}</p>
 <nav class="workspace-jumps" aria-label="Work sections" hx-boost="false">
   {% for group in board_groups %}<a href="#work-{{group.id}}"><span>{{group.label}}</span><b data-work-count="{{group.id}}">{{group.count}}</b></a>{% endfor %}
 </nav>

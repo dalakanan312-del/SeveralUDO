@@ -178,7 +178,7 @@ def sync_rules(session: Session, save: ChronicleSave) -> int:
             or str(data.get("source") or "").casefold() == "built-in maternal baseline"
         )
         built_in_planner = item.kind == "planner_rule" and str(data.get("notes") or "") in {
-            "Annual pregnancy-count roll", "Marriage eligibility for a non-heir",
+            "Annual pregnancy-count roll", "Lifetime pregnancy-count roll", "Marriage eligibility for a non-heir",
         }
         built_in_guidance = item.kind == "era_guidance" and str(data.get("source") or "") == "Built-in editable baseline"
         if built_in_roll or built_in_planner or built_in_guidance:

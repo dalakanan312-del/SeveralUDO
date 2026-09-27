@@ -19,7 +19,7 @@
     {% if infinite_meta %}<small class="sim-branch-label">{{card.get('branch')}}{% if card.get('readonly') %} · Read-only{% if card.get('preserved_day') is not none %} · Preserved GD {{card.get('preserved_day')}}{% endif %}{% endif %}</small>{% endif %}
     <p><span class="status {{'dead' if sim_status(sim,save)=='Deceased' else 'alive'}}">{{sim_status(sim,save)}}</span> · {{sim.data.get('sex') or 'Unspecified'}} · Generation {{sim.data.get('generation') if sim.data.get('generation') is not none else '—'}}</p>
     <small>Born {{sim_birth_display(save,sim)}}{% if sim.data.get('birth_time') %} at {{sim.data.get('birth_time')}}{% endif %}</small>{{date_badge(sim.data,'birth')}}
-    {% if sim.data.get('pregnancy_allowance_count') is not none %}<small> · Pregnancy allowance {{sim.data.get('pregnancy_allowance_count')}} for {{sim.data.get('pregnancy_allowance_year')}}</small>{% endif %}
+    {% if sim.data.get('pregnancy_allowance_count') is not none %}<small> · Lifetime pregnancy allowance {{sim.data.get('pregnancy_allowance_count')}}</small>{% endif %}
   </div>
 </a>
 {% else %}<div class="empty">No Sims match these filters.</div>{% endfor %}

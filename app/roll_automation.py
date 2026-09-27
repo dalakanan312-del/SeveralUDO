@@ -10,7 +10,8 @@ from .models import Record, ChronicleSave
 from . import domain, record_state, occult_rules, core_rulesets
 
 OPTIONS = {
-    'pregnancy': ('Annual pregnancy allowance', 'One check per eligible Sim and year; editable age, marriage and household limits.'),
+    'pregnancy': ('Lifetime pregnancy allowance', 'One roll per eligible Sim to set their total number of pregnancies; never repeated yearly.'),
+    'pregnancy_yearly': ('Annual Baby Roll', 'D20 once per historical year, using your age table and modifiers, while the lifetime pregnancy allowance remains.'),
     'hp': ('Harry Potter consequences', 'Witch-hunt and Ministry-intervention consequence tables, when their modules are enabled.'),
     'changeling': ('Newborn changeling suspicion', 'Human newborns sharing a household or recorded country with fairies; truth follows at Child stage.'),
     'dehydration': ('Mermaid dehydration follow-ups', 'Two survival checks from the selected core age table after severe dehydration.'),
@@ -74,31 +75,8 @@ def create(session,save,key,rule,target,identity,*,day=None,die=None,table=None,
     return roll
 
 def pregnancy(session,save,people,all_rows):
-    if not enabled(save,'pregnancy'):return
-    cfg=config(save);heir=next((s for s in people if s.id==(save.settings or {}).get('current_heir_id')),None)
-    main_house=(save.settings or {}).get('current_household_id') or (heir.data.get('current_household_id') if heir else None)
-    minimum=number(cfg.get('pregnancy_min_age'),18);maximum=number(cfg.get('pregnancy_max_age'),59)
-    married=set()
-    for r in all_rows:
-        if r.kind=='relationship' and active(r) and (r.data.get('legally_married') or str(r.data.get('type','')).casefold()=='marriage') and str(r.data.get('status','Active')).casefold() not in {'widowed','divorced','separated','ended','annulled','abandoned','complete','closed'}:
-            married.update((r.data.get('partner1_id'),r.data.get('partner2_id')))
-    for sim in people:
-        d=sim.data;age=(save.global_day-number(d.get('birth_global_day'),sim.global_day or 1))//max(1,save.days_per_year)
-        capable=d.get('can_be_pregnant',str(d.get('sex','')).casefold() in {'female','f'})
-        if isinstance(capable,str):capable=capable.casefold() in {'true','yes','1'}
-        if not capable or d.get('infertile') or not minimum<=age<=maximum:continue
-        if cfg.get('pregnancy_married_only',True) and sim.id not in married:continue
-        if cfg.get('pregnancy_side_only',True) and (not main_house or not d.get('current_household_id') or d.get('current_household_id')==main_house):continue
-        source=f'planner:pregnancy-count:{sim.id}:{year(save)}'
-        previous=session.scalar(select(Record).where(Record.save_id==save.id,Record.kind=='roll',Record.data['source'].as_string()==source))
-        if previous and previous.deleted:
-            if previous.data.get('extra_auto_paused') and not previous.data.get('completed'):
-                previous.deleted=False;change(session,previous,{'extra_auto_paused':False,'retired_reason':''});save.revision+=1
-            continue
-        try:
-            roll,created=domain.create_pregnancy_count_roll(session,save,sim)
-            if created:change(session,roll,{'extra_automation':'pregnancy','automation_year':year(save),'extra_annual':True})
-        except ValueError:continue # Missing era table is shown on the settings page.
+    from .pregnancy_planning import schedule
+    schedule(session,save,people,all_rows)
 
 def changelings(session,save,people,rules):
     rule=rules.get('fairy_changeling')
